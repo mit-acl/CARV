@@ -1,0 +1,9 @@
+[submodule "CROWN-IBP"]
+	path = CROWN-IBP
+	url = https://github.com/nrober1122/CROWN-IBP
+[submodule "auto_LiRPA"]
+	path = auto_LiRPA
+	url = https://github.com/Verified-Intelligence/auto_LiRPA.git
+[submodule "nfl_veripy"]
+	path = nfl_veripy
+	url = https://github.com/neu-autonomy/nfl_veripy
