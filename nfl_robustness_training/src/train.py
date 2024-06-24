@@ -60,7 +60,7 @@ parser.add_argument("--training_method", type=str, choices=["natural", "robust"]
 args = parser.parse_args()
 
 
-def Train_Regressor(model, t, loader, eps_scheduler, norm, train, opt, bound_type, method='natural'):
+def Train_Regressor(model, t, loader, eps_scheduler, norm, train, opt, bound_type, method='natural', device='cpu'):
     num_class = 1
     meter = MultiAverageMeter()
     if train:
@@ -85,7 +85,9 @@ def Train_Regressor(model, t, loader, eps_scheduler, norm, train, opt, bound_typ
         
         
         # generate specifications
-        c = torch.eye(num_class).type_as(data).unsqueeze(0).cuda()
+        c = torch.eye(num_class).type_as(data).unsqueeze(0)
+        if list(model.parameters())[0].is_cuda: # TODO: figure out how to run with cuda
+            c = c.cuda()
         # remove specifications to self
         # I = (~(labels.data.unsqueeze(1) == torch.arange(num_class).type_as(labels.data).unsqueeze(0)))
         # c = (c[I].view(data.size(0), num_class - 1, num_class))
@@ -104,21 +106,24 @@ def Train_Regressor(model, t, loader, eps_scheduler, norm, train, opt, bound_typ
 
         # Specify Lp norm perturbation.
         # When using Linf perturbation, we manually set element-wise bound x_L and x_U. eps is not used for Linf norm.
-        if norm > 0:
-            ptb = PerturbationLpNorm(norm=norm, eps=eps, x_L=data_lb, x_U=data_ub)
-        elif norm == 0:
-            ptb = PerturbationL0Norm(eps = eps_scheduler.get_max_eps(), ratio = eps_scheduler.get_eps()/eps_scheduler.get_max_eps())
+        # if norm > 0:
+        #     ptb = PerturbationLpNorm(norm=norm, eps=eps, x_L=data_lb, x_U=data_ub)
+        # elif norm == 0:
+        #     ptb = PerturbationL0Norm(eps = eps_scheduler.get_max_eps(), ratio = eps_scheduler.get_eps()/eps_scheduler.get_max_eps())
+        ptb = PerturbationLpNorm(eps = eps) 
         x = BoundedTensor(data, ptb)
         output = model(x)
-        regular_mse = MSELoss()(output, labels)  # regular CrossEntropyLoss used for warming up
-        meter.update('MSE', regular_mse.item(), x.size(0))
+        regular_loss = MSELoss()(output, labels)  # regular CrossEntropyLoss used for warming up
+        meter.update('MSE', regular_loss.item(), x.size(0))
         meter.update('Err', torch.sum(torch.argmax(output, dim=1) != labels).cpu().detach().numpy() / x.size(0), x.size(0))
 
         if batch_method == "robust":
             if bound_type == "IBP":
                 lb, ub = model.compute_bounds(IBP=True, C=c, method=None)
             elif bound_type == "CROWN":
-                lb, ub = model.compute_bounds(IBP=False, C=c, method="backward", bound_upper=False)
+                # print(x.shape)
+                # import pdb; pdb.set_trace()
+                lb, ub = model.compute_bounds(x=(x,), method="backward")
             elif bound_type == "CROWN-IBP":
                 # lb, ub = model.compute_bounds(ptb=ptb, IBP=True, x=data, C=c, method="backward")  # pure IBP bound
                 # we use a mixed IBP and CROWN-IBP bounds, leading to better performance (Zhang et al., ICLR 2020)
@@ -129,30 +134,32 @@ def Train_Regressor(model, t, loader, eps_scheduler, norm, train, opt, bound_typ
                 else:
                     clb, cub = model.compute_bounds(IBP=False, C=c, method="backward", bound_upper=False)
                     lb = clb * factor + ilb * (1 - factor)
+
+                
             elif bound_type == "CROWN-FAST":
                 # Similar to CROWN-IBP but no mix between IBP and CROWN bounds.
                 lb, ub = model.compute_bounds(IBP=True, C=c, method=None)
                 lb, ub = model.compute_bounds(IBP=False, C=c, method="backward", bound_upper=False)
 
+            robust_loss = MSELoss()(lb, ub)
 
             # Pad zero at the beginning for each example, and use fake label "0" for all examples
-            lb_padded = torch.cat((torch.zeros(size=(lb.size(0),1), dtype=lb.dtype, device=lb.device), lb), dim=1)
-            fake_labels = torch.zeros(size=(lb.size(0),), dtype=torch.int64, device=lb.device)
-            robust_ce = CrossEntropyLoss()(-lb_padded, fake_labels)
+            # lb_padded = torch.cat((torch.zeros(size=(lb.size(0),1), dtype=lb.dtype, device=lb.device), lb), dim=1)
+            # fake_labels = torch.zeros(size=(lb.size(0),), dtype=torch.int64, device=lb.device)
+            # robust_ce = CrossEntropyLoss()(-lb_padded, fake_labels)
         if batch_method == "robust":
-            loss = robust_ce
+            alpha = 0.05
+            loss = regular_loss + alpha*robust_loss
         elif batch_method == "natural":
-            loss = regular_mse
-
-        loss = regular_mse
+            loss = regular_loss
         
         if train:
             loss.backward()
-            eps_scheduler.update_loss(loss.item() - regular_mse.item())
+            eps_scheduler.update_loss(loss.item() - regular_loss.item())
             opt.step()
         meter.update('Loss', loss.item(), data.size(0))
         if batch_method != "natural":
-            meter.update('Robust_CE', robust_ce.item(), data.size(0))
+            meter.update('Robust_CE', robust_loss.item(), data.size(0))
             # For an example, if lower bounds of margins is >0 for all classes, the output is verifiably correct.
             # If any margin is < 0 this example is counted as an error
             meter.update('Verified_Err', torch.sum((lb < 0).any(dim=1)).item() / data.size(0), data.size(0))
