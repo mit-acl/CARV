@@ -1,7 +1,7 @@
 system:
   type: DoubleIntegrator
   feedback: FullState
-  controller: natural_default
+  controller: natural_expanded
 
 analysis:
   reachability_direction: forward

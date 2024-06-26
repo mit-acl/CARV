@@ -1,0 +1,282 @@
+./double_integrator_crown/double_integrator_default.pth
+Command line: train.py --config config/double_integrator_crown.json
+training configurations: {'method': 'robust', 'epochs': 65, 'lr': 0.001, 'lr_decay_step': 10, 'lr_decay_factor': 0.5, 'lr_decay_milestones': [], 'weight_decay': 0.0, 'optimizer': 'adam', 'starting_epsilon': 0.0, 'epsilon': 0.6, 'schedule_length': 61, 'schedule_type': 'linear', 'norm': 'inf', 'verbose': False, 'multi_gpu': False, 'loader_params': {'batch_size': 128, 'shuffle_train': True, 'test_batch_size': 128}, 'method_params': {'batch_size': 128, 'shuffle_train': True, 'runnerup_only': False, 'activity_reg': 0.0, 'l1_reg': 0.0, 'final-beta': 0.0, 'final-kappa': 0.5, 'convex-proj': 50, 'bound_opts': {'same-slope': False, 'zero-lb': False, 'one-lb': False}, 'batch_multiplier': 1, 'bounded_input': True, 'bound_type': 'crown-interval'}, 'schedule_start': 1}
+Model structure:
+BoundSequential(
+  (0): BoundFlatten()
+  (1): BoundLinear(in_features=2, out_features=15, bias=True)
+  (2): BoundReLU()
+  (3): BoundLinear(in_features=15, out_features=10, bias=True)
+  (4): BoundReLU()
+  (5): BoundLinear(in_features=10, out_features=5, bias=True)
+  (6): BoundReLU()
+  (7): BoundLinear(in_features=5, out_features=1, bias=True)
+)
+data std: [1.0]
+Epoch 0, learning rate [0.001], epsilon 0 - 0
+eps 0.0 close to 0, using natural training
+Epoch time: 0.4693, Total time: 0.4693
+Evaluating...
+eps 0.0 close to 0, using natural training
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 1, learning rate [0.001], epsilon 0 - 0.01
+Epoch time: 0.3275, Total time: 0.7968
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 2, learning rate [0.001], epsilon 0.01 - 0.02
+Epoch time: 0.3310, Total time: 1.1278
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 3, learning rate [0.001], epsilon 0.02 - 0.03
+Epoch time: 0.3577, Total time: 1.4855
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 4, learning rate [0.001], epsilon 0.03 - 0.04
+Epoch time: 0.3656, Total time: 1.8512
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 5, learning rate [0.001], epsilon 0.04 - 0.05
+Epoch time: 0.3606, Total time: 2.2118
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 6, learning rate [0.001], epsilon 0.05 - 0.06
+Epoch time: 0.3884, Total time: 2.6002
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 7, learning rate [0.001], epsilon 0.06 - 0.07
+Epoch time: 0.3885, Total time: 2.9886
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 8, learning rate [0.001], epsilon 0.07 - 0.08
+Epoch time: 0.3577, Total time: 3.3464
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 9, learning rate [0.001], epsilon 0.08 - 0.09
+Epoch time: 0.3633, Total time: 3.7097
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 10, learning rate [0.001], epsilon 0.09 - 0.1
+Epoch time: 0.3411, Total time: 4.0509
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 11, learning rate [0.001], epsilon 0.1 - 0.11
+Epoch time: 0.3406, Total time: 4.3915
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 12, learning rate [0.001], epsilon 0.11 - 0.12
+Epoch time: 0.3289, Total time: 4.7204
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 13, learning rate [0.001], epsilon 0.12 - 0.13
+Epoch time: 0.3596, Total time: 5.0800
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 14, learning rate [0.001], epsilon 0.13 - 0.14
+Epoch time: 0.3381, Total time: 5.4181
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 15, learning rate [0.001], epsilon 0.14 - 0.15
+Epoch time: 0.3333, Total time: 5.7514
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 16, learning rate [0.001], epsilon 0.15 - 0.16
+Epoch time: 0.3381, Total time: 6.0896
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 17, learning rate [0.001], epsilon 0.16 - 0.17
+Epoch time: 0.3335, Total time: 6.4231
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 18, learning rate [0.001], epsilon 0.17 - 0.18
+Epoch time: 0.3292, Total time: 6.7523
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 19, learning rate [0.001], epsilon 0.18 - 0.19
+Epoch time: 0.3592, Total time: 7.1114
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 20, learning rate [0.001], epsilon 0.19 - 0.2
+Epoch time: 0.3447, Total time: 7.4562
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 21, learning rate [0.001], epsilon 0.2 - 0.21
+Epoch time: 0.3233, Total time: 7.7795
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 22, learning rate [0.001], epsilon 0.21 - 0.22
+Epoch time: 0.3378, Total time: 8.1172
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 23, learning rate [0.001], epsilon 0.22 - 0.23
+Epoch time: 0.3336, Total time: 8.4508
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 24, learning rate [0.001], epsilon 0.23 - 0.24
+Epoch time: 0.3318, Total time: 8.7826
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 25, learning rate [0.001], epsilon 0.24 - 0.25
+Epoch time: 0.3377, Total time: 9.1203
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 26, learning rate [0.001], epsilon 0.25 - 0.26
+Epoch time: 0.3338, Total time: 9.4541
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 27, learning rate [0.001], epsilon 0.26 - 0.27
+Epoch time: 0.3332, Total time: 9.7872
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 28, learning rate [0.001], epsilon 0.27 - 0.28
+Epoch time: 0.3359, Total time: 10.1232
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 29, learning rate [0.001], epsilon 0.28 - 0.29
+Epoch time: 0.3385, Total time: 10.4617
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 30, learning rate [0.001], epsilon 0.29 - 0.3
+Epoch time: 0.3227, Total time: 10.7844
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 31, learning rate [0.001], epsilon 0.3 - 0.31
+Epoch time: 0.3320, Total time: 11.1165
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 32, learning rate [0.001], epsilon 0.31 - 0.32
+Epoch time: 0.3356, Total time: 11.4520
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 33, learning rate [0.001], epsilon 0.32 - 0.33
+Epoch time: 0.3314, Total time: 11.7834
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 34, learning rate [0.001], epsilon 0.33 - 0.34
+Epoch time: 0.3292, Total time: 12.1126
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 35, learning rate [0.001], epsilon 0.34 - 0.35
+Epoch time: 0.3192, Total time: 12.4318
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 36, learning rate [0.001], epsilon 0.35 - 0.36
+Epoch time: 0.3662, Total time: 12.7980
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 37, learning rate [0.001], epsilon 0.36 - 0.37
+Epoch time: 0.3287, Total time: 13.1267
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 38, learning rate [0.001], epsilon 0.37 - 0.38
+Epoch time: 0.3359, Total time: 13.4626
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 39, learning rate [0.001], epsilon 0.38 - 0.39
+Epoch time: 0.3315, Total time: 13.7941
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 40, learning rate [0.001], epsilon 0.39 - 0.4
+Epoch time: 0.3149, Total time: 14.1090
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 41, learning rate [0.001], epsilon 0.4 - 0.41
+Epoch time: 0.3133, Total time: 14.4224
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 42, learning rate [0.001], epsilon 0.41 - 0.42
+Epoch time: 0.3153, Total time: 14.7377
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 43, learning rate [0.001], epsilon 0.42 - 0.43
+Epoch time: 0.3160, Total time: 15.0536
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 44, learning rate [0.001], epsilon 0.43 - 0.44
+Epoch time: 0.3359, Total time: 15.3896
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 45, learning rate [0.001], epsilon 0.44 - 0.45
+Epoch time: 0.3362, Total time: 15.7258
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 46, learning rate [0.001], epsilon 0.45 - 0.46
+Epoch time: 0.3329, Total time: 16.0586
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 47, learning rate [0.001], epsilon 0.46 - 0.47
+Epoch time: 0.3390, Total time: 16.3976
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 48, learning rate [0.001], epsilon 0.47 - 0.48
+Epoch time: 0.3472, Total time: 16.7448
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 49, learning rate [0.001], epsilon 0.48 - 0.49
+Epoch time: 0.3392, Total time: 17.0839
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 50, learning rate [0.001], epsilon 0.49 - 0.5
+Epoch time: 0.3340, Total time: 17.4179
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 51, learning rate [0.001], epsilon 0.5 - 0.51
+Epoch time: 0.3364, Total time: 17.7543
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 52, learning rate [0.001], epsilon 0.51 - 0.52
+Epoch time: 0.3345, Total time: 18.0887
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 53, learning rate [0.001], epsilon 0.52 - 0.53
+Epoch time: 0.3409, Total time: 18.4296
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 54, learning rate [0.001], epsilon 0.53 - 0.54
+Epoch time: 0.3360, Total time: 18.7656
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 55, learning rate [0.001], epsilon 0.54 - 0.55
+Epoch time: 0.3383, Total time: 19.1038
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 56, learning rate [0.001], epsilon 0.55 - 0.56
+Epoch time: 0.3365, Total time: 19.4404
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 57, learning rate [0.001], epsilon 0.56 - 0.57
+Epoch time: 0.3320, Total time: 19.7723
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 58, learning rate [0.001], epsilon 0.57 - 0.58
+Epoch time: 0.3259, Total time: 20.0982
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 59, learning rate [0.001], epsilon 0.58 - 0.59
+Epoch time: 0.3273, Total time: 20.4255
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 60, learning rate [0.001], epsilon 0.59 - 0.6
+Epoch time: 0.3153, Total time: 20.7409
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 61, learning rate [0.001], epsilon 0.6 - 0.6
+Epoch time: 0.3201, Total time: 21.0609
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Epoch 62, learning rate [0.001], epsilon 0.6 - 0.6
+Epoch time: 0.3162, Total time: 21.3772
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Saving best model ./double_integrator_crown/double_integrator_default_best.pth with error 0
+Epoch 63, learning rate [0.001], epsilon 0.6 - 0.6
+Epoch time: 0.3156, Total time: 21.6928
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Saving best model ./double_integrator_crown/double_integrator_default_best.pth with error 0
+Epoch 64, learning rate [0.001], epsilon 0.6 - 0.6
+Epoch time: 0.3230, Total time: 22.0158
+Evaluating...
+saving to ./double_integrator_crown/double_integrator_default.pth
+Saving best model ./double_integrator_crown/double_integrator_default_best.pth with error 0
+Total Time: 22.0158
+Model double_integrator_default best err 0, clean err 0

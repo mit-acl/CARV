@@ -1,0 +1,43 @@
+*.pth
+*.pyc
+*~
+*.swp
+__pycache__
+data
+# *.h5
+*.hdf5
+*.egg-info
+*.DS_Store
+*.ipynb_checkpoints/
+dist/
+.mypy_cache
+
+torch_model
+tmp_model
+tmp.txt
+partition/results
+
+# autoLiRPA pre-computes tanh/sigmoid stuff and saves a /tmp/tanh.pkl
+/tmp
+
+results/
+
+# /models
+
+/venv
+
+models/double_integrator_mpc
+models/quadrotor
+models/quadrotor_small
+datasets/double_integrator.zip
+nfl_veripy/utils/leftover_ipynb.py
+models/unity/model_*
+models/nnet/
+models/unity/
+datasets/DoubleIntegrator/
+datasets/Unity/
+
+nn_partition/models/nnet/
+
+venv*
+.vscode

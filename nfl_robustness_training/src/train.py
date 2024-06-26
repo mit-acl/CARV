@@ -37,7 +37,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--verify", action="store_true", help='verification mode, do not train')
 parser.add_argument("--load", type=str, default="", help='Load pretrained model')
 parser.add_argument("--device", type=str, default="cuda", choices=["cpu", "cuda"], help='use cpu or cuda')
-parser.add_argument("--data", type=str, default="default", choices=["MNIST", "CIFAR", "default"], help='dataset')
+parser.add_argument("--data", type=str, default="default", choices=["MNIST", "CIFAR", "default", "expanded"], help='dataset')
 parser.add_argument("--seed", type=int, default=100, help='random seed')
 parser.add_argument("--eps", type=float, default=0.3, help='Target training epsilon')
 parser.add_argument("--norm", type=float, default='inf', help='p norm for epsilon perturbation')
@@ -55,12 +55,24 @@ parser.add_argument("--bound_opts", type=str, default=None, choices=["same-slope
 parser.add_argument("--conv_mode", type=str, choices=["matrix", "patches"], default="patches")
 parser.add_argument("--save_model", type=str, default='')
 parser.add_argument("--system", type=str, default='double_integrator')
-parser.add_argument("--training_method", type=str, choices=["natural", "robust"], default='natural')
+parser.add_argument("--training_method", type=str, choices=["natural", "robust", "robust-constraint"], default='natural')
+# parser.add_argument("--constraint", type=str, choices=["none", "data", "bounds", "all"], default='none')
 
 args = parser.parse_args()
 
+def constraint_loss(output, boundary):
+    violation = torch.nn.ReLU()(-output + boundary)
+    # if any(output < -1):
+    #     print(violation)
+    # import pdb; pdb.set_trace()
 
-def Train_Regressor(model, t, loader, eps_scheduler, norm, train, opt, bound_type, method='natural', device='cpu'):
+    # loss = MSELoss()(violation, torch.zeros(output.shape[0]))
+    loss = torch.max(violation)
+
+    return loss
+
+
+def Train_Regressor(model, cl_system, t, loader, eps_scheduler, norm, train, opt, bound_type, method='natural', device='cpu', constriant='none'):
     num_class = 1
     meter = MultiAverageMeter()
     if train:
@@ -78,8 +90,9 @@ def Train_Regressor(model, t, loader, eps_scheduler, norm, train, opt, bound_typ
         eps = eps_scheduler.get_eps()
         # For small eps just use natural training, no need to compute LiRPA bounds
         batch_method = method
-        if eps < 1e-20:
-            batch_method = "natural"
+        if eps < 1e-6:
+            eps = 0.2
+            # batch_method = "natural"
         if train:
             opt.zero_grad()
         
@@ -117,18 +130,17 @@ def Train_Regressor(model, t, loader, eps_scheduler, norm, train, opt, bound_typ
         meter.update('MSE', regular_loss.item(), x.size(0))
         meter.update('Err', torch.sum(torch.argmax(output, dim=1) != labels).cpu().detach().numpy() / x.size(0), x.size(0))
 
-        if batch_method == "robust":
+        if batch_method == "robust" or batch_method == "robust-constraint":
             if bound_type == "IBP":
                 lb, ub = model.compute_bounds(IBP=True, C=c, method=None)
             elif bound_type == "CROWN":
-                # print(x.shape)
-                # import pdb; pdb.set_trace()
-                lb, ub = model.compute_bounds(x=(x,), method="backward")
+                lb, ub = cl_system.compute_bounds(x=(x,), method="backward")
+                # lb, ub = cl_system.compute_bounds(x=(x,), method=None, IBP=True)
             elif bound_type == "CROWN-IBP":
                 # lb, ub = model.compute_bounds(ptb=ptb, IBP=True, x=data, C=c, method="backward")  # pure IBP bound
                 # we use a mixed IBP and CROWN-IBP bounds, leading to better performance (Zhang et al., ICLR 2020)
                 factor = (eps_scheduler.get_max_eps() - eps) / eps_scheduler.get_max_eps()
-                ilb, iub = model.compute_bounds(IBP=True, C=c, method=None)
+                ilb, iub = model.compute_bounds(x=(x,), IBP=True, method=None)
                 if factor < 1e-5:
                     lb = ilb
                 else:
@@ -147,9 +159,14 @@ def Train_Regressor(model, t, loader, eps_scheduler, norm, train, opt, bound_typ
             # lb_padded = torch.cat((torch.zeros(size=(lb.size(0),1), dtype=lb.dtype, device=lb.device), lb), dim=1)
             # fake_labels = torch.zeros(size=(lb.size(0),), dtype=torch.int64, device=lb.device)
             # robust_ce = CrossEntropyLoss()(-lb_padded, fake_labels)
+        
+        alpha = 0.03
+        beta = 0.05
         if batch_method == "robust":
-            alpha = 0.05
             loss = regular_loss + alpha*robust_loss
+        elif batch_method == "robust-constraint":
+            violation_loss = constraint_loss(lb[:, 1], -1)
+            loss = regular_loss + alpha*robust_loss + beta*violation_loss
         elif batch_method == "natural":
             loss = regular_loss
         
@@ -261,8 +278,8 @@ def main(args):
         cl_dyn = cl_systems.ClosedLoopDynamics(controller_ori, ol_dyn)
 
     ## Step 2: Prepare dataset as usual
-    if args.data == 'default':
-        train_loader, val_loader, test_loader = double_integrator_loaders(batch_size=64)
+    if args.data == 'default' or args.data == 'expanded':
+        train_loader, val_loader, test_loader = double_integrator_loaders(batch_size=64, dataset_name=args.data)
         train_loader.mean = val_loader.mean = test_loader.mean = torch.tensor([0.])
         train_loader.std = val_loader.std = test_loader.std = torch.tensor([1.])
         dummy_input = torch.tensor([[2.75, 0.]], device=args.device)
@@ -271,9 +288,24 @@ def main(args):
     ## Step 3: wrap model with auto_LiRPA
     # The second parameter dummy_input is for constructing the trace of the computational graph.
     model = BoundedModule(controller_ori, dummy_input, bound_opts={'relu':args.bound_opts}, device=args.device)
+    bounded_cl_sys = BoundedModule(cl_dyn, dummy_input, bound_opts={'relu':args.bound_opts}, device=args.device)
+    
+    
+    
+    # eps = torch.tensor([0.3, 0.4])
+    # ptb = PerturbationLpNorm(norm=np.inf, eps=eps)
+    # bounded_input = BoundedTensor(dummy_input, ptb)
+    # import pdb; pdb.set_trace()
+    # lb, ub = bounded_cl_sys.compute_bounds(x = (bounded_input,), method = "backward")
+    # import pdb; pdb.set_trace()
+    # dummy_input_2 = torch.tensor([[2.75, 0.], [3., 0.], [2.5, 0.], [2.75, 0.1]])
+    # ptb_2 = PerturbationLpNorm(norm=np.inf, eps=0.)
+    # bounded_input_2 = BoundedTensor(dummy_input_2, ptb_2)
+    # lb, ub = bounded_cl_sys.compute_bounds(x=(bounded_input_2,), method="backward")
+    # import pdb; pdb.set_trace()
 
     # ## Step 4 prepare optimizer, epsilon scheduler and learning rate scheduler
-    opt = optim.Adam(model.parameters(), lr=args.lr)
+    opt = optim.Adam(controller_ori.parameters(), lr=args.lr)
     norm = float(args.norm)
     lr_scheduler = optim.lr_scheduler.StepLR(opt, step_size=10, gamma=0.5)
     eps_scheduler = eval(args.scheduler_name)(args.eps, args.scheduler_opts)
@@ -288,13 +320,13 @@ def main(args):
             lr_scheduler.step()
         print("Epoch {}, learning rate {}".format(t, lr_scheduler.get_lr()))
         start_time = time.time()
-        Train_Regressor(model, t, train_loader, eps_scheduler, norm, True, opt, args.bound_type, method=args.training_method)
+        Train_Regressor(model, bounded_cl_sys, t, train_loader, eps_scheduler, norm, True, opt, args.bound_type, method=args.training_method)
         epoch_time = time.time() - start_time
         timer += epoch_time
         print('Epoch time: {:.4f}, Total time: {:.4f}'.format(epoch_time, timer))
         print("Evaluating...")
         with torch.no_grad():
-            Train_Regressor(model, t, test_loader, eps_scheduler, norm, False, None, args.bound_type)
+            Train_Regressor(model, bounded_cl_sys, t, test_loader, eps_scheduler, norm, False, None, args.bound_type)
 
         # import pdb; pdb.set_trace()
         path = os.getcwd() + '/nfl_robustness_training/src/controller_models/'
