@@ -161,7 +161,7 @@ def Train_Regressor(model, cl_system, t, loader, eps_scheduler, norm, train, opt
             # robust_ce = CrossEntropyLoss()(-lb_padded, fake_labels)
         
         alpha = 0.03
-        beta = 0.05
+        beta = 0.01
         if batch_method == "robust":
             loss = regular_loss + alpha*robust_loss
         elif batch_method == "robust-constraint":
@@ -269,8 +269,9 @@ def main(args):
 
     ## Step 1: Initial original model as usual, see model details in models/example_feedforward.py and models/example_resnet.py
     if args.system == 'double_integrator':
-        neurons_per_layer = [10, 5]
-        controller_ori = cl_systems.Controllers["di_3layer"](neurons_per_layer)
+        controller_name = "di_4layer"
+        neurons_per_layer = [15, 10, 5]
+        controller_ori = cl_systems.Controllers[controller_name](neurons_per_layer)
         ol_dyn = dynamics.DoubleIntegrator()
         ol_dyn.At_torch = ol_dyn.At_torch.to(args.device)
         ol_dyn.bt_torch = ol_dyn.bt_torch.to(args.device)
@@ -330,7 +331,7 @@ def main(args):
 
         # import pdb; pdb.set_trace()
         path = os.getcwd() + '/nfl_robustness_training/src/controller_models/'
-        model_file = path + args.system + '/' + args.training_method + '_' + args.data + '.pth'
+        model_file = path + args.system + '/' + controller_name + '/' + args.training_method + '_' + args.data + '.pth'
         torch.save({'state_dict': cl_dyn.controller.state_dict(), 'epoch': t}, model_file)
 
     # import pdb; pdb.set_trace()

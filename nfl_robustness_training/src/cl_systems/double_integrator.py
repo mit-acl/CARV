@@ -32,7 +32,7 @@ class di_3layer_controller(nn.Module):
 
 class di_4layer_controller(nn.Module):
     def __init__(self, neurons_per_layer):
-        super(di_3layer_controller, self).__init__()
+        super(di_4layer_controller, self).__init__()
         self.fc1 = nn.Linear(2, neurons_per_layer[0])
         self.fc2 = nn.Linear(neurons_per_layer[0], neurons_per_layer[1])
         self.fc3 = nn.Linear(neurons_per_layer[1], neurons_per_layer[2])
@@ -43,5 +43,5 @@ class di_4layer_controller(nn.Module):
         ut = F.relu(self.fc1(xt))
         ut = F.relu(self.fc2(ut))
         ut = F.relu(self.fc3(ut))
-        ut = self.fc3(ut)
+        ut = self.fc4(ut)
         return ut
