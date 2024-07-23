@@ -10,12 +10,15 @@ import torch.nn as nn
 
 PATH = os.getcwd()
 
-def load_controller(system, controller_name = 'default'):
+def load_controller(system, controller_name = 'default', dagger=False):
     if system == 'DoubleIntegrator':
         neurons_per_layer = [15, 10, 5]
         controller = cl_systems.Controllers["di_4layer"](neurons_per_layer)
 
-        controller_path = PATH + '/nfl_robustness_training/src/controller_models/double_integrator/di_4layer/' + controller_name + '.pth'
+        if dagger:
+            controller_path = PATH + '/nfl_robustness_training/src/controller_models/double_integrator/daggers/di_4layer/' + controller_name + '.pth'
+        else:
+            controller_path = PATH + '/nfl_robustness_training/src/controller_models/double_integrator/di_4layer/' + controller_name + '.pth'
         state_dict = torch.load(controller_path)['state_dict']
         controller.load_state_dict(state_dict)
     

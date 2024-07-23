@@ -6,11 +6,11 @@ from .Dynamics import DiscreteTimeDynamics
 
 
 class DoubleIntegrator(DiscreteTimeDynamics):
-    def __init__(self):
+    def __init__(self, dt=1):
         self.continuous_time = False
 
         # dt = 0.0625
-        dt = 1.
+        # self.dt = dt
 
         At = np.array([[1, dt], [0, 1]])
         bt = np.array([[0.5 * dt * dt], [dt]])

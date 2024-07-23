@@ -34,16 +34,16 @@ def main_forward(params: dict) -> Tuple[Dict, Dict]:
     np.random.seed(seed=0)
     stats = {}
 
-    dyn = dynamics.get_dynamics_instance(
-        params["system"]["type"], params["system"]["feedback"]
-    )
-
+    # dyn = dynamics.get_dynamics_instance(
+    #     params["system"]["type"], params["system"]["feedback"]
+    # )
+    dyn = dynamics.DoubleIntegrator(dt=1)
     # controller_old = load_controller_old(
     #     system=dyn.__class__.__name__,
     #     model_name=params["system"]["controller"],
     # )
 
-    controller = load_controller(params['system']['type'], params['system']['controller'])
+    controller = load_controller(params['system']['type'], params['system']['controller'], params["system"]["dagger"])
     controller = controller2sequential(controller)
     # import pdb; pdb.set_trace()
 

@@ -2,12 +2,13 @@ system:
   type: DoubleIntegrator
   feedback: FullState
   controller: robust-constraint_expanded
+  dagger: false
 
 analysis:
   reachability_direction: forward
   partitioner:
     type: Uniform
-    num_partitions: 2
+    num_partitions: (16,16)
   propagator:
     type: CROWN
     boundary_type: rectangle
@@ -19,6 +20,7 @@ analysis:
 visualization:
   save_plot: true
   show_plot: false
+  show: true
   make_animation: false
   show_animation: false
   show_samples: true
