@@ -8,7 +8,7 @@ analysis:
   reachability_direction: forward
   partitioner:
     type: Uniform
-    num_partitions: (3,3)
+    num_partitions: (2,2)
   propagator:
     type: CROWN
     boundary_type: rectangle

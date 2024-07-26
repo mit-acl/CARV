@@ -12,7 +12,8 @@ PATH = os.getcwd()
 
 def load_controller(system, controller_name = 'default', dagger=False):
     if system == 'DoubleIntegrator':
-        neurons_per_layer = [15, 10, 5]
+        neurons_per_layer = [30, 20, 10]
+        # neurons_per_layer = [15, 10, 5]
         controller = cl_systems.Controllers["di_4layer"](neurons_per_layer)
 
         if dagger:

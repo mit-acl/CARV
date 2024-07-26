@@ -35,7 +35,7 @@ class DIDataset(torch.utils.data.Dataset):
     
 def double_integrator_datasets(num_val = 400, num_test = 200, dataset_name = "default"):
     with open(PATH + "/nfl_robustness_training/src/_static/datasets/double_integrator/" + dataset_name + "/dataset.pkl", 'rb') as f:
-        xs, us, ts = pickle.load(f)
+        xs, us = pickle.load(f)
     
     # with open(PATH + "/nfl_robustness_training/src/_static/datasets/double_integrator/" + dataset_name + "/us.pkl", 'rb') as f:
     #     us = pickle.load(f)

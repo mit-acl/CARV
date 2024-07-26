@@ -472,7 +472,7 @@ class Dynamics:
 
         t = 0
         step = 0
-        while t < t_max:
+        while not np.isclose(t, t_max - self.dt, 1e-8):
             # Observe system (using observer matrix,
             # possibly adding measurement noise)
             obs = self.observe_step(xs[:, step, :])

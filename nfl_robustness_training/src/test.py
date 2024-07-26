@@ -37,7 +37,7 @@ def main_forward(params: dict) -> Tuple[Dict, Dict]:
     # dyn = dynamics.get_dynamics_instance(
     #     params["system"]["type"], params["system"]["feedback"]
     # )
-    dyn = dynamics.DoubleIntegrator(dt=1)
+    dyn = dynamics.DoubleIntegrator(dt=0.2)
     # controller_old = load_controller_old(
     #     system=dyn.__class__.__name__,
     #     model_name=params["system"]["controller"],
@@ -45,7 +45,6 @@ def main_forward(params: dict) -> Tuple[Dict, Dict]:
 
     controller = load_controller(params['system']['type'], params['system']['controller'], params["system"]["dagger"])
     controller = controller2sequential(controller)
-    # import pdb; pdb.set_trace()
 
     # Set up analyzer (+ parititoner + propagator + visualizer)
     analyzer = analyzers.ClosedLoopAnalyzer(controller, dyn)
@@ -140,6 +139,89 @@ def main_forward(params: dict) -> Tuple[Dict, Dict]:
 
     return stats, analyzer_info
 
+
+def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
+    import torch
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Rectangle
+    
+    import nfl_veripy.dynamics as dynamics
+    import cl_systems
+    from auto_LiRPA import BoundedModule, BoundedTensor
+    from utils.robust_training_utils import calculate_reachable_sets, partition_init_set, plot_reachable_sets
+    from utils.robust_training_utils import calculate_next_reachable_set, partition_set, calculate_reachable_sets_old
+
+    if params["system"]["type"] == 'DoubleIntegrator':
+        controller = load_controller(params['system']['type'], params['system']['controller'], params["system"]["dagger"])
+        ol_dyn = dynamics.DoubleIntegrator(dt=0.2)
+        ol_dyn.At_torch = ol_dyn.At_torch.to('cpu')
+        ol_dyn.bt_torch = ol_dyn.bt_torch.to('cpu')
+        ol_dyn.ct_torch = ol_dyn.ct_torch.to('cpu')
+        cl_dyn = cl_systems.ClosedLoopDynamics(controller, ol_dyn)
+        
+
+        dummy_input = torch.tensor([[2.75, 0.]], device='cpu')
+        
+        bounded_cl_sys = BoundedModule(cl_dyn, dummy_input, bound_opts={'relu': "CROWN-IBP"}, device='cpu')
+        init_range = np.array([
+            # [
+            #     [2.5, 2.75],
+            #     [-0.25, 0]
+            # ],
+            # [
+            #     [2.75, 3.0],
+            #     [-0.25, 0]
+            # ],
+            # [
+            #     [2.5, 2.75],
+            #     [0, 0.25]
+            # ],
+            # [
+            #     [2.75, 3.0],
+            #     [0, 0.25]
+            # ],
+            
+            [2.5, 3.],
+            [-0.25, 0.25]
+            
+        ])
+
+        
+        # init_ranges = partition_init_set(init_range, params["analysis"]["partitioner"]["num_partitions"])
+        # time_reachable_sets = torch.zeros((len(init_ranges), 25, 2, 2))
+        # reachable_set, reachable_sets = calculate_next_reachable_set(bounded_cl_sys, init_range, params["analysis"]["partitioner"]["num_partitions"])
+        # time_reachable_sets[:, 0, :, :] = reachable_sets
+        # time_reachable_sets[0, 1, :, :] = reachable_set
+        # reach_sets_np = time_reachable_sets.detach().numpy()
+
+        # plot_reachable_sets(cl_dyn, partition_set(init_range, params["analysis"]["partitioner"]["num_partitions"]), reach_sets_np)
+        # print(reach_sets_np)
+
+        time_horizon = 25
+        init_ranges = partition_init_set(init_range, params["analysis"]["partitioner"]["num_partitions"])
+        reach_sets = torch.zeros((len(init_ranges), time_horizon, 2, 2))
+        
+        # for i, ir in enumerate(init_ranges):
+        #     reach_sets[i] = calculate_reachable_sets_old(bounded_cl_sys, ir, time_horizon)
+
+        # reach_sets_np = reach_sets.detach().numpy()
+        # plot_reachable_sets(cl_dyn, init_range, reach_sets_np, time_horizon)
+
+        reach_sets = torch.zeros((len(init_ranges), time_horizon, 2, 2))
+        partition_schedule = np.ones((time_horizon, 2), dtype=int)
+        partition_schedule[10:,:] *= 16
+        reach_sets, subsets = calculate_reachable_sets(bounded_cl_sys, init_range, partition_schedule)
+
+        
+        reach_sets_np = subsets
+        plot_reachable_sets(cl_dyn, init_range, reach_sets_np, time_horizon)
+
+
+
+
+
+
+        
 
 def main_backward(params: dict) -> tuple[dict, dict]:
     """Runs a backward reachability analysis experiment according to params."""
@@ -295,7 +377,7 @@ if __name__ == "__main__":
 
     
     if experiment_params["analysis"]["reachability_direction"] == "forward":
-        main_forward(experiment_params)
+        main_forward_nick(experiment_params)
     if experiment_params["analysis"]["reachability_direction"] == "backward":
         main_backward(experiment_params)
 

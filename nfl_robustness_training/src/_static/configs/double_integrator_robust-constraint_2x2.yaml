@@ -1,14 +1,14 @@
 system:
   type: DoubleIntegrator
   feedback: FullState
-  controller: robust-constraint_expanded
+  controller: robust-constraint_expanded_5hz
   dagger: false
 
 analysis:
   reachability_direction: forward
   partitioner:
     type: Uniform
-    num_partitions: (16,16)
+    num_partitions: (4,4)
   propagator:
     type: CROWN
     boundary_type: rectangle

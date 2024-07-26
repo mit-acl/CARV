@@ -31,13 +31,14 @@ from auto_LiRPA.eps_scheduler import LinearScheduler, AdaptiveScheduler, Smoothe
 from nfl_veripy.utils.nn_closed_loop import *
 import cl_systems
 from _static.dataloaders.double_integrator_loader import double_integrator_loaders, DIDataset
+from utils.robust_training_utils import calculate_reachable_sets
 
 parser = argparse.ArgumentParser()
 
 parser.add_argument("--verify", action="store_true", help='verification mode, do not train')
 parser.add_argument("--load", type=str, default="", help='Load pretrained model')
 parser.add_argument("--device", type=str, default="cuda", choices=["cpu", "cuda"], help='use cpu or cuda')
-parser.add_argument("--data", type=str, default="default", choices=["MNIST", "CIFAR", "default", "expanded", "dagger"], help='dataset')
+parser.add_argument("--data", type=str, default="default", choices=["MNIST", "CIFAR", "default", "expanded", "expanded_5hz", "dagger"], help='dataset')
 parser.add_argument("--seed", type=int, default=100, help='random seed')
 parser.add_argument("--eps", type=float, default=0.3, help='Target training epsilon')
 parser.add_argument("--norm", type=float, default='inf', help='p norm for epsilon perturbation')
@@ -134,8 +135,35 @@ def Train_Regressor(model, cl_system, t, loader, eps_scheduler, norm, train, opt
             if bound_type == "IBP":
                 lb, ub = model.compute_bounds(IBP=True, C=c, method=None)
             elif bound_type == "CROWN":
-                lb, ub = cl_system.compute_bounds(x=(x,), method="backward")
-                # lb, ub = cl_system.compute_bounds(x=(x,), method=None, IBP=True)
+                init_ranges = np.array([
+                    [
+                        [2.5, 2.75],
+                        [-0.25, 0]
+                    ],
+                    [
+                        [2.75, 3.0],
+                        [-0.25, 0]
+                    ],
+                    [
+                        [2.5, 2.75],
+                        [0, 0.25]
+                    ],
+                    [
+                        [2.75, 3.0],
+                        [0, 0.25]
+                    ],
+                    # [
+                    #     [2.5, 3.],
+                    #     [-0.25, 0.25]
+                    # ]
+                ])
+                reach_sets = torch.zeros((len(init_ranges), 25, 2, 2))
+                for i, init_range in enumerate(init_ranges):
+                    reach_sets[i] = calculate_reachable_sets(cl_system, init_range, 25)
+                    # lb, ub = cl_system.compute_bounds(x=(x,), method="backward")
+                    # lb, ub = cl_system.compute_bounds(x=(x,), method=None, IBP=True)
+                lb = reach_sets[:, :, :, 0]
+                ub = reach_sets[:, :, :, 1]
             elif bound_type == "CROWN-IBP":
                 # lb, ub = model.compute_bounds(ptb=ptb, IBP=True, x=data, C=c, method="backward")  # pure IBP bound
                 # we use a mixed IBP and CROWN-IBP bounds, leading to better performance (Zhang et al., ICLR 2020)
@@ -153,6 +181,7 @@ def Train_Regressor(model, cl_system, t, loader, eps_scheduler, norm, train, opt
                 lb, ub = model.compute_bounds(IBP=True, C=c, method=None)
                 lb, ub = model.compute_bounds(IBP=False, C=c, method="backward", bound_upper=False)
 
+
             robust_loss = MSELoss()(lb, ub)
 
             # Pad zero at the beginning for each example, and use fake label "0" for all examples
@@ -160,13 +189,13 @@ def Train_Regressor(model, cl_system, t, loader, eps_scheduler, norm, train, opt
             # fake_labels = torch.zeros(size=(lb.size(0),), dtype=torch.int64, device=lb.device)
             # robust_ce = CrossEntropyLoss()(-lb_padded, fake_labels)
         
-        alpha = 0.01
-        beta = 0.01
+        alpha = 1
+        beta = 100
         if batch_method == "robust":
             loss = regular_loss + alpha*robust_loss
         elif batch_method == "constraint":
             violation_loss = constraint_loss(lb[:, 1], -1)
-            loss = regular_loss + beta*violation_loss
+            loss = regular_loss + alpha*robust_loss + beta*violation_loss
         elif batch_method == "robust-constraint":
             violation_loss = constraint_loss(lb[:, 1], -1)
             loss = regular_loss + alpha*robust_loss + beta*violation_loss
@@ -560,16 +589,16 @@ def main(args):
     ## Step 1: Initial original model as usual, see model details in models/example_feedforward.py and models/example_resnet.py
     if args.system == 'double_integrator':
         controller_name = "di_4layer"
-        neurons_per_layer = [15, 10, 5]
+        neurons_per_layer = [30, 20, 10]
         controller_ori = cl_systems.Controllers[controller_name](neurons_per_layer)
-        ol_dyn = dynamics.DoubleIntegrator()
+        ol_dyn = dynamics.DoubleIntegrator(dt=0.2)
         ol_dyn.At_torch = ol_dyn.At_torch.to(args.device)
         ol_dyn.bt_torch = ol_dyn.bt_torch.to(args.device)
         ol_dyn.ct_torch = ol_dyn.ct_torch.to(args.device)
         cl_dyn = cl_systems.ClosedLoopDynamics(controller_ori, ol_dyn)
 
     ## Step 2: Prepare dataset as usual
-    if args.data == 'default' or args.data == 'expanded':
+    if args.data == 'default' or args.data == 'expanded' or args.data == 'expanded_5hz':
         train_loader, val_loader, test_loader = double_integrator_loaders(batch_size=64, dataset_name=args.data)
         train_loader.mean = val_loader.mean = test_loader.mean = torch.tensor([0.])
         train_loader.std = val_loader.std = test_loader.std = torch.tensor([1.])
@@ -582,7 +611,12 @@ def main(args):
         model = BoundedModule(controller_ori, dummy_input, bound_opts={'relu':args.bound_opts}, device=args.device)
         bounded_cl_sys = BoundedModule(cl_dyn, dummy_input, bound_opts={'relu':args.bound_opts}, device=args.device)
         
-        
+        # init_range = np.array([
+        #     [2.5, 3.0],
+        #     [-0.25, 0.25]
+        # ])
+        # from utils.robust_training_utils import calculate_reachable_set
+        # calculate_reachable_set(bounded_cl_sys, init_range, 25)
         
         # eps = torch.tensor([0.3, 0.4])
         # ptb = PerturbationLpNorm(norm=np.inf, eps=eps)
@@ -625,6 +659,16 @@ def main(args):
             path = os.getcwd() + '/nfl_robustness_training/src/controller_models/'
             model_file = path + args.system + '/' + controller_name + '/' + args.training_method + '_' + args.data + '.pth'
             torch.save({'state_dict': cl_dyn.controller.state_dict(), 'epoch': t}, model_file)
+
+        # bounded_cl_sys = BoundedModule(cl_dyn, dummy_input, bound_opts={'relu':args.bound_opts}, device=args.device)
+        
+        # init_range = np.array([
+        #     [2.5, 3.0],
+        #     [-0.25, 0.25]
+        # ])
+        # from utils.robust_training_utils import calculate_reachable_sets
+        # calculate_reachable_set(bounded_cl_sys, init_range, 25)
+        
 
 
     elif args.data == "dagger":

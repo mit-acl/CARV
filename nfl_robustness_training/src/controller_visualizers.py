@@ -20,13 +20,16 @@ def visualize_nn_controller(system = 'double_integrator', data = 'default'):
         elif data == "expanded":
             with open(PATH + '/nfl_robustness_training/src/_static/datasets/double_integrator/expanded/dataset.pkl', 'rb') as f:
                 xs, us, ts = pickle.load(f)
+        elif data == "expanded_5hz":
+            with open(PATH + '/nfl_robustness_training/src/_static/datasets/double_integrator/expanded_5hz/dataset.pkl', 'rb') as f:
+                xs, us = pickle.load(f)
         else:
             raise NotImplementedError
         
-        neurons_per_layer = [10, 5]
-        controller = cl_systems.Controllers["di_3layer"](neurons_per_layer)
+        neurons_per_layer = [30, 20, 10]
+        controller = cl_systems.Controllers["di_4layer"](neurons_per_layer)
 
-        controller_path = PATH + '/nfl_robustness_training/src/controller_models/double_integrator/natural_expanded.pth'
+        controller_path = PATH + '/nfl_robustness_training/src/controller_models/double_integrator/di_4layer/natural_expanded_5hz.pth'
         state_dict = torch.load(controller_path)['state_dict']
         controller.load_state_dict(state_dict)
 
@@ -56,4 +59,4 @@ def visualize_nn_controller(system = 'double_integrator', data = 'default'):
 
     
 if __name__ == '__main__':
-    visualize_nn_controller(data="expanded")
+    visualize_nn_controller(data="expanded_5hz")

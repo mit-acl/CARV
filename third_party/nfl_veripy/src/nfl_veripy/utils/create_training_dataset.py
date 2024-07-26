@@ -10,9 +10,7 @@ from nfl_veripy.utils.utils import load_dataset, save_dataset
 dir_path = os.path.dirname(os.path.realpath(__file__))
 
 
-def generate_dataset(dyn, input_constraint, dataset_name="default", t_max=5):
-    num_samples = 6000
-
+def generate_dataset(dyn, input_constraint, dataset_name="default", t_max=5, num_samples=6000):
     xs, us = dyn.collect_data(
         t_max,
         input_constraint,
@@ -22,6 +20,7 @@ def generate_dataset(dyn, input_constraint, dataset_name="default", t_max=5):
     save_dataset(
         xs, us, ts=ts, system=dyn.__class__.__name__, dataset_name=dataset_name
     )
+    return xs, us
 
 
 def plot_dataset(xs, us, t_max):
