@@ -104,6 +104,9 @@ class ReachableSet:
                 subset.populate_next_reachable_set(bounded_cl_system, next_reachable_set)
 
         next_reachable_set.calculate_full_set()
+
+    def switch_on_off(self, condition):
+        self.recalculate = condition(self.full_set)
     
     def plot_reachable_set(self, ax):
         if self.subsets == {}:
@@ -122,6 +125,7 @@ class Analyzer:
     def __init__(self, cl_system,  num_steps, initial_range, device='cpu') -> None:
         self.num_steps = num_steps
         self.cl_system = cl_system
+        self.device = device
 
         dummy_input = torch.tensor([[2.75, 0.]], device=device)
         self.bounded_cl_system = BoundedModule(cl_system, dummy_input, bound_opts={'relu': "CROWN-IBP"}, device=device)
@@ -162,35 +166,55 @@ class Analyzer:
             # import pdb; pdb.set_trace()
             
         return self.reachable_sets
+    
+    def calculate_N_step_reachable_sets(self, training = False):
+        from copy import deepcopy
+        initial_range = self.reachable_sets[0].full_set
+        num_states = initial_range.shape[0]
+        reach_set_range = initial_range
+
+        for i in range(self.num_steps):
+            print("Calculating set {}".format(i))
+            self.cl_system.set_num_steps(i+1)
+            cl_system = deepcopy(self.cl_system)
+            cl_system.set_num_steps(i+1)
+            dummy_input = torch.tensor([[2.75, 0.]], device=self.device)
+            bounded_cl_system = BoundedModule(cl_system, dummy_input, bound_opts={'relu': "CROWN-IBP"}, device=self.device)
+
+            self.reachable_sets[i].get_partitions()
+            self.reachable_sets[0].populate_next_reachable_set(bounded_cl_system, self.reachable_sets[i+1])
+        
+        return self.reachable_sets
+
 
     def get_all_ranges(self):
+        all_ranges = []
+        for i, reachable_set in self.reachable_sets.items():
+            if reachable_set.subsets == {}:
+                all_ranges.append(reachable_set.full_set)
+            else:
+                for _, reachable_subset in reachable_set.subsets.items():
+                    all_ranges.append(reachable_subset.full_set)
+                     
+        return torch.stack(all_ranges, dim=0)
+    
+
+    def get_all_reachable_sets(self):
         all_sets = []
         for i, reachable_set in self.reachable_sets.items():
             if reachable_set.subsets == {}:
-                all_sets.append(reachable_set.full_set)
+                all_sets.append(reachable_set)
             else:
                 for _, reachable_subset in reachable_set.subsets.items():
-                    all_sets.append(reachable_subset.full_set)
+                    all_sets.append(reachable_subset)
                      
-        return torch.stack(all_sets, dim=0)
+        return all_sets
+    
 
-        # reachable_sets = torch.zeros((time_horizon, num_states, 2))
-        # x = torch.from_numpy(np.mean(initial_set, axis=1).reshape(-1,2)).type(torch.float32)
-        # eps = torch.from_numpy((initial_set[:, 1] - initial_set[:, 0])/2).type(torch.float32)
-        # ptb = PerturbationLpNorm(eps = eps)
-        
-        # for i in range(time_horizon):
-        #     prev_set = BoundedTensor(x, ptb)
-        #     lb, ub = cl_system.compute_bounds(x=(prev_set,), method="backward", IBP=True)
-
-        #     reach_set = torch.hstack((lb.T, ub.T))
-        #     reachable_sets[i] = reach_set
-
-        #     x = torch.mean(reach_set, axis=1).reshape(-1,2)
-        #     eps = (reach_set[:, 1] - reach_set[:, 0])/2
-        #     ptb = PerturbationLpNorm(eps = eps) 
-
-        # return reachable_sets
+    def switch_sets_on_off(self, condition):
+        all_sets = self.get_all_reachable_sets()
+        for reachable_set in all_sets:
+            reachable_set.switch_on_off(condition)
 
 
     def plot_reachable_sets(self, num_trajectories=50):

@@ -218,20 +218,25 @@ def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
         init_range = torch.from_numpy(init_range).type(torch.float32)
         analyzer = Analyzer(cl_dyn, time_horizon, init_range)
         # analyzer.set_partition_strategy(0, np.array([8,8]))
-        analyzer.set_partition_strategy(1, np.array([8,8]))
-        analyzer.set_partition_strategy(7, np.array([3,3]))
-        analyzer.set_partition_strategy(12, np.array([2,2]))
+        # analyzer.set_partition_strategy(1, np.array([8,8]))
+        # analyzer.set_partition_strategy(7, np.array([3,3]))
+        # analyzer.set_partition_strategy(12, np.array([2,2]))
+        # tstart = time.time()
+        # reach_set_dict = analyzer.calculate_reachable_sets()
+        # tend = time.time()
+        # print('Calculation Time: {}'.format(tend-tstart))
+        # analyzer.plot_reachable_sets()
+        # analyzer.plot_all_subsets()
+
+        def condition(input_range):
+            return input_range[1, 0] > -1
+
         tstart = time.time()
-        reach_set_dict = analyzer.calculate_reachable_sets()
+        reach_set_dict = analyzer.calculate_N_step_reachable_sets()
         tend = time.time()
-        print('Calculation Time: {}'.format(tend-tstart))
+        print('N-step Calculation Time: {}'.format(tend-tstart))
         analyzer.plot_reachable_sets()
-        analyzer.plot_all_subsets()
-
-        all_sets = analyzer.get_all_ranges()
-        import pdb; pdb.set_trace()
-
-        
+        analyzer.plot_all_subsets()        
 
 
 

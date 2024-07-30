@@ -1,8 +1,8 @@
 system:
   type: DoubleIntegrator
   feedback: FullState
-  controller: natural_dagger_9
-  dagger: true
+  controller: natural_expanded_5hz
+  dagger: false
 
 analysis:
   reachability_direction: forward

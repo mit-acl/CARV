@@ -20,10 +20,12 @@ class ClosedLoopDynamics(nn.Module):
     
     def forward(self, xt):
         num_steps = self.num_steps
-        
+        xts = [xt]
+
         for i in range(num_steps):
-            ut = self.controller(xt)
-            xt1 = torch.matmul(xt, self.At) + torch.matmul(ut, self.bt) + self.ct
-            xt = xt1
+            ut = self.controller(xts[-1])
+            xt1 = torch.matmul(xts[-1], self.At) + torch.matmul(ut, self.bt) + self.ct
+            xts.append(xt1)
+
         
-        return xt1
+        return xts[-1]
