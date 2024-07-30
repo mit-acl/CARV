@@ -12,15 +12,18 @@ class ClosedLoopDynamics(nn.Module):
         self.At = torch.tensor(dynamics.At, dtype=torch.float32).transpose(0, 1)
         self.bt = torch.tensor(dynamics.bt, dtype=torch.float32).transpose(0, 1)
         self.ct = torch.tensor(dynamics.ct, dtype=torch.float32)
+        self.num_steps = 1
+
+    def set_num_steps(self, num_steps):
+        self.num_steps = num_steps
 
     
     def forward(self, xt):
-        ut = self.controller(xt)
-        # At = torch.tensor([[1., 1.], [0., 1.]]).transpose(0, 1)
-        # bt = torch.tensor([[0.5], [1.]]).transpose(0, 1)
+        num_steps = self.num_steps
         
-        # xt1 = torch.matmul(torch.eye(1), ut.transpose(0, 1)).transpose(1, 0)
-        # xt1 =  self.dynamics.dynamics_step_torch(xt, ut)
-        xt1 = torch.matmul(xt, self.At) + torch.matmul(ut, self.bt) + self.ct
-        # import pdb; pdb.set_trace()
+        for i in range(num_steps):
+            ut = self.controller(xt)
+            xt1 = torch.matmul(xt, self.At) + torch.matmul(ut, self.bt) + self.ct
+            xt = xt1
+        
         return xt1

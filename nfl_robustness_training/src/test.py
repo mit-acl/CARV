@@ -150,6 +150,7 @@ def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
     from auto_LiRPA import BoundedModule, BoundedTensor
     from utils.robust_training_utils import calculate_reachable_sets, partition_init_set, plot_reachable_sets
     from utils.robust_training_utils import calculate_next_reachable_set, partition_set, calculate_reachable_sets_old
+    from utils.robust_training_utils import Analyzer, ReachableSet
 
     if params["system"]["type"] == 'DoubleIntegrator':
         controller = load_controller(params['system']['type'], params['system']['controller'], params["system"]["dagger"])
@@ -209,12 +210,28 @@ def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
 
         reach_sets = torch.zeros((len(init_ranges), time_horizon, 2, 2))
         partition_schedule = np.ones((time_horizon, 2), dtype=int)
-        partition_schedule[10:,:] *= 16
-        reach_sets, subsets = calculate_reachable_sets(bounded_cl_sys, init_range, partition_schedule)
+        # reach_sets, subsets = calculate_reachable_sets(bounded_cl_sys, init_range, partition_schedule)
 
         
-        reach_sets_np = subsets
-        plot_reachable_sets(cl_dyn, init_range, reach_sets_np, time_horizon)
+        # reach_sets_np = subsets
+        # plot_reachable_sets(cl_dyn, init_range, reach_sets_np, time_horizon)
+        init_range = torch.from_numpy(init_range).type(torch.float32)
+        analyzer = Analyzer(cl_dyn, time_horizon, init_range)
+        # analyzer.set_partition_strategy(0, np.array([8,8]))
+        analyzer.set_partition_strategy(1, np.array([8,8]))
+        analyzer.set_partition_strategy(7, np.array([3,3]))
+        analyzer.set_partition_strategy(12, np.array([2,2]))
+        tstart = time.time()
+        reach_set_dict = analyzer.calculate_reachable_sets()
+        tend = time.time()
+        print('Calculation Time: {}'.format(tend-tstart))
+        analyzer.plot_reachable_sets()
+        analyzer.plot_all_subsets()
+
+        all_sets = analyzer.get_all_ranges()
+        import pdb; pdb.set_trace()
+
+        
 
 
 

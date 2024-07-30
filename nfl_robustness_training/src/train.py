@@ -32,6 +32,7 @@ from nfl_veripy.utils.nn_closed_loop import *
 import cl_systems
 from _static.dataloaders.double_integrator_loader import double_integrator_loaders, DIDataset
 from utils.robust_training_utils import calculate_reachable_sets
+from utils.robust_training_utils import Analyzer
 
 parser = argparse.ArgumentParser()
 
@@ -73,7 +74,7 @@ def constraint_loss(output, boundary):
     return loss
 
 
-def Train_Regressor(model, cl_system, t, loader, eps_scheduler, norm, train, opt, bound_type, method='natural', device='cpu', constriant='none'):
+def Train_Regressor(model, cl_system, t, loader, eps_scheduler, norm, train, opt, bound_type, method='natural', device='cpu', constriant='none', analyzer=None):
     num_class = 1
     meter = MultiAverageMeter()
     if train:
@@ -94,6 +95,8 @@ def Train_Regressor(model, cl_system, t, loader, eps_scheduler, norm, train, opt
         if eps < 1e-6:
             eps = 0.2
             # batch_method = "natural"
+        if t < 70:
+            batch_method = "natural"
         if train:
             opt.zero_grad()
         
@@ -135,35 +138,35 @@ def Train_Regressor(model, cl_system, t, loader, eps_scheduler, norm, train, opt
             if bound_type == "IBP":
                 lb, ub = model.compute_bounds(IBP=True, C=c, method=None)
             elif bound_type == "CROWN":
-                init_ranges = np.array([
-                    [
-                        [2.5, 2.75],
-                        [-0.25, 0]
-                    ],
-                    [
-                        [2.75, 3.0],
-                        [-0.25, 0]
-                    ],
-                    [
-                        [2.5, 2.75],
-                        [0, 0.25]
-                    ],
-                    [
-                        [2.75, 3.0],
-                        [0, 0.25]
-                    ],
-                    # [
-                    #     [2.5, 3.],
-                    #     [-0.25, 0.25]
-                    # ]
-                ])
-                reach_sets = torch.zeros((len(init_ranges), 25, 2, 2))
-                for i, init_range in enumerate(init_ranges):
-                    reach_sets[i] = calculate_reachable_sets(cl_system, init_range, 25)
-                    # lb, ub = cl_system.compute_bounds(x=(x,), method="backward")
-                    # lb, ub = cl_system.compute_bounds(x=(x,), method=None, IBP=True)
-                lb = reach_sets[:, :, :, 0]
-                ub = reach_sets[:, :, :, 1]
+                # init_ranges = np.array([
+                #     [
+                #         [2.5, 2.75],
+                #         [-0.25, 0]
+                #     ],
+                #     [
+                #         [2.75, 3.0],
+                #         [-0.25, 0]
+                #     ],
+                #     [
+                #         [2.5, 3.0],
+                #         [0, 0.25]
+                #     ],
+                #     # [
+                #     #     [2.5, 3.],
+                #     #     [-0.25, 0.25]
+                #     # ]
+                # ])
+                # reach_sets = torch.zeros((len(init_ranges), 25, 2, 2))
+                # for i, init_range in enumerate(init_ranges):
+                #     reach_sets[i] = calculate_reachable_sets(cl_system, init_range, 25)
+                #     # lb, ub = cl_system.compute_bounds(x=(x,), method="backward")
+                #     # lb, ub = cl_system.compute_bounds(x=(x,), method=None, IBP=True)
+                # lb = reach_sets[:, :, :, 0]
+                # ub = reach_sets[:, :, :, 1]
+                
+                analyzer.calculate_reachable_sets()
+                all_sets = analyzer.get_all_ranges()
+                lb, ub = all_sets[:, :, 0], all_sets[:, :, 1]
             elif bound_type == "CROWN-IBP":
                 # lb, ub = model.compute_bounds(ptb=ptb, IBP=True, x=data, C=c, method="backward")  # pure IBP bound
                 # we use a mixed IBP and CROWN-IBP bounds, leading to better performance (Zhang et al., ICLR 2020)
@@ -190,12 +193,12 @@ def Train_Regressor(model, cl_system, t, loader, eps_scheduler, norm, train, opt
             # robust_ce = CrossEntropyLoss()(-lb_padded, fake_labels)
         
         alpha = 1
-        beta = 100
+        beta = 1
         if batch_method == "robust":
             loss = regular_loss + alpha*robust_loss
         elif batch_method == "constraint":
             violation_loss = constraint_loss(lb[:, 1], -1)
-            loss = regular_loss + alpha*robust_loss + beta*violation_loss
+            loss = regular_loss + beta*violation_loss
         elif batch_method == "robust-constraint":
             violation_loss = constraint_loss(lb[:, 1], -1)
             loss = regular_loss + alpha*robust_loss + beta*violation_loss
@@ -610,7 +613,15 @@ def main(args):
         # The second parameter dummy_input is for constructing the trace of the computational graph.
         model = BoundedModule(controller_ori, dummy_input, bound_opts={'relu':args.bound_opts}, device=args.device)
         bounded_cl_sys = BoundedModule(cl_dyn, dummy_input, bound_opts={'relu':args.bound_opts}, device=args.device)
-        
+        num_steps = 25
+        init_ranges = torch.tensor([
+            [2.5, 3.],
+            [-0.25, 0.25]
+        ])
+        analyzer = Analyzer(cl_dyn, num_steps, init_ranges)
+        analyzer.set_partition_strategy(1, np.array([8,8]))
+        analyzer.set_partition_strategy(7, np.array([3,3]))
+        analyzer.set_partition_strategy(12, np.array([2,2]))
         # init_range = np.array([
         #     [2.5, 3.0],
         #     [-0.25, 0.25]
@@ -647,13 +658,13 @@ def main(args):
                 lr_scheduler.step()
             print("Epoch {}, learning rate {}".format(t, lr_scheduler.get_lr()))
             start_time = time.time()
-            Train_Regressor(model, bounded_cl_sys, t, train_loader, eps_scheduler, norm, True, opt, args.bound_type, method=args.training_method)
+            Train_Regressor(model, bounded_cl_sys, t, train_loader, eps_scheduler, norm, True, opt, args.bound_type, method=args.training_method, analyzer=analyzer)
             epoch_time = time.time() - start_time
             timer += epoch_time
             print('Epoch time: {:.4f}, Total time: {:.4f}'.format(epoch_time, timer))
             print("Evaluating...")
             with torch.no_grad():
-                Train_Regressor(model, bounded_cl_sys, t, test_loader, eps_scheduler, norm, False, None, args.bound_type)
+                Train_Regressor(model, bounded_cl_sys, t, test_loader, eps_scheduler, norm, False, None, args.bound_type, analyzer=analyzer)
 
             # import pdb; pdb.set_trace()
             path = os.getcwd() + '/nfl_robustness_training/src/controller_models/'
