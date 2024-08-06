@@ -5,14 +5,14 @@ from auto_LiRPA import PerturbationLpNorm, BoundedParameter
 from nfl_veripy.dynamics import DoubleIntegrator
 
 class ClosedLoopDynamics(nn.Module):
-    def __init__(self, controller, dynamics) -> None:
+    def __init__(self, controller, dynamics, num_steps=1) -> None:
         super().__init__()
         self.controller = controller
         self.dynamics = dynamics
         self.At = torch.tensor(dynamics.At, dtype=torch.float32).transpose(0, 1)
         self.bt = torch.tensor(dynamics.bt, dtype=torch.float32).transpose(0, 1)
         self.ct = torch.tensor(dynamics.ct, dtype=torch.float32)
-        self.num_steps = 1
+        self.num_steps = num_steps
 
     def set_num_steps(self, num_steps):
         self.num_steps = num_steps

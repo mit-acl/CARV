@@ -165,26 +165,8 @@ def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
         
         bounded_cl_sys = BoundedModule(cl_dyn, dummy_input, bound_opts={'relu': "CROWN-IBP"}, device='cpu')
         init_range = np.array([
-            # [
-            #     [2.5, 2.75],
-            #     [-0.25, 0]
-            # ],
-            # [
-            #     [2.75, 3.0],
-            #     [-0.25, 0]
-            # ],
-            # [
-            #     [2.5, 2.75],
-            #     [0, 0.25]
-            # ],
-            # [
-            #     [2.75, 3.0],
-            #     [0, 0.25]
-            # ],
-            
             [2.5, 3.],
             [-0.25, 0.25]
-            
         ])
 
         
@@ -199,44 +181,79 @@ def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
         # print(reach_sets_np)
 
         time_horizon = 25
-        init_ranges = partition_init_set(init_range, params["analysis"]["partitioner"]["num_partitions"])
-        reach_sets = torch.zeros((len(init_ranges), time_horizon, 2, 2))
+        # init_ranges = partition_init_set(init_range, params["analysis"]["partitioner"]["num_partitions"])
+        # reach_sets = torch.zeros((len(init_ranges), time_horizon, 2, 2))
         
         # for i, ir in enumerate(init_ranges):
-        #     reach_sets[i] = calculate_reachable_sets_old(bounded_cl_sys, ir, time_horizon)
+        #     reach_sets[i] = calculate_reachable_sets_old(cl_dyn, ir, time_horizon)
 
         # reach_sets_np = reach_sets.detach().numpy()
         # plot_reachable_sets(cl_dyn, init_range, reach_sets_np, time_horizon)
 
-        reach_sets = torch.zeros((len(init_ranges), time_horizon, 2, 2))
-        partition_schedule = np.ones((time_horizon, 2), dtype=int)
+        # import pdb; pdb.set_trace()
+        # reach_sets = torch.zeros((len(init_ranges), time_horizon, 2, 2))
+        # partition_schedule = np.ones((time_horizon, 2), dtype=int)
         # reach_sets, subsets = calculate_reachable_sets(bounded_cl_sys, init_range, partition_schedule)
+
+        
+        def condition(input_range):
+            return input_range[1, 0] < -1
 
         
         # reach_sets_np = subsets
         # plot_reachable_sets(cl_dyn, init_range, reach_sets_np, time_horizon)
         init_range = torch.from_numpy(init_range).type(torch.float32)
         analyzer = Analyzer(cl_dyn, time_horizon, init_range)
-        # analyzer.set_partition_strategy(0, np.array([8,8]))
-        # analyzer.set_partition_strategy(1, np.array([8,8]))
-        # analyzer.set_partition_strategy(7, np.array([3,3]))
-        # analyzer.set_partition_strategy(12, np.array([2,2]))
-        # tstart = time.time()
-        # reach_set_dict = analyzer.calculate_reachable_sets()
-        # tend = time.time()
-        # print('Calculation Time: {}'.format(tend-tstart))
-        # analyzer.plot_reachable_sets()
-        # analyzer.plot_all_subsets()
-
-        def condition(input_range):
-            return input_range[1, 0] > -1
-
+        # analyzer.set_partition_strategy(0, np.array([5,5]))
+        analyzer.set_partition_strategy(0, np.array([3,3]))
+        analyzer.set_partition_strategy(8, np.array([2,2]))
+        analyzer.set_partition_strategy(12, np.array([1,1]))
         tstart = time.time()
-        reach_set_dict = analyzer.calculate_N_step_reachable_sets()
+        # reach_set_dict = analyzer.calculate_hybrid_symbolic_reachable_sets()
+        # reach_set_dict = analyzer.calculate_N_step_reachable_sets(indices=None) # 3, 4, 5, 6, 7
+        reach_set_dict = analyzer.calculate_reachable_sets()
         tend = time.time()
-        print('N-step Calculation Time: {}'.format(tend-tstart))
+        print('Calculation Time: {}'.format(tend-tstart))
+
+        # analyzer.switch_sets_on_off(condition)
+        # import pdb; pdb.set_trace()
+
         analyzer.plot_reachable_sets()
-        analyzer.plot_all_subsets()        
+        analyzer.plot_all_subsets()
+
+        
+        # num_trajectories = 50
+        # x0 = np.random.uniform(
+        #     low=init_range[:, 0],
+        #     high=init_range[:, 1],
+        #     size=(num_trajectories, cl_dyn.At.shape[0]),
+        # )
+        # x0_torch = torch.from_numpy(x0).type(torch.float32)
+        # xs = [x0]
+        # for i in range(time_horizon):
+        #     cl_dyn.set_num_steps(i+1)
+        #     xt1_torch = cl_dyn.forward(x0_torch)
+        #     xs.append(xt1_torch.detach().numpy())
+        
+        # xs = np.array(xs)
+        # fig, ax = plt.subplots()
+        # plt.rcParams.update({
+        #     "text.usetex": True,
+        #     "font.family": "Helvetica"
+        # })
+        # ax.scatter(xs[:, :, 0], xs[:, :, 1], s=1, c='k')
+        # ax.set_xlabel('x1', fontsize=20)
+        # ax.set_ylabel('x2', fontsize=20)
+
+            
+        # plt.show()
+
+        # tstart = time.time()
+        # reach_set_dict = analyzer.calculate_N_step_reachable_sets()
+        # tend = time.time()
+        # print('N-step Calculation Time: {}'.format(tend-tstart))
+        # analyzer.plot_reachable_sets()
+        # analyzer.plot_all_subsets()        
 
 
 

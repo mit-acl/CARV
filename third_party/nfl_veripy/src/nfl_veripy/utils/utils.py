@@ -422,14 +422,45 @@ def plot_time_data(info):
     ax.grid(axis="y")
     plt.show()
 
+import torch.nn.functional as F
+class di_4layer_controller(nn.Module):
+    def __init__(self, neurons_per_layer):
+        super(di_4layer_controller, self).__init__()
+        self.fc1 = nn.Linear(2, neurons_per_layer[0])
+        self.fc2 = nn.Linear(neurons_per_layer[0], neurons_per_layer[1])
+        self.fc3 = nn.Linear(neurons_per_layer[1], neurons_per_layer[2])
+        self.fc4 = nn.Linear(neurons_per_layer[2], 1)
+        
+
+    def forward(self, xt):
+        ut = F.relu(self.fc1(xt))
+        ut = F.relu(self.fc2(ut))
+        ut = F.relu(self.fc3(ut))
+        ut = self.fc4(ut)
+        return ut
+
 
 def create_cl_model(dynamics, num_steps):
-    path = "{}/../../models/{}/{}".format(
-        dir_path, "Pendulum", "default/single_pendulum_small_controller.torch"
-    )
-    controller = dynamics.controller_module
-    # controller.load_state_dict(self.network.state_dict(), strict=False)
-    controller.load_state_dict(torch.load(path), strict=False)
+    system = "DoubleIntegrator"
+    PATH = os.getcwd()
+    if system == 'DoubleIntegrator':
+        neurons_per_layer = [30, 20, 10]
+        controller = di_4layer_controller(neurons_per_layer)
+        
+        controller_name = 'constraint_default_more_data_5hz'
+        controller_path = PATH + '/nfl_robustness_training/src/controller_models/double_integrator/di_4layer/' + controller_name + '.pth'
+        state_dict = torch.load(controller_path)['state_dict']
+        controller.load_state_dict(state_dict)
+    
+    else:
+        raise NotImplementedError
+    
+    # path = "{}/../../models/{}/{}".format(
+    #     dir_path, "DoubleIntegrator", "default/single_pendulum_small_controller.torch"
+    # )
+    # controller = dynamics.controller_module
+    # # controller.load_state_dict(self.network.state_dict(), strict=False)
+    # controller.load_state_dict(torch.load(path), strict=False)
     dynamics = dynamics.dynamics_module
     model = ClosedLoopDynamics(controller, dynamics, num_steps=num_steps)
     return model

@@ -39,7 +39,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--verify", action="store_true", help='verification mode, do not train')
 parser.add_argument("--load", type=str, default="", help='Load pretrained model')
 parser.add_argument("--device", type=str, default="cuda", choices=["cpu", "cuda"], help='use cpu or cuda')
-parser.add_argument("--data", type=str, default="default", choices=["MNIST", "CIFAR", "default", "expanded", "expanded_5hz", "dagger"], help='dataset')
+parser.add_argument("--data", type=str, default="default", choices=["MNIST", "CIFAR", "default", "expanded", "expanded_5hz", "dagger", "default_5hz", "default_more_data_5hz"], help='dataset')
 parser.add_argument("--seed", type=int, default=100, help='random seed')
 parser.add_argument("--eps", type=float, default=0.3, help='Target training epsilon')
 parser.add_argument("--norm", type=float, default='inf', help='p norm for epsilon perturbation')
@@ -58,6 +58,7 @@ parser.add_argument("--conv_mode", type=str, choices=["matrix", "patches"], defa
 parser.add_argument("--save_model", type=str, default='')
 parser.add_argument("--system", type=str, default='double_integrator')
 parser.add_argument("--training_method", type=str, choices=["natural", "robust", "constraint", "robust-constraint"], default='natural')
+parser.add_argument("--refinement_method", type=str, choices=["none", "smart_partition", "uniform_partition", "symbolic_indices"], default='none')
 # parser.add_argument("--constraint", type=str, choices=["none", "data", "bounds", "all"], default='none')
 
 args = parser.parse_args()
@@ -73,6 +74,8 @@ def constraint_loss(output, boundary):
 
     return loss
 
+def condition(input_range):
+    return input_range[1, 0] < -1
 
 def Train_Regressor(model, cl_system, t, loader, eps_scheduler, norm, train, opt, bound_type, method='natural', device='cpu', constriant='none', analyzer=None):
     num_class = 1
@@ -95,7 +98,7 @@ def Train_Regressor(model, cl_system, t, loader, eps_scheduler, norm, train, opt
         if eps < 1e-6:
             eps = 0.2
             # batch_method = "natural"
-        if t < 70:
+        if t < 100:
             batch_method = "natural"
         if train:
             opt.zero_grad()
@@ -127,7 +130,7 @@ def Train_Regressor(model, cl_system, t, loader, eps_scheduler, norm, train, opt
         #     ptb = PerturbationLpNorm(norm=norm, eps=eps, x_L=data_lb, x_U=data_ub)
         # elif norm == 0:
         #     ptb = PerturbationL0Norm(eps = eps_scheduler.get_max_eps(), ratio = eps_scheduler.get_eps()/eps_scheduler.get_max_eps())
-        ptb = PerturbationLpNorm(eps = eps) 
+        ptb = PerturbationLpNorm(eps = eps)
         x = BoundedTensor(data, ptb)
         output = model(x)
         regular_loss = MSELoss()(output, labels)  # regular CrossEntropyLoss used for warming up
@@ -164,9 +167,14 @@ def Train_Regressor(model, cl_system, t, loader, eps_scheduler, norm, train, opt
                 # lb = reach_sets[:, :, :, 0]
                 # ub = reach_sets[:, :, :, 1]
                 
-                analyzer.calculate_reachable_sets()
+                # analyzer.calculate_reachable_sets()
+                analyzer.calculate_N_step_reachable_sets(indices=[3, 4, 5, 6, 7])
+                # import pdb; pdb.set_trace()
                 all_sets = analyzer.get_all_ranges()
                 lb, ub = all_sets[:, :, 0], all_sets[:, :, 1]
+                # analyzer.switch_sets_on_off(condition)
+                # if t%10 == 0:
+                #     analyzer.switch_sets_on_off(lambda x: True)
             elif bound_type == "CROWN-IBP":
                 # lb, ub = model.compute_bounds(ptb=ptb, IBP=True, x=data, C=c, method="backward")  # pure IBP bound
                 # we use a mixed IBP and CROWN-IBP bounds, leading to better performance (Zhang et al., ICLR 2020)
@@ -601,7 +609,7 @@ def main(args):
         cl_dyn = cl_systems.ClosedLoopDynamics(controller_ori, ol_dyn)
 
     ## Step 2: Prepare dataset as usual
-    if args.data == 'default' or args.data == 'expanded' or args.data == 'expanded_5hz':
+    if args.data in ['default', 'expanded', 'expanded_5hz', 'default_5hz', 'default_more_data_5hz']:
         train_loader, val_loader, test_loader = double_integrator_loaders(batch_size=64, dataset_name=args.data)
         train_loader.mean = val_loader.mean = test_loader.mean = torch.tensor([0.])
         train_loader.std = val_loader.std = test_loader.std = torch.tensor([1.])
@@ -618,10 +626,15 @@ def main(args):
             [2.5, 3.],
             [-0.25, 0.25]
         ])
+        torch.autograd.set_detect_anomaly(True)
         analyzer = Analyzer(cl_dyn, num_steps, init_ranges)
-        analyzer.set_partition_strategy(1, np.array([8,8]))
-        analyzer.set_partition_strategy(7, np.array([3,3]))
-        analyzer.set_partition_strategy(12, np.array([2,2]))
+        if args.refinement_method == "smart_partition":
+            analyzer.set_partition_strategy(1, np.array([4,4]))
+            analyzer.set_partition_strategy(7, np.array([3,3]))
+            analyzer.set_partition_strategy(12, np.array([2,2]))
+        
+        # analyzer.calculate_N_step_reachable_sets(indices=None)
+        # analyzer.plot_reachable_sets()
         # init_range = np.array([
         #     [2.5, 3.0],
         #     [-0.25, 0.25]
@@ -668,7 +681,7 @@ def main(args):
 
             # import pdb; pdb.set_trace()
             path = os.getcwd() + '/nfl_robustness_training/src/controller_models/'
-            model_file = path + args.system + '/' + controller_name + '/' + args.training_method + '_' + args.data + '.pth'
+            model_file = path + args.system + '/' + controller_name + '/' + args.training_method + '_' + args.refinement_method + '_' + args.data + '.pth'
             torch.save({'state_dict': cl_dyn.controller.state_dict(), 'epoch': t}, model_file)
 
         # bounded_cl_sys = BoundedModule(cl_dyn, dummy_input, bound_opts={'relu':args.bound_opts}, device=args.device)

@@ -44,7 +44,7 @@ class ClosedLoopAUTOLIRPAPropagator(ClosedLoopPropagator):
             0 + self.dynamics.dt + 1e-10, t_max, self.dynamics.dt
         ):
             reachable_set, this_info = self.get_N_step_reachable_set(
-                reachable_set, step_num
+                initial_set, step_num
             )
             reachable_sets_list.append(deepcopy(reachable_set))
             info["per_timestep"].append(this_info)
@@ -82,4 +82,5 @@ class ClosedLoopAUTOLIRPAPropagator(ClosedLoopPropagator):
         reachable_set = constraints.LpConstraint(
             range=np.vstack((lb.detach().numpy(), ub.detach().numpy())).T
         )
+        print(reachable_set.to_range())
         return reachable_set, {}
