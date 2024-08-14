@@ -18,6 +18,7 @@ from .QuadrotorOutputFeedback import QuadrotorOutputFeedback  # noqa
 from .QuadrotorOutputFeedback_v0 import QuadrotorOutputFeedback_v0  # noqa
 from .Taxinet import Taxinet  # noqa
 from .Unicycle import Unicycle  # noqa
+from .Unicycle_NL import Unicycle_NL
 from .Unity import Unity  # noqa
 
 
@@ -30,6 +31,7 @@ def get_dynamics_instance(system, state_feedback):
             "ISS": ISS,
             "GroundRobot": GroundRobotSI,
             "discrete_quadrotor": DiscreteQuadrotor,
+            "Unicycle_NL": Unicycle_NL
         }
     else:
         dynamics_dict = {

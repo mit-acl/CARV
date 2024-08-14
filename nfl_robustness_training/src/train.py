@@ -31,6 +31,7 @@ from auto_LiRPA.eps_scheduler import LinearScheduler, AdaptiveScheduler, Smoothe
 from nfl_veripy.utils.nn_closed_loop import *
 import cl_systems
 from _static.dataloaders.double_integrator_loader import double_integrator_loaders, DIDataset
+from _static.dataloaders.unicycle_nl_loader import unicycle_nl_loaders, UniDataset
 from utils.robust_training_utils import calculate_reachable_sets
 from utils.robust_training_utils import Analyzer
 
@@ -56,9 +57,9 @@ parser.add_argument("--bound_opts", type=str, default=None, choices=["same-slope
                     help='bound options')
 parser.add_argument("--conv_mode", type=str, choices=["matrix", "patches"], default="patches")
 parser.add_argument("--save_model", type=str, default='')
-parser.add_argument("--system", type=str, default='double_integrator')
+parser.add_argument("--system", type=str, choices=["double_integrator", "Unicycle_NL"], default='double_integrator')
 parser.add_argument("--training_method", type=str, choices=["natural", "robust", "constraint", "robust-constraint"], default='natural')
-parser.add_argument("--refinement_method", type=str, choices=["none", "smart_partition", "uniform_partition", "symbolic_indices"], default='none')
+parser.add_argument("--refinement_method", type=str, choices=["none", "smart-partition", "uniform-partition", "symbolic_indices", "smart-partition-recalculate"], default='none')
 # parser.add_argument("--constraint", type=str, choices=["none", "data", "bounds", "all"], default='none')
 
 args = parser.parse_args()
@@ -75,7 +76,7 @@ def constraint_loss(output, boundary):
     return loss
 
 def condition(input_range):
-    return input_range[1, 0] < -1
+    return input_range[1, 0] >= -1
 
 def Train_Regressor(model, cl_system, t, loader, eps_scheduler, norm, train, opt, bound_type, method='natural', device='cpu', constriant='none', analyzer=None):
     num_class = 1
@@ -98,7 +99,7 @@ def Train_Regressor(model, cl_system, t, loader, eps_scheduler, norm, train, opt
         if eps < 1e-6:
             eps = 0.2
             # batch_method = "natural"
-        if t < 100:
+        if t < 80:
             batch_method = "natural"
         if train:
             opt.zero_grad()
@@ -135,7 +136,8 @@ def Train_Regressor(model, cl_system, t, loader, eps_scheduler, norm, train, opt
         output = model(x)
         regular_loss = MSELoss()(output, labels)  # regular CrossEntropyLoss used for warming up
         meter.update('MSE', regular_loss.item(), x.size(0))
-        meter.update('Err', torch.sum(torch.argmax(output, dim=1) != labels).cpu().detach().numpy() / x.size(0), x.size(0))
+        # import pdb; pdb.set_trace()   
+        # meter.update('Err', torch.sum(torch.argmax(output, dim=1) != labels).cpu().detach().numpy() / x.size(0), x.size(0))
 
         if batch_method == "robust" or batch_method == "robust-constraint" or batch_method == "constraint":
             if bound_type == "IBP":
@@ -167,14 +169,14 @@ def Train_Regressor(model, cl_system, t, loader, eps_scheduler, norm, train, opt
                 # lb = reach_sets[:, :, :, 0]
                 # ub = reach_sets[:, :, :, 1]
                 
-                # analyzer.calculate_reachable_sets()
-                analyzer.calculate_N_step_reachable_sets(indices=[3, 4, 5, 6, 7])
+                analyzer.calculate_reachable_sets()
+                # analyzer.calculate_N_step_reachable_sets(indices=[3, 4, 5, 6, 7])
                 # import pdb; pdb.set_trace()
                 all_sets = analyzer.get_all_ranges()
                 lb, ub = all_sets[:, :, 0], all_sets[:, :, 1]
-                # analyzer.switch_sets_on_off(condition)
-                # if t%10 == 0:
-                #     analyzer.switch_sets_on_off(lambda x: True)
+                analyzer.switch_sets_on_off(condition)
+                if t%10 == 0:
+                    analyzer.switch_sets_on_off(lambda x: False)
             elif bound_type == "CROWN-IBP":
                 # lb, ub = model.compute_bounds(ptb=ptb, IBP=True, x=data, C=c, method="backward")  # pure IBP bound
                 # we use a mixed IBP and CROWN-IBP bounds, leading to better performance (Zhang et al., ICLR 2020)
@@ -201,7 +203,7 @@ def Train_Regressor(model, cl_system, t, loader, eps_scheduler, norm, train, opt
             # robust_ce = CrossEntropyLoss()(-lb_padded, fake_labels)
         
         alpha = 1
-        beta = 1
+        beta = 0.01
         if batch_method == "robust":
             loss = regular_loss + alpha*robust_loss
         elif batch_method == "constraint":
@@ -378,9 +380,9 @@ def Train_Dagger(test_loader, args):
         # plt.show()
         #################################################
         
-        pi_i = cl_systems.Controllers["di_4layer"](neurons_per_layer)
+        pi_i = cl_systems.Controllers["di_4layer"](neurons_per_layer).to(args.device)
         model = BoundedModule(pi_i, dummy_input, bound_opts={'relu':args.bound_opts}, device=args.device)
-        cl_dyn = cl_systems.ClosedLoopDynamics(pi_i, ol_dyn)
+        cl_dyn = cl_systems.ClosedLoopDynamics(pi_i, ol_dyn).to(args.device)
         bounded_cl_sys = BoundedModule(cl_dyn, dummy_input, bound_opts={'relu':args.bound_opts}, device=args.device)
 
         dataset = DIDataset(torch.tensor(xs_all, dtype=torch.float32), torch.tensor(us_all, dtype=torch.float32), transform=None)
@@ -422,175 +424,6 @@ def Train_Dagger(test_loader, args):
         policies.append(model)
 
 
-
-
-
-
-
-
-    # torch.manual_seed(args.seed)
-    # torch.cuda.manual_seed_all(args.seed)
-    # random.seed(args.seed)
-    # np.random.seed(args.seed)
-
-    # ## Step 1: Initial original model as usual, see model details in models/example_feedforward.py and models/example_resnet.py
-    # if args.system == 'double_integrator':
-    #     controller_name = "di_4layer"
-    #     neurons_per_layer = [15, 10, 5]
-    #     controller_ori = cl_systems.Controllers[controller_name](neurons_per_layer)
-    #     ol_dyn = dynamics.DoubleIntegrator()
-    #     ol_dyn.At_torch = ol_dyn.At_torch.to(args.device)
-    #     ol_dyn.bt_torch = ol_dyn.bt_torch.to(args.device)
-    #     ol_dyn.ct_torch = ol_dyn.ct_torch.to(args.device)
-    #     cl_dyn = cl_systems.ClosedLoopDynamics(controller_ori, ol_dyn)
-    #     policies = [controller_ori]
-
-    # ## Step 2: Prepare dataset as usual
-    # if args.data == 'default' or args.data == 'expanded':
-    #     # train_loader, val_loader, test_loader = double_integrator_loaders(batch_size=64, dataset_name=args.data)
-    #     # train_loader.mean = val_loader.mean = test_loader.mean = torch.tensor([0.])
-    #     # train_loader.std = val_loader.std = test_loader.std = torch.tensor([1.])
-    #     dummy_input = torch.tensor([[2.75, 0.]], device=args.device)
-    #     cl_dyn(dummy_input)
-
-    #     num_trajectories = 100
-    #     beta = 1
-    #     p = 0.0
-    #     num_iters = 10
-    #     init_range = np.array([
-    #         [2.5, 3.0],
-    #         [-0.25, 0.25]
-    #     ])
-
-    #     xs_all = None
-    #     us_all = None
-
-    #     train_loader, val_loader, test_loader = double_integrator_loaders(batch_size=64, dataset_name=args.data)
-    #     train_loader.mean = val_loader.mean = test_loader.mean = torch.tensor([0.])
-    #     train_loader.std = val_loader.std = test_loader.std = torch.tensor([1.])
-
-    # ## Step 3: wrap model with auto_LiRPA
-    # # The second parameter dummy_input is for constructing the trace of the computational graph.
-    # # model = BoundedModule(controller_ori, dummy_input, bound_opts={'relu':args.bound_opts}, device=args.device)
-    # bounded_cl_sys = BoundedModule(cl_dyn, dummy_input, bound_opts={'relu':args.bound_opts}, device=args.device)
-    
-    
-    
-    # # eps = torch.tensor([0.3, 0.4])
-    # # ptb = PerturbationLpNorm(norm=np.inf, eps=eps)
-    # # bounded_input = BoundedTensor(dummy_input, ptb)
-    # # import pdb; pdb.set_trace()
-    # # lb, ub = bounded_cl_sys.compute_bounds(x = (bounded_input,), method = "backward")
-    # # import pdb; pdb.set_trace()
-    # # dummy_input_2 = torch.tensor([[2.75, 0.], [3., 0.], [2.5, 0.], [2.75, 0.1]])
-    # # ptb_2 = PerturbationLpNorm(norm=np.inf, eps=0.)
-    # # bounded_input_2 = BoundedTensor(dummy_input_2, ptb_2)
-    # # lb, ub = bounded_cl_sys.compute_bounds(x=(bounded_input_2,), method="backward")
-    # # import pdb; pdb.set_trace()
-
-    # # ## Step 4 prepare optimizer, epsilon scheduler and learning rate scheduler
-    # opt = optim.Adam(controller_ori.parameters(), lr=args.lr)
-    # norm = float(args.norm)
-    # lr_scheduler = optim.lr_scheduler.StepLR(opt, step_size=10, gamma=0.5)
-    # eps_scheduler = eval(args.scheduler_name)(args.eps, args.scheduler_opts)
-    # print("Model structure: \n", str(cl_dyn))
-
-
-
-    # for i in range(num_iters):
-        
-    #     x0s = np.random.uniform(
-    #                 low=init_range[:, 0],
-    #                 high=init_range[:, 1],
-    #                 size=(num_trajectories, ol_dyn.At.shape[0]),
-    #             )
-    #     xs, us = collect_dagger_dataset(policies[-1], ol_dyn, x0s, beta, num_steps=5)
-
-    #     if xs_all is None:
-    #         xs_all = xs
-    #         us_all = us
-    #     else:
-    #         xs_all = np.vstack((xs_all, xs))
-    #         us_all = np.vstack((us_all, us))
-
-    #     #################################################
-    #     import matplotlib.pyplot as plt
-    #     fig = plt.figure(figsize=(12, 12))
-    #     plt.rcParams.update({
-    #         "text.usetex": True,
-    #         "font.family": "Helvetica"
-    #     })
-    #     ax = fig.add_subplot(projection='3d')
-    #     ax.scatter(xs_all[:, 0], xs_all[:, 1], us_all.flatten(), c='b')
-    #     ax.scatter(xs[:, 0], xs[:, 1], us.flatten(), c='r')
-    #     ax.set_xlabel('x1', fontsize=20)
-    #     ax.set_ylabel('x2', fontsize=20)
-    #     ax.set_zlabel('u', fontsize=20)
-    #     plt.show()
-    #     #################################################
-        
-    #     pi_i = cl_systems.Controllers["di_4layer"](neurons_per_layer)
-    #     model = BoundedModule(pi_i, dummy_input, bound_opts={'relu':args.bound_opts}, device=args.device)
-    #     opt = optim.Adam(pi_i.parameters(), lr=args.lr)
-
-    #     dataset = DIDataset(torch.tensor(xs_all, dtype=torch.float32), torch.tensor(us_all, dtype=torch.float32), transform=None)
-    #     loader = torch.utils.data.DataLoader(dataset, batch_size=64, shuffle=True, num_workers=0)
-    #     loader.mean = torch.tensor([0.])
-    #     loader.std = torch.tensor([1.])        
-
-    #     timer = 0.0
-    #     for t in range(1, args.num_epochs+1):
-    #         if eps_scheduler.reached_max_eps():
-    #             # Only decay learning rate after reaching the maximum eps
-    #             lr_scheduler.step()
-    #         print("Epoch {}, learning rate {}".format(t, lr_scheduler.get_lr()))
-    #         start_time = time.time()
-    #         Train_Regressor(model, bounded_cl_sys, t, loader, eps_scheduler, norm, True, opt, args.bound_type, method=args.training_method)
-    #         epoch_time = time.time() - start_time
-    #         timer += epoch_time
-    #         print('Epoch time: {:.4f}, Total time: {:.4f}'.format(epoch_time, timer))
-    #         print("Evaluating...")
-    #         with torch.no_grad():
-    #             Train_Regressor(model, bounded_cl_sys, t, test_loader, eps_scheduler, norm, False, None, args.bound_type)
-
-    #         # import pdb; pdb.set_trace()
-    #         path = os.getcwd() + '/nfl_robustness_training/src/controller_models/'
-    #         model_file = path + args.system + '/daggers/' + controller_name + '/' + args.training_method + '_' + args.data + '_' + '{}'.format(i) + '.pth'
-    #         torch.save({'state_dict': model.state_dict(), 'epoch': t}, model_file)
-
-    #     beta *= p
-    #     policies.append(model)
-
-
-
-
-
-
-
-
-
-
-    # timer = 0.0
-    # for t in range(1, args.num_epochs+1):
-    #     if eps_scheduler.reached_max_eps():
-    #         # Only decay learning rate after reaching the maximum eps
-    #         lr_scheduler.step()
-    #     print("Epoch {}, learning rate {}".format(t, lr_scheduler.get_lr()))
-    #     start_time = time.time()
-    #     Train_Regressor(model, bounded_cl_sys, t, loader, eps_scheduler, norm, True, opt, args.bound_type, method=args.training_method)
-    #     epoch_time = time.time() - start_time
-    #     timer += epoch_time
-    #     print('Epoch time: {:.4f}, Total time: {:.4f}'.format(epoch_time, timer))
-    #     print("Evaluating...")
-    #     with torch.no_grad():
-    #         Train_Regressor(model, bounded_cl_sys, t, loader, eps_scheduler, norm, False, None, args.bound_type)
-
-    #     # import pdb; pdb.set_trace()
-    #     path = os.getcwd() + '/nfl_robustness_training/src/controller_models/'
-    #     model_file = path + args.system + '/' + controller_name + '/' + args.training_method + '_' + args.data + '.pth'
-    #     torch.save({'state_dict': cl_dyn.controller.state_dict(), 'epoch': t}, model_file)
-
-
 def main(args):
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
@@ -606,83 +439,121 @@ def main(args):
         ol_dyn.At_torch = ol_dyn.At_torch.to(args.device)
         ol_dyn.bt_torch = ol_dyn.bt_torch.to(args.device)
         ol_dyn.ct_torch = ol_dyn.ct_torch.to(args.device)
-        cl_dyn = cl_systems.ClosedLoopDynamics(controller_ori, ol_dyn)
+        cl_dyn = cl_systems.ClosedLoopDynamics(controller_ori, ol_dyn).to(args.device)
 
-    ## Step 2: Prepare dataset as usual
-    if args.data in ['default', 'expanded', 'expanded_5hz', 'default_5hz', 'default_more_data_5hz']:
-        train_loader, val_loader, test_loader = double_integrator_loaders(batch_size=64, dataset_name=args.data)
-        train_loader.mean = val_loader.mean = test_loader.mean = torch.tensor([0.])
-        train_loader.std = val_loader.std = test_loader.std = torch.tensor([1.])
-        dummy_input = torch.tensor([[2.75, 0.]], device=args.device)
-        cl_dyn(dummy_input)
+        ## Step 2: Prepare dataset as usual
+        if args.data in ['default', 'expanded', 'expanded_5hz', 'default_5hz', 'default_more_data_5hz']:
+            train_loader, val_loader, test_loader = double_integrator_loaders(batch_size=64, dataset_name=args.data)
+            train_loader.mean = val_loader.mean = test_loader.mean = torch.tensor([0.])
+            train_loader.std = val_loader.std = test_loader.std = torch.tensor([1.])
+            dummy_input = torch.tensor([[2.75, 0.]], device=args.device)
+            cl_dyn(dummy_input)
 
-    
-        ## Step 3: wrap model with auto_LiRPA
-        # The second parameter dummy_input is for constructing the trace of the computational graph.
-        model = BoundedModule(controller_ori, dummy_input, bound_opts={'relu':args.bound_opts}, device=args.device)
-        bounded_cl_sys = BoundedModule(cl_dyn, dummy_input, bound_opts={'relu':args.bound_opts}, device=args.device)
-        num_steps = 25
-        init_ranges = torch.tensor([
-            [2.5, 3.],
-            [-0.25, 0.25]
-        ])
-        torch.autograd.set_detect_anomaly(True)
-        analyzer = Analyzer(cl_dyn, num_steps, init_ranges)
-        if args.refinement_method == "smart_partition":
-            analyzer.set_partition_strategy(1, np.array([4,4]))
-            analyzer.set_partition_strategy(7, np.array([3,3]))
-            analyzer.set_partition_strategy(12, np.array([2,2]))
         
-        # analyzer.calculate_N_step_reachable_sets(indices=None)
-        # analyzer.plot_reachable_sets()
-        # init_range = np.array([
-        #     [2.5, 3.0],
-        #     [-0.25, 0.25]
-        # ])
-        # from utils.robust_training_utils import calculate_reachable_set
-        # calculate_reachable_set(bounded_cl_sys, init_range, 25)
-        
-        # eps = torch.tensor([0.3, 0.4])
-        # ptb = PerturbationLpNorm(norm=np.inf, eps=eps)
-        # bounded_input = BoundedTensor(dummy_input, ptb)
-        # import pdb; pdb.set_trace()
-        # lb, ub = bounded_cl_sys.compute_bounds(x = (bounded_input,), method = "backward")
-        # import pdb; pdb.set_trace()
-        # dummy_input_2 = torch.tensor([[2.75, 0.], [3., 0.], [2.5, 0.], [2.75, 0.1]])
-        # ptb_2 = PerturbationLpNorm(norm=np.inf, eps=0.)
-        # bounded_input_2 = BoundedTensor(dummy_input_2, ptb_2)
-        # lb, ub = bounded_cl_sys.compute_bounds(x=(bounded_input_2,), method="backward")
-        # import pdb; pdb.set_trace()
-
-        # ## Step 4 prepare optimizer, epsilon scheduler and learning rate scheduler
-        opt = optim.Adam(controller_ori.parameters(), lr=args.lr)
-        norm = float(args.norm)
-        lr_scheduler = optim.lr_scheduler.StepLR(opt, step_size=10, gamma=0.5)
-        eps_scheduler = eval(args.scheduler_name)(args.eps, args.scheduler_opts)
-        print("Model structure: \n", str(cl_dyn))
-
-    
-
-
-        timer = 0.0
-        for t in range(1, args.num_epochs+1):
-            if eps_scheduler.reached_max_eps():
-                # Only decay learning rate after reaching the maximum eps
-                lr_scheduler.step()
-            print("Epoch {}, learning rate {}".format(t, lr_scheduler.get_lr()))
-            start_time = time.time()
-            Train_Regressor(model, bounded_cl_sys, t, train_loader, eps_scheduler, norm, True, opt, args.bound_type, method=args.training_method, analyzer=analyzer)
-            epoch_time = time.time() - start_time
-            timer += epoch_time
-            print('Epoch time: {:.4f}, Total time: {:.4f}'.format(epoch_time, timer))
-            print("Evaluating...")
-            with torch.no_grad():
-                Train_Regressor(model, bounded_cl_sys, t, test_loader, eps_scheduler, norm, False, None, args.bound_type, analyzer=analyzer)
-
+            ## Step 3: wrap model with auto_LiRPA
+            # The second parameter dummy_input is for constructing the trace of the computational graph.
+            model = BoundedModule(controller_ori, dummy_input, bound_opts={'relu':args.bound_opts}, device=args.device)
+            bounded_cl_sys = BoundedModule(cl_dyn, dummy_input, bound_opts={'relu':args.bound_opts}, device=args.device)
+            num_steps = 25
+            init_ranges = torch.tensor([
+                [2.5, 3.],
+                [-0.25, 0.25]
+            ], device=args.device)
+            analyzer = Analyzer(cl_dyn, num_steps, init_ranges, device=args.device)
+            if args.refinement_method in ["smart-partition", "smart-partition-recalculate"]:
+                analyzer.set_partition_strategy(0, np.array([3,3]))
+                # analyzer.set_partition_strategy(7, np.array([3,3]))
+                # analyzer.set_partition_strategy(12, np.array([2,2]))
+        elif args.data == "dagger":
+            train_loader, val_loader, test_loader = double_integrator_loaders(batch_size=64, dataset_name="expanded")
+            train_loader.mean = val_loader.mean = test_loader.mean = torch.tensor([0.])
+            train_loader.std = val_loader.std = test_loader.std = torch.tensor([1.])
+            Train_Dagger(test_loader, args)
+            
+            # analyzer.calculate_N_step_reachable_sets(indices=None)
+            # analyzer.plot_reachable_sets()
+            # init_range = np.array([
+            #     [2.5, 3.0],
+            #     [-0.25, 0.25]
+            # ])
+            # from utils.robust_training_utils import calculate_reachable_set
+            # calculate_reachable_set(bounded_cl_sys, init_range, 25)
+            
+            # eps = torch.tensor([0.3, 0.4])
+            # ptb = PerturbationLpNorm(norm=np.inf, eps=eps)
+            # bounded_input = BoundedTensor(dummy_input, ptb)
             # import pdb; pdb.set_trace()
-            path = os.getcwd() + '/nfl_robustness_training/src/controller_models/'
-            model_file = path + args.system + '/' + controller_name + '/' + args.training_method + '_' + args.refinement_method + '_' + args.data + '.pth'
-            torch.save({'state_dict': cl_dyn.controller.state_dict(), 'epoch': t}, model_file)
+            # lb, ub = bounded_cl_sys.compute_bounds(x = (bounded_input,), method = "backward")
+            # import pdb; pdb.set_trace()
+            # dummy_input_2 = torch.tensor([[2.75, 0.], [3., 0.], [2.5, 0.], [2.75, 0.1]])
+            # ptb_2 = PerturbationLpNorm(norm=np.inf, eps=0.)
+            # bounded_input_2 = BoundedTensor(dummy_input_2, ptb_2)
+            # lb, ub = bounded_cl_sys.compute_bounds(x=(bounded_input_2,), method="backward")
+            # import pdb; pdb.set_trace()
+
+
+    if args.system == 'Unicycle_NL':
+        controller_name = "unicycle_nl_4layer"
+        neurons_per_layer = [40, 20, 10]
+        mean = torch.tensor([-7.5, 2.5, 0], device=args.device)
+        std = torch.tensor([7.5, 2.5, torch.pi/6], device=args.device)
+        controller_ori = cl_systems.Controllers[controller_name](neurons_per_layer, mean, std)
+        ol_dyn = dynamics.Unicycle_NL(dt=0.2)
+        ol_dyn.At_torch = ol_dyn.At_torch.to(args.device)
+        ol_dyn.bt_torch = ol_dyn.bt_torch.to(args.device)
+        ol_dyn.ct_torch = ol_dyn.ct_torch.to(args.device)
+        cl_dyn = cl_systems.Unicycle_NL(controller_ori, ol_dyn).to(args.device)
+
+        ## Step 2: Prepare dataset as usual
+        if args.data in ['default', 'expanded', 'expanded_5hz', 'default_5hz', 'default_more_data_5hz']:
+            train_loader, val_loader, test_loader = unicycle_nl_loaders(batch_size=64, dataset_name=args.data)
+            train_loader.mean = val_loader.mean = test_loader.mean = torch.tensor([0.])
+            train_loader.std = val_loader.std = test_loader.std = torch.tensor([1.])
+            dummy_input = torch.tensor([[-12.5, 3.5, 0.]], device=args.device)
+            cl_dyn(dummy_input)
+
+        
+            ## Step 3: wrap model with auto_LiRPA
+            # The second parameter dummy_input is for constructing the trace of the computational graph.
+            model = BoundedModule(controller_ori, dummy_input, bound_opts={'relu':args.bound_opts}, device=args.device)
+            bounded_cl_sys = BoundedModule(cl_dyn, dummy_input, bound_opts={'relu':args.bound_opts}, device=args.device)
+            num_steps = 25
+            init_ranges = torch.tensor([
+                [-15., -14.],
+                [4., 5.],
+                [-np.pi/6, np.pi/6]
+            ], device=args.device)
+            analyzer = Analyzer(cl_dyn, num_steps, init_ranges, device=args.device)
+            if args.refinement_method in ["smart-partition", "smart-partition-recalculate"]:
+                analyzer.set_partition_strategy(0, np.array([3,3]))
+    
+
+    ## Step 4 prepare optimizer, epsilon scheduler and learning rate scheduler
+    opt = optim.Adam(controller_ori.parameters(), lr=args.lr)
+    norm = float(args.norm)
+    lr_scheduler = optim.lr_scheduler.StepLR(opt, step_size=10, gamma=0.5)
+    eps_scheduler = eval(args.scheduler_name)(args.eps, args.scheduler_opts)
+    print("Model structure: \n", str(cl_dyn))
+
+    timer = 0.0
+    for t in range(1, args.num_epochs+1):
+        if eps_scheduler.reached_max_eps():
+            # Only decay learning rate after reaching the maximum eps
+            lr_scheduler.step()
+        print("Epoch {}, learning rate {}".format(t, lr_scheduler.get_lr()))
+        start_time = time.time()
+        Train_Regressor(model, bounded_cl_sys, t, train_loader, eps_scheduler, norm, True, opt, args.bound_type, method=args.training_method, analyzer=analyzer)
+        epoch_time = time.time() - start_time
+        timer += epoch_time
+        print('Epoch time: {:.4f}, Total time: {:.4f}'.format(epoch_time, timer))
+        print("Evaluating...")
+        with torch.no_grad():
+            Train_Regressor(model, bounded_cl_sys, t, test_loader, eps_scheduler, norm, False, None, args.bound_type, analyzer=analyzer)
+
+        # import pdb; pdb.set_trace()
+        path = os.getcwd() + '/nfl_robustness_training/src/controller_models/'
+        model_file = path + args.system + '/' + controller_name + '/' + args.training_method + '_' + args.refinement_method + '_' + args.data + '.pth'
+        torch.save({'state_dict': cl_dyn.controller.state_dict(), 'epoch': t}, model_file)
 
         # bounded_cl_sys = BoundedModule(cl_dyn, dummy_input, bound_opts={'relu':args.bound_opts}, device=args.device)
         
@@ -695,11 +566,7 @@ def main(args):
         
 
 
-    elif args.data == "dagger":
-        train_loader, val_loader, test_loader = double_integrator_loaders(batch_size=64, dataset_name="expanded")
-        train_loader.mean = val_loader.mean = test_loader.mean = torch.tensor([0.])
-        train_loader.std = val_loader.std = test_loader.std = torch.tensor([1.])
-        Train_Dagger(test_loader, args)
+    
 
 
     # ## Step 1: Initial original model as usual, see model details in models/example_feedforward.py and models/example_resnet.py

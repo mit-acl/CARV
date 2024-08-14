@@ -10,7 +10,7 @@ import torch.nn as nn
 
 PATH = os.getcwd()
 
-def load_controller(system, controller_name = 'default', dagger=False):
+def load_controller(system, controller_name = 'default', dagger=False, device='cpu'):
     if system == 'DoubleIntegrator':
         neurons_per_layer = [30, 20, 10]
         # neurons_per_layer = [15, 10, 5]
@@ -22,7 +22,22 @@ def load_controller(system, controller_name = 'default', dagger=False):
             controller_path = PATH + '/nfl_robustness_training/src/controller_models/double_integrator/di_4layer/' + controller_name + '.pth'
         state_dict = torch.load(controller_path)['state_dict']
         controller.load_state_dict(state_dict)
-    
+        if device == 'cuda':
+            controller = controller.cuda()
+
+    elif system == "Unicycle_NL":
+        neurons_per_layer = [30, 20, 10]
+        # neurons_per_layer = [15, 10, 5]
+        mean = torch.tensor([-7.5, 2.5, 0], device=device)
+        std = torch.tensor([7.5, 2.5, torch.pi/6], device=device)
+        controller = cl_systems.Controllers["unicycle_nl_4layer"](neurons_per_layer, mean, std)
+        
+        controller_path = PATH + '/nfl_robustness_training/src/controller_models/Unicycle_NL/unicycle_nl_4layer/' + controller_name + '.pth'
+        state_dict = torch.load(controller_path)['state_dict']
+        controller.load_state_dict(state_dict)
+        if device == 'cuda':
+            controller = controller.cuda()
+        
     else:
         raise NotImplementedError
 

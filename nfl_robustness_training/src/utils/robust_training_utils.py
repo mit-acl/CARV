@@ -8,25 +8,34 @@ from itertools import product
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import *
 import cl_systems
+import time
 
 class ReachableSet:
-    def __init__(self, t, ranges = None, partition_strategy = 'maintain', thread = 0) -> None:
+    def __init__(self, t, ranges = None, partition_strategy = 'maintain', thread = 0, device='cpu') -> None:
         self.t = t
         
         if ranges is None:
-            ranges = torch.tensor([[0, 0], [0, 0]])
+            ranges = torch.tensor([[0, 0], [0, 0]], device=device)
         self.full_set = ranges
         self.subsets = {}
         self.partition_strategy = partition_strategy
         self.get_partitions()
         self.thread = thread
         self.recalculate = True
+        self.device = device
 
     def set_range(self, ranges):
         self.full_set = ranges
 
     def add_subset(self, ranges, index):
         self.subsets[index] = ReachableSet(self.t, ranges, thread=index)
+
+    def get_thread(self, thread):
+        if thread == 0 and self.subsets == {}:
+            return self
+        else:
+            return self.subsets[thread]
+        
     
     def set_partition_strategy(self, partition_strategy):
         if partition_strategy in ['maintain', 'consolidate'] or isinstance(partition_strategy, np.ndarray):
@@ -37,14 +46,14 @@ class ReachableSet:
     def calculate_full_set(self):
         num_subsets = len(self.subsets)
         num_states = self.subsets[0].full_set.shape[0]
-        subset_tensor = torch.zeros((num_subsets, num_states, 2))
+        subset_tensor = torch.zeros((num_subsets, num_states, 2), device=self.device)
 
         for i, subset in self.subsets.items():
             subset_tensor[i] = subset.full_set
         
         lb, _ = torch.min(subset_tensor[:, :, 0], dim=0)
         ub, _ = torch.max(subset_tensor[:, :, 1], dim=0)
-        self.full_set = torch.vstack((lb, ub)).T
+        self.full_set = torch.vstack((lb, ub)).T.to(self.device)
         
     
     def get_partitions(self):
@@ -60,7 +69,7 @@ class ReachableSet:
             input_shape = self.full_set.shape[:-1]
 
             slope = torch.divide(
-                (prev_set[..., 1] - prev_set[..., 0]), torch.from_numpy(num_partitions).type(torch.float32)
+                (prev_set[..., 1] - prev_set[..., 0]), torch.from_numpy(num_partitions).type(torch.float32).to(self.device)
             )
 
             ranges = []
@@ -69,7 +78,7 @@ class ReachableSet:
             for element in product(
                 *[range(num) for num in num_partitions.flatten()]
             ):
-                element_ = torch.tensor(element).reshape(input_shape)
+                element_ = torch.tensor(element).reshape(input_shape).to(self.device)
                 input_range_ = torch.empty_like(prev_set)
                 input_range_[..., 0] = prev_set[..., 0] + torch.multiply(
                     element_, slope
@@ -81,46 +90,63 @@ class ReachableSet:
                 ranges.append(input_range_,)
 
             for i, partition in enumerate(ranges):
-                self.subsets[i] = ReachableSet(self.t, torch.tensor(partition), thread = i)
+                self.subsets[i] = ReachableSet(self.t, torch.tensor(partition).to(self.device), thread = i, device = self.device)
 
     def consolidate(self):
         if self.partition_strategy != 'consolidate':
             pass
         else:
             self.calculate_full_set()
-            self.subsets = {0: ReachableSet(self.t, self.full_set, thread=self.thread)}
+            self.subsets = {0: ReachableSet(self.t, self.full_set, thread=self.thread, device=self.device)}
         
     
-    def populate_next_reachable_set(self, bounded_cl_system, next_reachable_set):
+    def populate_next_reachable_set(self, bounded_cl_system, next_reachable_set, training=False):
         if self.subsets == {} and next_reachable_set.recalculate:
-            x = torch.mean(self.full_set, axis=1).reshape(-1,2)
+            x = torch.mean(self.full_set, axis=1).reshape((1, -1))
             eps = (self.full_set[:, 1] - self.full_set[:, 0])/2
             ptb = PerturbationLpNorm(eps = eps)
             range_tensor = BoundedTensor(x, ptb)
-
-            lb, ub = bounded_cl_system.compute_bounds(x=(range_tensor,), method="backward")
+            # import pdb; pdb.set_trace()
+            if training:
+                # print("crown fast")
+                # tstart = time.time()
+                # lb, ub = bounded_cl_system.compute_bounds(x=(range_tensor,), method=None, IBP=True)
+                # tend = time.time()
+                # # print("first calc: {}".format(tend-tstart))
+                # tstart = time.time()
+                # lb, _ = bounded_cl_system.compute_bounds(x=(range_tensor,), method="backward", IBP=False,  bound_upper=False)
+                # tend = time.time()
+                # print("second calc: {}".format(tend-tstart))
+                lb, ub = bounded_cl_system.compute_bounds(x=(range_tensor,), method="backward")
+            else:
+                lb, ub = bounded_cl_system.compute_bounds(x=(range_tensor,), method="backward")
+            
 
             reach_set_range = torch.hstack((lb.T, ub.T))
             next_reachable_set.add_subset(reach_set_range, self.thread)
         else:
             for i, subset in self.subsets.items():
-                subset.populate_next_reachable_set(bounded_cl_system, next_reachable_set)
+                subset.populate_next_reachable_set(bounded_cl_system, next_reachable_set, training)
 
         next_reachable_set.calculate_full_set()
 
-    def switch_on_off(self, condition):
-        self.recalculate = condition(self.full_set)
+    def switch_on_off(self, condition, thread=0):
+        self.recalculate = not condition(self.full_set)
         if self.recalculate:
-            if self.full_set[1, 0] > -1:
+            if self.full_set[1, 0] < -1:
                 print("Recalculating")
                 print(self.full_set)
     
     def plot_reachable_set(self, ax):
         if self.subsets == {}:
-            set_range = self.full_set.detach().numpy()
+            set_range = self.full_set.cpu().detach().numpy()
             xy = set_range[:, 0]
             width, height = set_range[:, 1] - set_range[:, 0]
-            rect = Rectangle(xy, width, height, linewidth=1, edgecolor='b', facecolor='none')
+            if self.recalculate:
+                edgecolor = 'orange'
+            else:
+                edgecolor = 'b'
+            rect = Rectangle(xy, width, height, linewidth=1, edgecolor=edgecolor, facecolor='none')
             ax.add_patch(rect)
         else:
             for i, subset in self.subsets.items():
@@ -130,12 +156,17 @@ class ReachableSet:
         np.random.seed(0)
         num_states = cl_system.At.shape[0]
         if sample_corners:
-            corners = np.array(np.meshgrid(self.full_set.T[:,0], self.full_set.T[:,1])).T.reshape(-1, num_states)
+            set_range = self.full_set.cpu().detach().numpy()
+            test = np.meshgrid(*[set_range.T[:, i] for i in range(set_range.shape[0])])  
+            corners = np.array(np.meshgrid([set_range.T[:, i] for i in range(set_range.shape[0])])).T.reshape(-1, num_states)
+            # corners = np.array(np.meshgrid(set_range.T[:,0], set_range.T[:,1])).T.reshape(-1, num_states)
             num_trajectories -= len(corners)
+            np.meshgrid()
+        
         
         x0s = np.random.uniform(
-            low=self.full_set[:, 0],
-            high=self.full_set[:, 1],
+            low=self.full_set[:, 0].cpu().detach().numpy(),
+            high=self.full_set[:, 1].cpu().detach().numpy(),
             size=(num_trajectories, num_states),
         )
         
@@ -146,13 +177,12 @@ class ReachableSet:
         
         xt = xs
         for _ in range(num_steps):
-            u_nn = cl_system.dynamics.control_nn(xt, cl_system.controller)
+            u_nn = cl_system.dynamics.control_nn(xt, cl_system.controller.cpu())
             xt1 = cl_system.dynamics.dynamics_step(xt, u_nn)
             xt = xt1
 
             xs = np.vstack((xs, xt1))
-
-        print(xs.shape)
+        
         return xs
             
 
@@ -163,20 +193,30 @@ class Analyzer:
         self.cl_system = cl_system
         self.device = device
 
-        dummy_input = torch.tensor([[2.75, 0.]], device=device)
+        if cl_system.dynamics.name == 'DoubleIntegrator':
+            dummy_input = torch.tensor([[2.75, 0.]], device=device)
+        elif cl_system.dynamics.name == 'Unicycle_NL':
+            dummy_input = torch.tensor([[-12.5, 3.5, -0.5]], device=device)
         self.bounded_cl_system = BoundedModule(cl_system, dummy_input, bound_opts={'relu': "CROWN-IBP"}, device=device)
         
-        self.reachable_sets = {0: ReachableSet(0, initial_range, partition_strategy = 'maintain')}
+        self.reachable_sets = {0: ReachableSet(0, initial_range, partition_strategy = 'maintain', device=device)}
         self.bounded_cl_systems = {0: BoundedModule(cl_system, dummy_input, bound_opts={'relu': "CROWN-IBP"}, device=device)}
         for i in range(num_steps):
-            self.reachable_sets[i+1] = ReachableSet(i+1)
+            self.reachable_sets[i+1] = ReachableSet(i+1, device=device)
             cl_system.set_num_steps(i+2)
-            self.bounded_cl_systems[i+1] = BoundedModule(cl_system, dummy_input, bound_opts={'relu': "CROWN-IBP"}, device=device)
+            # self.bounded_cl_systems[i+1] = BoundedModule(cl_system, dummy_input, bound_opts={'relu': "CROWN-IBP"}, device=device)
 
     def set_partition_strategy(self, t, partition_strategy):
         self.reachable_sets[t].set_partition_strategy(partition_strategy)
 
-    def calculate_reachable_sets(self, training = False):
+    def get_parent_set(self, reachable_set):
+        if reachable_set.t == 0:
+            return IndexError
+        
+        return self.reachable_sets[reachable_set.t - 1].get_thread(reachable_set.thread)
+
+
+    def calculate_reachable_sets(self, training = False, autorefine = False, visualize = False):
         initial_range = self.reachable_sets[0].full_set
         num_states = initial_range.shape[0]
         reach_set_range = initial_range
@@ -200,9 +240,18 @@ class Analyzer:
             # self.reachable_sets[i+1] = ReachableSet(i+1, reach_set_range)
             # import pdb; pdb.set_trace()
             self.reachable_sets[i].get_partitions()
-            self.reachable_sets[i].populate_next_reachable_set(self.bounded_cl_system, self.reachable_sets[i+1])
+            self.reachable_sets[i].populate_next_reachable_set(self.bounded_cl_system, self.reachable_sets[i+1], training)
             self.reachable_sets[i+1].consolidate()
-            # import pdb; pdb.set_trace()
+            if visualize:
+                self.plot_reachable_sets()
+            if self.reachable_sets[i+1].full_set[1, 0] < -1 and autorefine:
+
+                
+                self.reachable_sets[0].populate_next_reachable_set(self.bounded_cl_systems[i], self.reachable_sets[i+1])
+                if visualize:
+                    print("recalculating set at time {}".format(i+1 ))
+                    self.plot_reachable_sets()
+
             
         return self.reachable_sets
     
@@ -315,16 +364,92 @@ class Analyzer:
         return all_sets
     
 
-    def switch_sets_on_off(self, condition):
+    def switch_sets_on_off(self, constraint):
+
         all_sets = self.get_all_reachable_sets()
-        for reachable_set in all_sets:
-            reachable_set.switch_on_off(condition)
+
+        y = lambda y: False
+        if y.__code__.co_code == constraint.__code__.co_code:
+            for reachable_set in all_sets:
+                reachable_set.recalculate = True
+        else:
+            for reachable_set in all_sets: # find colliding sets
+                reachable_set.switch_on_off(constraint)
+
+            
+            # determine how far back we should step
+            t_violation = self.num_steps # start with no partitioning
+            for i, reachable_set in self.reachable_sets.items(): # find reachable sets that violate constraint
+                if not constraint(reachable_set.full_set):
+                    t_violation = min(t_violation, i)
+                    print("Collision at t = {}".format(t_violation))
+                    break
+
+            walk_back = True # going backwards from violating set
+            t = t_violation
+            steps_back = 0
+            print("violation: {}".format(t_violation))
+            while(walk_back):
+                t -= 1
+                steps_back += 1
+                print("stepping back to {}".format(t))
+                xs = self.reachable_sets[t].sample_from_reachable_set(self.cl_system, steps_back, sample_corners=True)
+                sample_range = np.vstack((np.min(xs, axis=0), np.max(xs, axis=0))).T
+                if constraint(sample_range) or t == 0:
+                    walk_back = False
+                    print("Need to partition t = {}".format(t))
+
+            for reachable_set in all_sets:
+                if reachable_set.recalculate:
+                    next_set = reachable_set
+                    for i in range(t_violation, t, -1):
+                        next_set = self.get_parent_set(next_set)
+                        next_set.recalculate = True
+    
+
+
+
+    def constraint_aware_partition(self, constraint):
+        t_violation = self.num_steps # start with no partitioning
+        for i, reachable_set in self.reachable_sets.items(): # find reachable sets that violate constraint
+            if not constraint(reachable_set.full_set):
+                t_violation = min(t_violation, i)
+                print("Collision at t = {}".format(t_violation))
+                break
+        
+        walk_back = True # going backwards from violating set
+        t = t_violation
+        steps_back = 0
+        while(walk_back):
+            t -= 1
+            steps_back += 1
+            xs = self.reachable_sets[t].sample_from_reachable_set(self.cl_system, steps_back, sample_corners=True)
+            sample_range = np.vstack((np.min(xs, axis=0), np.max(xs, axis=0))).T
+            if constraint(sample_range) or t == 0:
+                walk_back = False
+                print("Need to partition t = {}".format(t))
+        
+        if not isinstance(self.reachable_sets[t].partition_strategy, np.ndarray):
+            self.set_partition_strategy(t, np.array([2, 2]))
+        else:
+            num_parts = self.reachable_sets[t].partition_strategy[0]
+            self.set_partition_strategy(t, np.array([num_parts+1, num_parts+1]))
+
+
+    def is_safe(self, constraint_list):
+        for constraint in constraint_list:
+            for i, reachable_set in self.reachable_sets.items():
+                if not constraint(reachable_set.full_set):
+                    return False
+                
+        return True
+
 
 
     def plot_reachable_sets(self, num_trajectories=50):
         cl_system = self.cl_system
         time_horizon = self.num_steps
-        initial_set = self.reachable_sets[0].full_set
+        initial_set = self.reachable_sets[0].full_set.cpu()
         total_reachable_sets = self.reachable_sets
 
 
@@ -350,12 +475,12 @@ class Analyzer:
         #     xt = xt1
 
         #     xs = np.vstack((xs, xt1))
-        xs = self.reachable_sets[0].sample_from_reachable_set(self.cl_system, num_steps=time_horizon, num_trajectories=num_trajectories, sample_corners=True)
+        xs = self.reachable_sets[0].sample_from_reachable_set(self.cl_system, num_steps=time_horizon, num_trajectories=num_trajectories, sample_corners=False)
         
         ax.scatter(xs[:, 0], xs[:, 1], s=1, c='k')
 
-        xy = initial_set[:, 0]
-        width, height = initial_set[:, 1] - initial_set[:, 0]
+        xy = initial_set[[0, 1], 0]
+        width, height = initial_set[[0, 1], 1] - initial_set[[0, 1], 0]
         rect = Rectangle(xy, width, height, linewidth=1, edgecolor='k', facecolor='none')
         ax.add_patch(rect)
 
@@ -364,9 +489,9 @@ class Analyzer:
             # import pdb; pdb.set_trace()
             # for _, set_range in reachable_sets:
             if reachable_sets.full_set is not None:
-                set_range = reachable_sets.full_set.detach().numpy()
-                xy = set_range[:, 0]
-                width, height = set_range[:, 1] - set_range[:, 0]
+                set_range = reachable_sets.full_set.cpu().detach().numpy()
+                xy = set_range[[0, 1], 0]
+                width, height = set_range[[0, 1], 1] - set_range[[0, 1], 0]
                 rect = Rectangle(xy, width, height, linewidth=1, edgecolor='b', facecolor='none')
                 ax.add_patch(rect)
             
@@ -387,7 +512,7 @@ class Analyzer:
     def plot_all_subsets(self, num_trajectories=100):
         cl_system = self.cl_system
         time_horizon = self.num_steps
-        initial_set = self.reachable_sets[0].full_set
+        initial_set = self.reachable_sets[0].full_set.cpu()
         total_reachable_sets = self.reachable_sets
 
 
@@ -408,7 +533,7 @@ class Analyzer:
         xt = x0s
         xs = x0s
         for _ in range(num_steps):
-            u_nn = cl_system.dynamics.control_nn(xt, cl_system.controller)
+            u_nn = cl_system.dynamics.control_nn(xt, cl_system.controller.cpu())
             xt1 = cl_system.dynamics.dynamics_step(xt, u_nn)
             xt = xt1
 
@@ -438,6 +563,13 @@ class Analyzer:
 
             
         plt.show()
+
+
+
+
+
+
+
 
 
 def partition_init_set(initial_set, num_partitions):
@@ -514,9 +646,9 @@ def calculate_reachable_sets(cl_system, initial_set, partition_schedule):
         reachable_sets[i] = reachable_set
         
         for rss in reachable_set_subsets:
-            all_subsets.append(rss.detach().numpy())
+            all_subsets.append(rss.cpu().detach().numpy())
 
-        prev_range = reachable_set.detach().numpy()
+        prev_range = reachable_set.cpu().detach().numpy()
         # x = torch.mean(reach_set, axis=1).reshape(-1,2)
         # eps = (reach_set[:, 1] - reach_set[:, 0])/2
 
