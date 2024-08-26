@@ -17,9 +17,9 @@ class Unicycle_NL(ClosedLoopDynamics):
             xt_1 = torch.matmul(xts[-1], torch.Tensor([[0], [1], [0]]))
             xt_2 = torch.matmul(xts[-1], torch.Tensor([[0], [0], [1]]))
 
-            xt1_0 = xt_0 + self.dynamics.dt*ut[:, 0]*torch.cos(xt_2)
-            xt1_1 = xt_1 + self.dynamics.dt*ut[:, 0]*torch.sin(xt_2)
-            xt1_2 = xt_2 + self.dynamics.dt*ut[:, 1]
+            xt1_0 = xt_0 + self.dynamics.dt*self.dynamics.vt*torch.cos(xt_2)
+            xt1_1 = xt_1 + self.dynamics.dt*self.dynamics.vt*torch.sin(xt_2)
+            xt1_2 = xt_2 + self.dynamics.dt*ut[:, 0]
 
             xt1 = torch.cat([xt1_0, xt1_1, xt1_2], 1)
             xts.append(xt1)
@@ -43,7 +43,7 @@ class unicycle_4layer_controller(nn.Module):
         self.fc1 = nn.Linear(3, neurons_per_layer[0])
         self.fc2 = nn.Linear(neurons_per_layer[0], neurons_per_layer[1])
         self.fc3 = nn.Linear(neurons_per_layer[1], neurons_per_layer[2])
-        self.fc4 = nn.Linear(neurons_per_layer[2], 2)
+        self.fc4 = nn.Linear(neurons_per_layer[2], 1)
         
 
     def forward(self, xt):

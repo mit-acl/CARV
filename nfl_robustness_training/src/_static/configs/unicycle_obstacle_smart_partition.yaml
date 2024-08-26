@@ -1,7 +1,7 @@
 system:
   type: Unicycle_NL
   feedback: FullState
-  controller: natural_none_expanded
+  controller: natural_none_default
   dagger: false
 
 analysis:

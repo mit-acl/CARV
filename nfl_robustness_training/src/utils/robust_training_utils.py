@@ -2,8 +2,10 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
+from matplotlib.animation import FuncAnimation, PillowWriter
 from ast import literal_eval
 from itertools import product
+from copy import deepcopy
 
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import *
@@ -23,6 +25,8 @@ class ReachableSet:
         self.thread = thread
         self.recalculate = True
         self.device = device
+        self.t_parent = -1
+        self.symbolic = True
 
     def set_range(self, ranges):
         self.full_set = ranges
@@ -129,6 +133,9 @@ class ReachableSet:
                 subset.populate_next_reachable_set(bounded_cl_system, next_reachable_set, training)
 
         next_reachable_set.calculate_full_set()
+        next_reachable_set.t_parent = self.t
+        if next_reachable_set.t - self.t == 1:
+            next_reachable_set.symbolic = False
 
     def switch_on_off(self, condition, thread=0):
         self.recalculate = not condition(self.full_set)
@@ -137,7 +144,7 @@ class ReachableSet:
                 print("Recalculating")
                 print(self.full_set)
     
-    def plot_reachable_set(self, ax):
+    def plot_reachable_set(self, ax, plot_partitions = True):
         if self.subsets == {}:
             set_range = self.full_set.cpu().detach().numpy()
             xy = set_range[:, 0]
@@ -150,7 +157,7 @@ class ReachableSet:
             ax.add_patch(rect)
         else:
             for i, subset in self.subsets.items():
-                subset.plot_reachable_set(ax)
+                subset.plot_reachable_set(ax, plot_partitions=plot_partitions)
 
     def sample_from_reachable_set(self, cl_system, num_steps=1, num_trajectories=100, sample_corners=False):
         np.random.seed(0)
@@ -163,7 +170,7 @@ class ReachableSet:
             num_trajectories -= len(corners)
             np.meshgrid()
         
-        
+
         x0s = np.random.uniform(
             low=self.full_set[:, 0].cpu().detach().numpy(),
             high=self.full_set[:, 1].cpu().detach().numpy(),
@@ -192,6 +199,7 @@ class Analyzer:
         self.num_steps = num_steps
         self.cl_system = cl_system
         self.device = device
+        self.max_diff = 12
 
         if cl_system.dynamics.name == 'DoubleIntegrator':
             dummy_input = torch.tensor([[2.75, 0.]], device=device)
@@ -204,7 +212,8 @@ class Analyzer:
         for i in range(num_steps):
             self.reachable_sets[i+1] = ReachableSet(i+1, device=device)
             cl_system.set_num_steps(i+2)
-            # self.bounded_cl_systems[i+1] = BoundedModule(cl_system, dummy_input, bound_opts={'relu': "CROWN-IBP"}, device=device)
+            if i < self.max_diff:
+                self.bounded_cl_systems[i+1] = BoundedModule(cl_system, dummy_input, bound_opts={'relu': "CROWN-IBP"}, device=device)
 
     def set_partition_strategy(self, t, partition_strategy):
         self.reachable_sets[t].set_partition_strategy(partition_strategy)
@@ -216,13 +225,15 @@ class Analyzer:
         return self.reachable_sets[reachable_set.t - 1].get_thread(reachable_set.thread)
 
 
-    def calculate_reachable_sets(self, training = False, autorefine = False, visualize = False):
+    def calculate_reachable_sets(self, training = False, autorefine = False, visualize = False, condition = None):
         initial_range = self.reachable_sets[0].full_set
         num_states = initial_range.shape[0]
         reach_set_range = initial_range
+        info = {}
         
 
         for i in range(self.num_steps):
+            info[i] = {}
             # prev_set = self.reachable_sets[i].full_set
 
             # partitions = self.reachable_sets[i].get_partitions()
@@ -240,20 +251,38 @@ class Analyzer:
             # self.reachable_sets[i+1] = ReachableSet(i+1, reach_set_range)
             # import pdb; pdb.set_trace()
             self.reachable_sets[i].get_partitions()
+            tstart = time.time()
             self.reachable_sets[i].populate_next_reachable_set(self.bounded_cl_system, self.reachable_sets[i+1], training)
+            tend = time.time()
             self.reachable_sets[i+1].consolidate()
-            if visualize:
-                self.plot_reachable_sets()
-            if self.reachable_sets[i+1].full_set[1, 0] < -1 and autorefine:
+            info[i]['unrefined'] = deepcopy(self.reachable_sets[i+1].full_set.cpu().detach().numpy())
+            info[i]['time'] = tend - tstart
 
-                
-                self.reachable_sets[0].populate_next_reachable_set(self.bounded_cl_systems[i], self.reachable_sets[i+1])
+            # if autorefine:
+            #     self.refine(self.reachable_sets[i+1], condition)
+            if autorefine:
                 if visualize:
-                    print("recalculating set at time {}".format(i+1 ))
+                    self.plot_reachable_sets()
+                
+                refined = self.refine(self.reachable_sets[i+1], condition, info, i)
+                    
+                if visualize:
                     self.plot_reachable_sets()
 
             
-        return self.reachable_sets
+            # if self.reachable_sets[i+1].full_set[1, 0] < -1 or self.reachable_sets[i+1].full_set[0, 0] < 0 and autorefine:
+            #     tstart = time.time()
+            #     # self.refine(self.reachable_sets[i+1])
+            #     self.reachable_sets[0].populate_next_reachable_set(self.bounded_cl_systems[i], self.reachable_sets[i+1])
+            #     tend = time.time()
+            #     info[i]['refined'] = self.reachable_sets[i+1].full_set.cpu().detach().numpy()
+            #     info[i]['recalc_time'] = tend - tstart
+                
+            #     if visualize:
+            #         print("recalculating set at time {}".format(i+1 ))
+            #         self.plot_reachable_sets()
+            
+        return self.reachable_sets, info
     
     def calculate_N_step_reachable_sets(self, training = False, indices = None):
         # from copy import deepcopy
@@ -265,13 +294,18 @@ class Analyzer:
             indices = list(range(self.num_steps))
         import time
 
+        info = {}
+
         for i in indices:
+            info[i] = {}
             print("Calculating set {}".format(i))
             tstart = time.time()
             self.reachable_sets[0].populate_next_reachable_set(self.bounded_cl_systems[i], self.reachable_sets[i+1])
             print(self.reachable_sets[i+1].full_set)
             tend = time.time()
             print('Calculation Time: {}'.format(tend-tstart))
+            info[i]['unrefined'] = deepcopy(self.reachable_sets[i+1].full_set.cpu().detach().numpy())
+            info[i]['time'] = tend - tstart
         # self.cl_system.set_num_steps(7)
         # dummy_input = torch.tensor([[2.75, 0.]], device=self.device)
         # bounded_cl_system = BoundedModule(self.cl_system, dummy_input, device=self.device)
@@ -308,7 +342,7 @@ class Analyzer:
         #     # self.reachable_sets[0+1].consolidate()   
 
 
-        return self.reachable_sets
+        return self.reachable_sets, info
     
     def calculate_hybrid_symbolic_reachable_sets(self, concretization_rate = 5, training = False):
         from copy import deepcopy
@@ -335,7 +369,78 @@ class Analyzer:
             print('Calculation Time: {}'.format(tend-tstart))
 
         return self.reachable_sets
+    
+    def refine(self, reachable_set, condition, info, t, force=False):
+        refined = not condition(reachable_set.full_set) or force
+        tf = reachable_set.t
+        min_diff = 0
+        max_diff = self.max_diff
 
+        # if tf == 35:
+        #     import pdb; pdb.set_trace()
+        if force and not reachable_set.symbolic:
+            next_idx = max(tf - self.max_diff, 0)
+            print("marching back from set {} to set {}".format(tf, next_idx))
+            if self.reachable_sets[next_idx].symbolic:
+                print("{} is symbolic, marching back".format(next_idx))
+                tstart = time.time()
+                self.reachable_sets[next_idx].populate_next_reachable_set(self.bounded_cl_systems[tf - next_idx - 1], reachable_set)
+                reachable_set.symbolic = True
+                tend = time.time()
+                info[tf-1]['refined'] = reachable_set.full_set.cpu().detach().numpy()
+                info[tf-1]['recalc_time'] = tend - tstart
+            else:
+                self.refine(self.reachable_sets[next_idx], condition, info, next_idx, force=True)
+        else:
+            final_idx = max(tf - self.max_diff, 0)
+            i = tf - 2
+            if not condition(reachable_set.full_set):
+                print("Collision detected at t = {}".format(tf))
+            while i >= final_idx and not condition(reachable_set.full_set):
+                diff = tf - i
+                if self.reachable_sets[i].symbolic and (diff >= min_diff or i == 0):
+                    print("recalculating set {} from time {}".format(tf, i))
+                    # import pdb; pdb.set_trace()
+                    tstart = time.time()
+                    self.reachable_sets[i].populate_next_reachable_set(self.bounded_cl_systems[tf - i - 1], reachable_set)
+                    reachable_set.symbolic = True
+                    tend = time.time()
+                    info[tf-1]['refined'] = reachable_set.full_set.cpu().detach().numpy()
+                    info[tf-1]['recalc_time'] = tend - tstart
+                elif diff == max_diff:
+                    print("cannot do full symbolic from tf = {}, starting march".format(tf))
+                    # if i == 41:
+                    #     import pdb; pdb.set_trace()
+                    if i > 1:
+                        self.refine(self.reachable_sets[i], condition, info, i, force=True)
+                        i = tf - 2
+
+                i -= 1
+
+        # i = tf - 2
+        # while i >= 0 and (not condition(reachable_set.full_set) or force):
+        #     diff = tf - i
+        #     if ((self.reachable_sets[i].symbolic and not force) or (force)) and ((diff >= min_diff or i == 0) and diff <= max_diff):
+        #         print("recalculating set {} from time {}".format(tf, i))
+        #         # import pdb; pdb.set_trace()
+        #         tstart = time.time()
+        #         self.reachable_sets[i].populate_next_reachable_set(self.bounded_cl_systems[tf - i - 1], reachable_set)
+        #         reachable_set.symbolic = True
+        #         tend = time.time()
+        #         info[tf-1]['refined'] = reachable_set.full_set.cpu().detach().numpy()
+        #         info[tf-1]['recalc_time'] = tend - tstart
+        #     elif diff == max_diff:
+        #         print("here, i = {}".format(i))
+        #         # if i == 41:
+        #         #     import pdb; pdb.set_trace()
+        #         if i > 1:
+        #             self.refine(self.reachable_sets[i], condition, info, i, force=True)
+        #             i = tf - 2
+
+        #     i -= 1
+
+        return refined
+        
 
     def get_all_ranges(self):
         all_ranges = []
@@ -494,13 +599,32 @@ class Analyzer:
                 width, height = set_range[[0, 1], 1] - set_range[[0, 1], 0]
                 rect = Rectangle(xy, width, height, linewidth=1, edgecolor='b', facecolor='none')
                 ax.add_patch(rect)
-            
-        ax.plot(np.array([-1.5, 3.25]), np.array([-1, -1]), c='r', linewidth=2)
-        rect = Rectangle(np.array([-1.5, -1.25]), 4.75, 0.25, linewidth=1, edgecolor='r', facecolor='r', alpha=0.1)
-        ax.add_patch(rect)
 
-        ax.set_xlim([-1.5, 3.25])
-        ax.set_ylim([-1.25, 1.])
+        if self.cl_system.dynamics.name == "DoubleIntegrator":
+            ax.plot(np.array([-1.5, 3.25]), np.array([-1, -1]), c='r', linewidth=2)
+            rect = Rectangle(np.array([-1.5, -1.25]), 4.75, 0.25, linewidth=1, edgecolor='r', facecolor='r', alpha=0.1)
+            ax.add_patch(rect)
+
+            ax.plot(np.array([0, 0]), np.array([-1.25, 1.]), c='r', linewidth=2)
+            rect = Rectangle(np.array([-1.5, -1.25]), 1.5, 2.25, linewidth=1, edgecolor='r', facecolor='r', alpha=0.1)
+            ax.add_patch(rect)
+
+            ax.set_xlim([-1.5, 3.25])
+            ax.set_ylim([-1.25, 1.])
+        elif self.cl_system.dynamics.name == "Unicycle_NL":
+            # obstacles = [{'x': -10, 'y': -1, 'r': 3},
+            #              {'x': -3, 'y': 2.5, 'r': 2 }]
+            obstacles = [{'x': -6, 'y': -0.5, 'r': 2.2},
+                         {'x': -1.25, 'y': 1.75, 'r': 1.6}]
+            for obstacle in obstacles:
+                circle = plt.Circle((obstacle['x'], obstacle['y']), obstacle['r'], edgecolor='r', facecolor='none')
+                ax.add_patch(circle)
+                circle = plt.Circle((obstacle['x'], obstacle['y']), obstacle['r'], edgecolor='r', facecolor='r', alpha=0.1)
+                ax.add_patch(circle)
+
+            ax.set_xlim([-10, 1])
+            ax.set_ylim([-3, 5])
+            ax.set_aspect('equal')
 
         ax.set_xlabel('x1', fontsize=20)
         ax.set_ylabel('x2', fontsize=20)
@@ -563,6 +687,109 @@ class Analyzer:
 
             
         plt.show()
+    
+    def animate_reachability_calculation(self, info, plot_partitions=False):
+        cl_system = self.cl_system
+        time_horizon = self.num_steps
+        initial_set = self.reachable_sets[0].full_set.cpu()
+        total_reachable_sets = self.reachable_sets
+
+
+        
+        fig, ax = plt.subplots()
+        plt.rcParams.update({
+            "text.usetex": True,
+            "font.family": "Helvetica"
+        })
+
+        reachable_sets = []
+        colors = []
+        remove = []
+        num_times = []
+        for i, time_step_dict in info.items():
+            num_times.append(max(int(5*time_step_dict['time']), 1))
+            # num_times.append(2)
+            reachable_sets.append(time_step_dict['unrefined'])
+            colors.append('b')
+            remove.append(False)
+
+            if 'refined' in time_step_dict.keys():
+                colors[-1] = 'r'
+                remove[-1] = True
+                num_times.append(max(5+int(5*time_step_dict['recalc_time']), 1))
+                reachable_sets.append(time_step_dict['refined'])
+                colors.append('b')
+                remove.append(True)
+    
+
+        num_times.append(5)
+
+        
+        reachable_sets_extended = []
+        colors_extended = []
+        remove_extended = []
+        for i in range(len(reachable_sets)):
+            for _ in range(num_times[i+1]):
+                reachable_sets_extended.append(reachable_sets[i])
+                colors_extended.append(colors[i])
+                remove_extended.append(remove[i])
+        
+        import pdb; pdb.set_trace()
+        def animate(i):    
+            ax.clear()
+            xs = self.reachable_sets[0].sample_from_reachable_set(self.cl_system, num_steps=time_horizon, sample_corners=False)
+            
+            ax.scatter(xs[:, 0], xs[:, 1], s=1, c='k')
+
+            xy = initial_set[[0, 1], 0]
+            width, height = initial_set[[0, 1], 1] - initial_set[[0, 1], 0]
+            rect = Rectangle(xy, width, height, linewidth=1, edgecolor='k', facecolor='none')
+            ax.add_patch(rect)
+            
+            if self.cl_system.dynamics.name == "DoubleIntegrator":
+                ax.plot(np.array([-1.5, 3.25]), np.array([-1, -1]), c='r', linewidth=2)
+                rect = Rectangle(np.array([-1.5, -1.25]), 4.75, 0.25, linewidth=1, edgecolor='r', facecolor='r', alpha=0.1)
+                ax.add_patch(rect)
+
+                ax.plot(np.array([0, 0]), np.array([-1.25, 1.]), c='r', linewidth=2)
+                rect = Rectangle(np.array([-1.5, -1.25]), 1.5, 2.25, linewidth=1, edgecolor='r', facecolor='r', alpha=0.1)
+                ax.add_patch(rect)
+
+                ax.set_xlim([-1.5, 3.25])
+                ax.set_ylim([-1.25, 1.])
+            elif self.cl_system.dynamics.name == "Unicycle_NL":
+                # obstacles = [{'x': -10, 'y': -1, 'r': 3},
+                #              {'x': -3, 'y': 2.5, 'r': 2 }]
+                obstacles = [{'x': -6, 'y': -0.5, 'r': 2.2},
+                            {'x': -1.25, 'y': 1.75, 'r': 1.6}]
+                for obstacle in obstacles:
+                    circle = plt.Circle((obstacle['x'], obstacle['y']), obstacle['r'], color='blue')
+                    ax.add_patch(circle)
+
+                ax.set_xlim([-10, 1])
+                ax.set_ylim([-3, 5])
+                ax.set_aspect('equal')
+            
+
+            ax.set_xlabel('x1', fontsize=20)
+            ax.set_ylabel('x2', fontsize=20)
+
+            
+            for j in range(i):
+                set_range = reachable_sets_extended[j]
+                xy = set_range[[0, 1], 0]
+                width, height = set_range[[0, 1], 1] - set_range[[0, 1], 0]
+                rect = Rectangle(xy, width, height, linewidth=1, edgecolor=colors_extended[j], facecolor='none')
+
+
+
+                # import pdb; pdb.set_trace()
+                if j == i - 1 or not remove_extended[j]:
+                    ax.add_patch(rect)
+                
+
+        ani = FuncAnimation(fig, animate, frames=sum(num_times), repeat=True)
+        ani.save("double_integrator.gif", dpi=300, writer=PillowWriter(fps=10))            
 
 
 

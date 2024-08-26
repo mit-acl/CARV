@@ -14,10 +14,13 @@ def setup_model(dt = 0.1, obstacles = []):
     model_type = 'discrete' # either 'discrete' or 'continuous'
     model = do_mpc.model.Model(model_type)
 
+    v = 1.
+
     pos = model.set_variable(var_type='_x', var_name='pos', shape=(2,1))
     psi = model.set_variable(var_type='_x', var_name='psi', shape=(1,1))
+    # t = model.set_variable(var_type='_x', var_name='time', shape=(1,1))
 
-    v = model.set_variable(var_type='_u', var_name='v')
+    # v = model.set_variable(var_type='_u', var_name='v')
     omega = model.set_variable(var_type='_u', var_name='omega')
 
     pos_1 = vertcat(
@@ -25,11 +28,12 @@ def setup_model(dt = 0.1, obstacles = []):
         v*sin(psi)
     )
     model.set_rhs('pos', pos + dt * pos_1)
-    model.set_rhs('psi', psi+ dt * omega)
+    model.set_rhs('psi', psi + dt * omega)
+    # model.set_rhs('time', t + dt)
 
     obstacle_distance = []
     for obs in obstacles:
-        d0 = sqrt((pos[0]-obs['x'])**2+(pos[1]-obs['y'])**2) - 1.25*obs['r']
+        d0 = sqrt((pos[0]-obs['x'])**2+(pos[1]-obs['y'])**2) - 1.*obs['r']
         obstacle_distance.extend([d0])
 
     # obs = obstacles[0]
@@ -47,9 +51,11 @@ def setup_mpc_controller(model, dt = 0.1):
 
     mpc = do_mpc.controller.MPC(model)
 
+    goal = (2, 0)
+
     setup_mpc = {
         'n_robust': 0,
-        'n_horizon': 25,
+        'n_horizon': 15,
         't_step': dt,
         'state_discretization': 'discrete',
         'store_full_solution':True,
@@ -58,21 +64,20 @@ def setup_mpc_controller(model, dt = 0.1):
     }
     mpc.set_param(**setup_mpc)
 
-    mterm = sqrt(model.x['pos'][0]**2 + model.x['pos'][1]**2)
-    lterm = sqrt(model.x['pos'][0]**2 + model.x['pos'][1]**2)
+    mterm = sqrt((model.x['pos'][0]-goal[0])**2 + (model.x['pos'][1]-goal[1])**2)
+    lterm = sqrt((model.x['pos'][0]-goal[0])**2 + (model.x['pos'][1]-goal[1])**2)
 
     mpc.set_objective(mterm=mterm, lterm=lterm)
 
     mpc.set_rterm(
-        v=1e-2,
         omega=1e-2
     )
 
     # Lower bounds on inputs:
-    mpc.bounds['lower','_u', 'v'] = 0
+    # mpc.bounds['lower','_u', 'v'] = 0
     mpc.bounds['lower','_u', 'omega'] = -0.3*np.pi
     # Lower bounds on inputs:
-    mpc.bounds['upper','_u', 'v'] = 2
+    # mpc.bounds['upper','_u', 'v'] = 2
     mpc.bounds['upper','_u', 'omega'] = 0.3*np.pi
 
     mpc.set_nl_cons('obstacles', -model.aux['obstacle_distance'], 0)
@@ -117,26 +122,32 @@ def setup_graphics(mpc, simulator):
 
 def main(noisy = False):
     np.random.seed(0)
-    dt = 0.25
-    obstacles = [{'x': -8, 'y': 0, 'r': 2.8},
-                 {'x': -2, 'y': 3, 'r': 2}]
+    dt = 0.2
+    obstacles = [{'x': -5.5, 'y': 0., 'r': 2.},
+                 {'x': -1.5, 'y': 1.5, 'r': 1.2}]
     model = setup_model(obstacles=obstacles, dt=dt)
     mpc = setup_mpc_controller(model, dt=dt)
     simulator = setup_simulator(model, dt=dt)
 
-    x0 = np.array([-16, 4, -np.pi/4])
+
+    x0 = np.array([-9, 3, -np.pi/6])
     simulator.x0 = x0
     mpc.x0 = x0
     mpc.set_initial_guess()
 
-    for i in range(160):
+    for i in range(600):
         ptb = np.zeros((3, 1))
         if noisy:
-            ptb = np.random.random((3, 1))*np.array([[0.5], [0.5], [0.25]])
+            ptb = np.random.random((3, 1))*np.array([[0.25], [0.25], [0.125]])
         u0 = mpc.make_step(x0)
-        x0 = simulator.make_step(u0) + ptb
+
         # import pdb; pdb.set_trace()
-        if np.linalg.norm(x0[:2]) < 1e-1:
+        x0 = simulator.make_step(u0) + ptb
+        
+        # if np.linalg.norm(x0[:2], inf) < 1e-0:
+        #         break
+
+        if x0[0] > 0:
                 break
         
     print("Path Completed in {} timesteps".format(i))
@@ -147,23 +158,30 @@ def main(noisy = False):
         circle = plt.Circle((obstacle['x'], obstacle['y']), obstacle['r'], color='blue')
         ax.add_patch(circle)
     ax.set_aspect('equal')
-    ax.plot(xs[:, 0], xs[:, 1])
+    ax.scatter(xs[:, 0], xs[:, 1], s=1, c='k')
     plt.show()
 
 def generate_data(num_trajectories = 50, system = 'unicycle', noisy = False, prob_short = 0.):
     dt = 0.2
-    obstacles = [{'x': -8, 'y': 0, 'r': 2.8},
-                 {'x': -2, 'y': 3, 'r': 2}]
+    # obstacles = [{'x': -10, 'y': -1, 'r': 4},
+    #              {'x': -3.5, 'y': 3, 'r': 3}]
+    obstacles = [{'x': -6, 'y': -0.5, 'r': 2.75},
+                 {'x': -1.25, 'y': 1.75, 'r': 2.}]
     model = setup_model(obstacles=obstacles, dt=dt)
     mpc = setup_mpc_controller(model, dt=dt)
     simulator = setup_simulator(model, dt=dt)
 
 
     num_states = 3
+    # x0_range = np.array([
+    #     [-18., -16.],
+    #     [4., 6.],
+    #     [-np.pi/4, np.pi/4]
+    # ])
     x0_range = np.array([
-        [-16., -14.],
-        [4., 6.],
-        [-np.pi/4, np.pi/4]
+        [-10., -9.],
+        [3., 4.],
+        [-np.pi/6, np.pi/6]
     ])
 
     x0s = np.random.uniform(
@@ -185,7 +203,7 @@ def generate_data(num_trajectories = 50, system = 'unicycle', noisy = False, pro
         mpc.x0 = x0
         mpc.set_initial_guess()
 
-        max_steps = 160
+        max_steps = 320
         short_traj_rand = np.random.random()
         if prob_short > short_traj_rand:
             max_steps = 15
@@ -193,10 +211,14 @@ def generate_data(num_trajectories = 50, system = 'unicycle', noisy = False, pro
         for i in range(max_steps):
             ptb = np.zeros((3, 1))
             if noisy:
-                ptb = np.random.random((3, 1))*np.array([[0.5], [0.5], [0.25]])
+                ptb_range = np.array([[0.5], [0.5], [np.pi/3]])
+                ptb = np.random.random((3, 1))*ptb_range - ptb_range/2
             u0 = mpc.make_step(x0)
             x0 = simulator.make_step(u0) + ptb
-            if np.linalg.norm(x0[:2]) < 1e-1:
+            # if np.linalg.norm(x0[:2]) < 1e-1:
+            #     break
+
+            if x0[0] > 0:
                 break
         
         if xs is None:
@@ -224,7 +246,7 @@ def generate_data(num_trajectories = 50, system = 'unicycle', noisy = False, pro
 
     fig, ax = plt.subplots()
     for obstacle in obstacles:
-        circle = plt.Circle((obstacle['x'], obstacle['y']), obstacle['r'], color='blue')
+        circle = plt.Circle((obstacle['x'], obstacle['y']), obstacle['r'], color='blue', zorder = 0)
         ax.add_patch(circle)
     ax.set_aspect('equal')
     ax.scatter(xs[:, 0], xs[:, 1], s=1, c='k')
@@ -240,7 +262,7 @@ def correct_data():
     import pdb; pdb.set_trace()
 
 if __name__ == "__main__":
-    # main(noisy=True)
-    generate_data(num_trajectories=300, noisy=True, prob_short=0.7)
+    # main(noisy=False)
+    generate_data(num_trajectories=1000, noisy=False, prob_short=0.0)
     # correct_data()
     

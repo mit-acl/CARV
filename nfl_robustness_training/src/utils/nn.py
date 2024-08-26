@@ -26,7 +26,7 @@ def load_controller(system, controller_name = 'default', dagger=False, device='c
             controller = controller.cuda()
 
     elif system == "Unicycle_NL":
-        neurons_per_layer = [30, 20, 10]
+        neurons_per_layer = [40, 20, 10]
         # neurons_per_layer = [15, 10, 5]
         mean = torch.tensor([-7.5, 2.5, 0], device=device)
         std = torch.tensor([7.5, 2.5, torch.pi/6], device=device)

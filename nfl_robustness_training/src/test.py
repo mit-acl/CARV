@@ -153,6 +153,41 @@ def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
     from utils.robust_training_utils import Analyzer, ReachableSet
 
     device = 'cpu'
+    torch.no_grad()
+
+    def di_condition(input_range):
+            return input_range[1, 0] >= -1 and input_range[0, 0] >= 0
+        
+    def unicycle_condition(input_range):
+        # obstacles = [{'x': -10, 'y': -1, 'r': 3},
+        #                 {'x': -3, 'y': 2.5, 'r': 2}]
+        obstacles = [{'x': -6, 'y': -0.5, 'r': 2.2},
+                     {'x': -1.25, 'y': 1.75, 'r': 1.6}]
+        
+        rx, ry = input_range[[0, 1], 0]
+        width, height = input_range[[0, 1], 1] - input_range[[0, 1], 0]
+
+        for obs in obstacles:
+            cx, cy = obs['x'], obs['y']
+            testX = torch.tensor(cx)
+            testY = torch.tensor(cy)
+
+            if (cx < rx):
+                testX = rx
+            elif (cx > rx + width): 
+                testX = rx + width
+
+
+            if (cy < ry):
+                testY = ry
+            elif (cy > ry + height):
+                testY = ry + height
+            
+            dist = torch.sqrt((cx-testX)**2 + (cy - testY)**2)
+            if dist < obs['r']:
+                return False
+            
+        return True
 
     if params["system"]["type"] == 'DoubleIntegrator':
         controller = load_controller(params['system']['type'], params['system']['controller'], params["system"]["dagger"], device=device)
@@ -182,7 +217,7 @@ def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
         # plot_reachable_sets(cl_dyn, partition_set(init_range, params["analysis"]["partitioner"]["num_partitions"]), reach_sets_np)
         # print(reach_sets_np)
 
-        time_horizon = 25
+        time_horizon = 30
         # init_ranges = partition_init_set(init_range, params["analysis"]["partitioner"]["num_partitions"])
         # reach_sets = torch.zeros((len(init_ranges), time_horizon, 2, 2))
         
@@ -198,31 +233,35 @@ def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
         # reach_sets, subsets = calculate_reachable_sets(bounded_cl_sys, init_range, partition_schedule)
 
         
-        def condition(input_range):
-            return input_range[1, 0] >= -1
+        
+
 
         
         # reach_sets_np = subsets
         # plot_reachable_sets(cl_dyn, init_range, reach_sets_np, time_horizon)
         init_range = torch.from_numpy(init_range).type(torch.float32).to(device)
         analyzer = Analyzer(cl_dyn, time_horizon, init_range, device=device)
-        # analyzer.set_partition_strategy(0, np.array([2,2]))
-        analyzer.set_partition_strategy(0, np.array([3,3]))
+        analyzer.set_partition_strategy(0, np.array([10,10]))
+        # analyzer.set_partition_strategy(0, np.array([3,3]))
         # analyzer.set_partition_strategy(8, np.array([2,2]))
         # analyzer.set_partition_strategy(12, np.array([1,1]))
         tstart = time.time()
         # reach_set_dict = analyzer.calculate_hybrid_symbolic_reachable_sets()
-        reach_set_dict = analyzer.calculate_N_step_reachable_sets(indices=None) # 3, 4, 5, 6, 7
-        # reach_set_dict = analyzer.calculate_reachable_sets(training=False)
+        # reach_set_dict, info = analyzer.calculate_N_step_reachable_sets(indices=None) # 3, 4, 5, 6, 7
+        reach_set_dict, info = analyzer.calculate_reachable_sets(training=False, autorefine=False, visualize=False, condition=condition)
         # reach_set_dict = analyzer.calculate_N_step_reachable_sets(indices=[3, 4, 5, 6, 7, 8]) # 3, 4, 5, 6, 7
         tend = time.time()
         # analyzer.switch_sets_on_off(condition)
         print('Calculation Time: {}'.format(tend-tstart))
 
-        analyzer.switch_sets_on_off(condition)
+        
+        analyzer.switch_sets_on_off(di_condition)
         # import pdb; pdb.set_trace()
 
         analyzer.plot_reachable_sets()
+
+        analyzer.animate_reachability_calculation(info)
+
         analyzer.plot_all_subsets()
 
         # iters = 0
@@ -268,42 +307,49 @@ def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
 
     if params["system"]["type"] == 'Unicycle_NL':
         controller = load_controller(params['system']['type'], params['system']['controller'], params["system"]["dagger"], device=device)
-        ol_dyn = dynamics.Unicycle_NL(dt=0.1)
+        ol_dyn = dynamics.Unicycle_NL(dt=0.2)
         ol_dyn.At_torch = ol_dyn.At_torch.to(device)
         ol_dyn.bt_torch = ol_dyn.bt_torch.to(device)
         ol_dyn.ct_torch = ol_dyn.ct_torch.to(device)
         cl_dyn = cl_systems.Unicycle_NL(controller, ol_dyn, device=device)
 
         dummy_input = torch.tensor([[-14.5, 4.5, 0.]], device=device)
-        import pdb; pdb.set_trace()
         
+        # init_range = np.array([
+        #     [-17.5, -16.5],
+        #     [4.5, 5.5],
+        #     [-np.pi/6, np.pi/6]
+        # ])
         init_range = np.array([
-            [-14.6, -14.4],
-            [4.4, 4.6],
-            [-np.pi/18, np.pi/18]
+            [-9.55, -9.45],
+            [3.45, 3.55],
+            [-np.pi/24, np.pi/24]
         ])
 
-        time_horizon = 50
+
+        time_horizon = 52
         
-        def condition(input_range):
-            return input_range[1, 0] >= -1
+        # def condition(input_range):
+        #     return input_range[1, 0] >= -1
 
         init_range = torch.from_numpy(init_range).type(torch.float32).to(device)
         analyzer = Analyzer(cl_dyn, time_horizon, init_range, device=device)
 
-        analyzer.set_partition_strategy(0, np.array([8,8,2]))
+        # analyzer.set_partition_strategy(0, np.array([6,6,18]))
         tstart = time.time()
-        # reach_set_dict = analyzer.calculate_reachable_sets(training=False)
+        # reach_set_dict, info = analyzer.calculate_N_step_reachable_sets(indices=None) # 3, 4, 5, 6, 7
+        reach_set_dict, info = analyzer.calculate_reachable_sets(training=False, autorefine=True, condition=unicycle_condition, visualize=False)
         tend = time.time()
         # analyzer.switch_sets_on_off(condition)
         print('Calculation Time: {}'.format(tend-tstart))
 
         # analyzer.switch_sets_on_off(condition)
-        import pdb; pdb.set_trace()
-
+        
         analyzer.plot_reachable_sets()
-        analyzer.plot_all_subsets()
 
+        # import pdb; pdb.set_trace()
+        # analyzer.plot_all_subsets()
+        # analyzer.animate_reachability_calculation(info)
 
 
 

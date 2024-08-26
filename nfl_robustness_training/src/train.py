@@ -498,7 +498,7 @@ def main(args):
         mean = torch.tensor([-7.5, 2.5, 0], device=args.device)
         std = torch.tensor([7.5, 2.5, torch.pi/6], device=args.device)
         controller_ori = cl_systems.Controllers[controller_name](neurons_per_layer, mean, std)
-        ol_dyn = dynamics.Unicycle_NL(dt=0.2)
+        ol_dyn = dynamics.Unicycle_NL(dt=0.1)
         ol_dyn.At_torch = ol_dyn.At_torch.to(args.device)
         ol_dyn.bt_torch = ol_dyn.bt_torch.to(args.device)
         ol_dyn.ct_torch = ol_dyn.ct_torch.to(args.device)
