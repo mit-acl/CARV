@@ -1,0 +1,43 @@
+{
+    "model_def": "model_defs.py",
+    "dataset": "double_integrator",
+    "path_prefix": "",
+    "models_path": "./double_integrator_crown/",
+    "training_params": {
+        "method": "robust",
+        "epochs": 65,
+        "lr": 1e-3,
+        "weight_decay": 0.0,
+        "optimizer": "adam",
+        "schedule_start": 1,
+        "starting_epsilon": 0.0,
+        "epsilon": 0.6,
+        "schedule_length":61,
+        "norm": "inf",
+        "verbose": false,
+        "loader_params": {"batch_size": 128, "test_batch_size": 128, "shuffle_train": true},
+        "method_params": {"bounded_input": true, "bound_type": "crown-interval"}
+    },
+    "attack_params": {
+        "batch_size": 128,
+        "eps_start": 0.0,
+        "eps_end": 0.3,
+        "eps_step": 16
+    },
+    "eval_params": {
+        "method": "robust",
+        "epsilon": 0.3,
+        "norm": "inf",
+        "verbose": false,
+        "loader_params": {"batch_size": 128, "test_batch_size": 128, "shuffle_train": true},
+        "method_params": {"bounded_input": true, "bound_type": "interval"}
+    },
+    "models": [
+        {
+            "model_id": "double_integrator_default",
+            "model_class": "model_mlp_any",
+            "model_params": {"in_dim": 2, "neurons": [15,10,5], "out_dim": 1}
+        }
+    ]
+}
+

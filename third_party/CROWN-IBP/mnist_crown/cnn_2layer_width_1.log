@@ -1,0 +1,17 @@
+./mnist_crown/cnn_2layer_width_1.pth
+Command line: train.py --config config/mnist_crown.json
+training configurations: {'method': 'robust', 'epochs': 100, 'lr': 0.0005, 'lr_decay_step': 10, 'lr_decay_factor': 0.5, 'lr_decay_milestones': [], 'weight_decay': 0.0, 'optimizer': 'adam', 'starting_epsilon': 0.0, 'epsilon': 0.3, 'schedule_length': 61, 'schedule_type': 'linear', 'norm': 'inf', 'verbose': False, 'multi_gpu': False, 'loader_params': {'batch_size': 128, 'shuffle_train': True, 'test_batch_size': 128}, 'method_params': {'batch_size': 128, 'shuffle_train': True, 'runnerup_only': False, 'activity_reg': 0.0, 'l1_reg': 0.0, 'final-beta': 0.0, 'final-kappa': 0.5, 'convex-proj': 50, 'bound_opts': {'same-slope': False, 'zero-lb': False, 'one-lb': False}, 'batch_multiplier': 1, 'bounded_input': True, 'bound_type': 'crown-interval'}, 'schedule_start': 1}
+Model structure:
+BoundSequential(
+  (0): BoundConv2d(1, 4, kernel_size=(4, 4), stride=(2, 2), padding=(1, 1))
+  (1): BoundReLU()
+  (2): BoundConv2d(4, 8, kernel_size=(4, 4), stride=(2, 2), padding=(1, 1))
+  (3): BoundReLU()
+  (4): BoundFlatten()
+  (5): BoundLinear(in_features=392, out_features=128, bias=True)
+  (6): BoundReLU()
+  (7): BoundLinear(in_features=128, out_features=10, bias=True)
+)
+data std: [1.0]
+Epoch 0, learning rate [0.0005], epsilon 0 - 0
+eps 0.0 close to 0, using natural training
