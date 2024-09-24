@@ -13,6 +13,7 @@ from typing import Dict, Tuple  # noqa: E402
 
 import numpy as np  # noqa: E402
 import yaml  # noqa: E402
+import tracemalloc
 
 import nfl_veripy.analyzers as analyzers  # noqa: E402
 import nfl_veripy.constraints as constraints  # noqa: E402
@@ -156,13 +157,15 @@ def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
     torch.no_grad()
 
     def di_condition(input_range):
-            return input_range[1, 0] >= -1 and input_range[0, 0] >= 0
+            delta = 0.0
+            return input_range[1, 0] >= -1 and input_range[0, 0] >= 0 + delta
         
     def unicycle_condition(input_range):
+        delta = 0.28
         # obstacles = [{'x': -10, 'y': -1, 'r': 3},
         #                 {'x': -3, 'y': 2.5, 'r': 2}]
-        obstacles = [{'x': -6, 'y': -0.5, 'r': 2.2},
-                     {'x': -1.25, 'y': 1.75, 'r': 1.6}]
+        obstacles = [{'x': -6, 'y': -0.5, 'r': 2.4+delta},
+                     {'x': -1.25, 'y': 1.75, 'r': 1.6+delta}]
         
         rx, ry = input_range[[0, 1], 0]
         width, height = input_range[[0, 1], 1] - input_range[[0, 1], 0]
@@ -174,7 +177,7 @@ def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
 
             if (cx < rx):
                 testX = rx
-            elif (cx > rx + width): 
+            elif (cx > rx + width):
                 testX = rx + width
 
 
@@ -240,19 +243,22 @@ def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
         # reach_sets_np = subsets
         # plot_reachable_sets(cl_dyn, init_range, reach_sets_np, time_horizon)
         init_range = torch.from_numpy(init_range).type(torch.float32).to(device)
-        analyzer = Analyzer(cl_dyn, time_horizon, init_range, device=device)
-        analyzer.set_partition_strategy(0, np.array([10,10]))
+        analyzer = Analyzer(cl_dyn, time_horizon, init_range, max_diff=30, device=device)
+        # analyzer.set_partition_strategy(0, np.array([32,32]))
+        # analyzer.set_partition_strategy(0, np.array([10,10]))
         # analyzer.set_partition_strategy(0, np.array([3,3]))
         # analyzer.set_partition_strategy(8, np.array([2,2]))
         # analyzer.set_partition_strategy(12, np.array([1,1]))
+        # tracemalloc.start()
         tstart = time.time()
         # reach_set_dict = analyzer.calculate_hybrid_symbolic_reachable_sets()
-        # reach_set_dict, info = analyzer.calculate_N_step_reachable_sets(indices=None) # 3, 4, 5, 6, 7
-        reach_set_dict, info = analyzer.calculate_reachable_sets(training=False, autorefine=False, visualize=False, condition=condition)
+        # reach_set_dict, info = analyzer.calculate_N_step_reachable_sets(indices=None, condition=di_condition) # 3, 4, 5, 6, 7
+        reach_set_dict, info = analyzer.calculate_reachable_sets(training=False, autorefine=True, visualize=False, condition=di_condition)
         # reach_set_dict = analyzer.calculate_N_step_reachable_sets(indices=[3, 4, 5, 6, 7, 8]) # 3, 4, 5, 6, 7
         tend = time.time()
         # analyzer.switch_sets_on_off(condition)
         print('Calculation Time: {}'.format(tend-tstart))
+        # print('Memory Usage: {}'.format(tracemalloc.get_traced_memory()))
 
         
         analyzer.switch_sets_on_off(di_condition)
@@ -260,9 +266,13 @@ def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
 
         analyzer.plot_reachable_sets()
 
-        analyzer.animate_reachability_calculation(info)
+        # analyzer.animate_reachability_calculation(info)
 
-        analyzer.plot_all_subsets()
+        # analyzer.plot_all_subsets()
+        
+        # frames = [4, 9, -1]
+        for i in [0, 4, 9, -1]:
+            analyzer.another_plotter(info, [i])
 
         # iters = 0
         # while(not analyzer.is_safe([condition]) or iters >= 10): 
@@ -328,24 +338,52 @@ def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
 
 
         time_horizon = 52
+        # time_horizon = 19
         
         # def condition(input_range):
         #     return input_range[1, 0] >= -1
 
         init_range = torch.from_numpy(init_range).type(torch.float32).to(device)
-        analyzer = Analyzer(cl_dyn, time_horizon, init_range, device=device)
+        analyzer = Analyzer(cl_dyn, time_horizon, init_range, max_diff=24, device=device, save_info=True)
 
         # analyzer.set_partition_strategy(0, np.array([6,6,18]))
+        # tracemalloc.start()
         tstart = time.time()
-        # reach_set_dict, info = analyzer.calculate_N_step_reachable_sets(indices=None) # 3, 4, 5, 6, 7
+        # reach_set_dict, info = analyzer.calculate_N_step_reachable_sets(indices=None, condition=unicycle_condition) # 3, 4, 5, 6, 7
         reach_set_dict, info = analyzer.calculate_reachable_sets(training=False, autorefine=True, condition=unicycle_condition, visualize=False)
+        # reach_set_dict, info = analyzer.hybr(condition = unicycle_condition)
         tend = time.time()
         # analyzer.switch_sets_on_off(condition)
         print('Calculation Time: {}'.format(tend-tstart))
+        # print('Memory Usage: {}'.format(tracemalloc.get_traced_memory()))
+
+        num_trajectories = 500
+        xs = analyzer.reachable_sets[0].sample_from_reachable_set(analyzer.cl_system, num_steps=time_horizon, num_trajectories=num_trajectories, sample_corners=False)
+        # xs_sorted = xs.reshape((time_horizon+1, num_trajectories, 3))
+        
+        # numerator_volume = 0
+        # denominator_volume = 0
+        # for i, reachable_set in reach_set_dict.items():
+        #     state_range = reachable_set.full_set.detach().numpy()
+        #     reach_set_volume = np.prod(state_range[:, 1] - state_range[:, 0])
+        #     numerator_volume += reach_set_volume
+
+        #     underapprox_state_range = np.vstack((np.min(xs_sorted[i], axis = 0), np.max(xs_sorted[i], axis = 0))).T
+        #     underapprox_volume = np.prod(underapprox_state_range[:, 1] - underapprox_state_range[:, 0])
+        #     denominator_volume += underapprox_volume
+        #     print("reachable set: {}".format(reach_set_volume))
+        #     print("samples: {}".format(underapprox_volume))
+        
+
+        # print(numerator_volume/denominator_volume)
 
         # analyzer.switch_sets_on_off(condition)
         
         analyzer.plot_reachable_sets()
+        
+        # for i in [34, 58, -1]:
+        # for i in [-1]:
+        #     analyzer.another_plotter(info, [i])
 
         # import pdb; pdb.set_trace()
         # analyzer.plot_all_subsets()

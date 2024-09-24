@@ -78,7 +78,7 @@ class Controller(nn.Module):
         self.fc1 = nn.Linear(2, 30)
         self.fc2 = nn.Linear(30, 20)
         self.fc3 = nn.Linear(20, 10)
-        self.fc3 = nn.Linear(10, 1)
+        self.fc3 = nn.Linear(10, 1) ## typo here... maybe we aren't using this?
 
     def forward(self, xt):
         # ut = F.relu(torch.matmul(xt, torch.Tensor([[1], [0]])))
