@@ -17,7 +17,8 @@ class ReachableSet:
         self.t = t
         
         if ranges is None:
-            ranges = torch.tensor([[0, 0], [0, 0]], device=device)
+            # ranges = torch.tensor([[0, 0], [0, 0]], device=device)
+            ranges = torch.zeros((6, 2), device=device)
         self.full_set = ranges
         self.subsets = {}
         self.partition_strategy = partition_strategy
@@ -113,16 +114,16 @@ class ReachableSet:
             range_tensor = BoundedTensor(x, ptb)
             # import pdb; pdb.set_trace()
             if training:
-                # print("crown fast")
-                # tstart = time.time()
-                # lb, ub = bounded_cl_system.compute_bounds(x=(range_tensor,), method=None, IBP=True)
-                # tend = time.time()
-                # # print("first calc: {}".format(tend-tstart))
+                print("crown fast")
+                tstart = time.time()
+                lb, ub = bounded_cl_system.compute_bounds(x=(range_tensor,), method=None, IBP=True)
+                tend = time.time()
+                print("first calc: {}".format(tend-tstart))
                 # tstart = time.time()
                 # lb, _ = bounded_cl_system.compute_bounds(x=(range_tensor,), method="backward", IBP=False,  bound_upper=False)
                 # tend = time.time()
                 # print("second calc: {}".format(tend-tstart))
-                lb, ub = bounded_cl_system.compute_bounds(x=(range_tensor,), method="backward")
+                # lb, ub = bounded_cl_system.compute_bounds(x=(range_tensor,), method="backward")
             else:
                 lb, ub = bounded_cl_system.compute_bounds(x=(range_tensor,), method="backward")
             
@@ -218,6 +219,8 @@ class Analyzer:
             dummy_input = torch.tensor([[2.75, 0.]], device=device)
         elif cl_system.dynamics.name == 'Unicycle_NL':
             dummy_input = torch.tensor([[-12.5, 3.5, -0.5]], device=device)
+        elif cl_system.dynamics.name == 'Quadrotor_NL':
+            dummy_input = torch.tensor([[-10, 3, 1., 1., 0., 0.,]], device=device)
         bound_opts = {
             'relu': "CROWN-IBP",
             'sparse_intermediate_bounds': False,
@@ -225,9 +228,11 @@ class Analyzer:
             'sparse_intermediate_bounds_with_ibp': False,
             'sparse_features_alpha': False,
             'sparse_spec_alpha': False,
+            # 'zero-lb': True,
+            # 'same-slope': False,
         }
         self.bounded_cl_system = BoundedModule(cl_system, dummy_input, bound_opts=bound_opts, device=device)
-        
+        # import pdb; pdb.set_trace()
         self.reachable_sets = {0: ReachableSet(0, initial_range, partition_strategy = 'maintain', device=device)}
         self.bounded_cl_systems = {0: BoundedModule(cl_system, dummy_input, bound_opts=bound_opts, device=device)}
         for i in range(num_steps):
@@ -695,6 +700,28 @@ class Analyzer:
                 self.plot_reachable_sets()
             
         return self.reachable_sets, snapshots
+
+    def pseudo(self, visualize = False, condition = None, num_trajectories = 100):
+        snapshots = []
+        xs = self.reachable_sets[0].sample_from_reachable_set(self.cl_system, num_steps=self.num_steps, sample_corners=False)
+        xs_sorted = xs.reshape((self.num_steps+1, num_trajectories, 2))
+        for i in range(self.num_steps):
+            current_snapshot = {}
+            underapprox_state_range = np.vstack((np.min(xs_sorted[i], axis = 0), np.max(xs_sorted[i], axis = 0))).T
+            pseudo_reachable_set = ReachableSet(i, ranges=torch.tensor(underapprox_state_range, dtype = torch.float32))
+            tstart = time.time()
+            pseudo_reachable_set.populate_next_reachable_set(self.bounded_cl_system, self.reachable_sets[i+1], training=True)
+            tend = time.time()
+
+            if self.save_info:
+                current_snapshot['reachable_sets'] = deepcopy([(reachable_set.full_set.cpu().detach().numpy(), True, not condition(reachable_set.full_set)) for _, reachable_set in self.reachable_sets.items()])
+                current_snapshot['time'] = tend - tstart
+                current_snapshot['child_idx'] = i + 1
+                current_snapshot['parent_idx'] = 0
+                snapshots.append(current_snapshot)
+        # import pdb; pdb.set_trace()
+        return self.reachable_sets, snapshots
+
 
     def calc_steps(self, tstart_ttt, bsteps, b, data, phase, status, t_est):
         t_curr = tstart_ttt + bsteps
@@ -1299,14 +1326,14 @@ class Analyzer:
 
 
 
-    def another_plotter(self, info, frames, plot_partitions=False):
+    def three_dimensional_plotter(self, info, frames, plot_partitions=False):
         cl_system = self.cl_system
         time_horizon = self.num_steps
         time_multiplier = 5
 
-
+        fig = plt.figure(figsize=(10, 6))
+        ax = fig.add_subplot(111, projection='3d')
         
-        fig, ax = plt.subplots(figsize=(10,6))
         
         plt.rcParams.update({
             "text.usetex": True,
@@ -1318,7 +1345,6 @@ class Analyzer:
         info[-1]['time'] = 3
         for j, snapshot in enumerate(info):
             num_times = max(int(time_multiplier * 5 * snapshot['time']), 1)
-            # num_times = 1
             reachable_set_snapshot = []
             for i, reach_set_tuple in enumerate(snapshot['reachable_sets']):
                 state_range = reach_set_tuple[0]
@@ -1327,65 +1353,179 @@ class Analyzer:
                 edgecolor = '#2176FF'
 
                 if i == snapshot['child_idx'] and snapshot['child_idx'] != snapshot['parent_idx'] + 1:
-                    edgecolor = '#D63230' #F45B69'
+                    edgecolor = '#D63230'
                 
                 if i == 0:
                     edgecolor = 'k'
                 elif is_symbolic:
-                    edgecolor = '#00CC00' # edgecolor = '#D112E2' # '#D14081' # '#53917E' # '#20A39E' # '#44BBA4'
+                    edgecolor = '#00CC00'
 
                 if i == snapshot['parent_idx'] and j < len(info) - 1:
-                    edgecolor = '#FF00FF' # '#FFAE03'
-                if collides:
-                    edgecolor = '#FF8000' # '#D63230'
-                
+                    edgecolor = '#FF00FF'
                 
                 reachable_set_snapshot.append((state_range, edgecolor))
             
-            # for i in range(num_times):
             reachable_set_snapshots.append(reachable_set_snapshot)
-                
-                
 
-
-            # num_times.append()
-            # # num_times.append(2)
-            # reachable_sets.append(time_step_dict['unrefined'])
-            # colors.append('b')
-            # remove.append(False)
-
-            # if 'refined' in time_step_dict.keys():
-            #     colors[-1] = 'r'
-            #     remove[-1] = True
-            #     num_times.append(max(5+int(5*time_step_dict['recalc_time']), 1))
-            #     reachable_sets.append(time_step_dict['refined'])
-            #     colors.append('b')
-            #     remove.append(True)
-    
-
-        # num_times.append(5)
-
-        
-        # reachable_sets_extended = []
-        # colors_extended = []
-        # remove_extended = []
-        # for i in range(len(reachable_sets)):
-        #     for _ in range(num_times[i+1]):
-        #         reachable_sets_extended.append(reachable_sets[i])
-        #         colors_extended.append(colors[i])
-        #         remove_extended.append(remove[i])
-        
-        # import pdb; pdb.set_trace()
         def animate(i):    
             ax.clear()
             xs = self.reachable_sets[0].sample_from_reachable_set(self.cl_system, num_steps=time_horizon, sample_corners=False)
             
-            ax.scatter(xs[:, 0], xs[:, 1], s=1, c='k')
+            ax.scatter(xs[:, 0], xs[:, 1], xs[:, 2], s=1, c='k')
+        
 
-            # xy = initial_set[[0, 1], 0]
-            # width, height = initial_set[[0, 1], 1] - initial_set[[0, 1], 0]
-            # rect = Rectangle(xy, width, height, linewidth=1, edgecolor='k', facecolor='none')
-            # ax.add_patch(rect)
+            if self.cl_system.dynamics.name == "Quadrotor_NL":
+                fig.set_size_inches(10, 5)
+                yoffset1 = 2
+                zoffset1 = 2
+                yoffset2 = -1.5
+                zoffset2 = 0.25
+                little_radius = 1.25 * 0.5
+                big_radius = 2.5
+                obstacles = [{'x': -6, 'y': -2. + yoffset1, 'r': little_radius},
+                            {'x': -6, 'y': 2. + yoffset1, 'r': little_radius},
+                            {'x': -6, 'y': -4.5 + yoffset1, 'r': big_radius},
+                            {'x': -6, 'y': 4.5 + yoffset1, 'r': big_radius},
+                            {'x': -6, 'z': -1. + zoffset1, 'r': little_radius},
+                            {'x': -6, 'z': 3. + zoffset1, 'r': little_radius},
+                            {'x': -6, 'z': -3.5 + zoffset1, 'r': big_radius},
+                            {'x': -6, 'z': 5.5 + zoffset1, 'r': big_radius},
+                
+                            {'x': -3, 'y': -2. + yoffset2, 'r': little_radius},
+                            {'x': -3, 'y': 2. + yoffset2, 'r': little_radius},
+                            {'x': -3, 'y': -4.5 + yoffset2, 'r': big_radius},
+                            {'x': -3, 'y': 4.5 + yoffset2, 'r': big_radius},
+                            {'x': -3, 'z': -1. + zoffset2, 'r': little_radius},
+                            {'x': -3, 'z': 3. + zoffset2, 'r': little_radius},
+                            {'x': -3, 'z': -3.5 + zoffset2, 'r': big_radius},
+                            {'x': -3, 'z': 5.5 + zoffset2, 'r': big_radius},]
+                for obstacle in obstacles:
+                    color = '#262626'
+                    if 'z' in obstacle and 'y' in obstacle:
+                        u, v = np.mgrid[0:2*np.pi:20j, 0:np.pi:10j]
+                        x = obstacle['r'] * np.cos(u) * np.sin(v) + obstacle['x']
+                        y = obstacle['r'] * np.sin(u) * np.sin(v) + obstacle['y']
+                        z = obstacle['r'] * np.cos(v) + obstacle['z']
+                    elif 'y' in obstacle and obstacle['r'] == little_radius:
+                        height = 5
+                        num_points = 8
+                        u = np.linspace(0, 2 * np.pi, num_points)
+                        v = np.linspace(-height, height, num_points)
+                        x = obstacle['r'] * np.outer(np.cos(u), np.ones(np.size(v))) + obstacle['x']
+                        y = obstacle['r'] * np.outer(np.sin(u), np.ones(np.size(v))) + obstacle['y']
+                        z = np.outer(np.ones(np.size(u)), v)
+
+                    elif 'z' in obstacle and obstacle['r'] == little_radius:
+                        height = 5
+                        num_points = 8
+                        u = np.linspace(0, 2 * np.pi, num_points)
+                        v = np.linspace(-height, height, num_points)
+                        x = obstacle['r'] * np.outer(np.cos(u), np.ones(np.size(v))) + obstacle['x']
+                        z = obstacle['r'] * np.outer(np.sin(u), np.ones(np.size(v))) + obstacle['z']
+                        y = np.outer(np.ones(np.size(u)), v)
+                    ax.plot_surface(x, y, z, color=color, alpha=0.1)
+
+                ax.set_xlim([-10, 1])
+                ax.set_ylim([-1, 4])
+                ax.set_aspect('equal')
+
+                ax.set_xlabel('x')
+                ax.set_ylabel('y')
+
+                linewidth = 1
+
+            for reachable_set_snapshot in reachable_set_snapshots[i]:
+                set_range = reachable_set_snapshot[0]
+                edgecolor = reachable_set_snapshot[1]
+                
+                x = set_range[0, 0]
+                y = set_range[1, 0]
+                z = set_range[2, 0]
+                dx = set_range[0, 1] - set_range[0, 0]
+                dy = set_range[1, 1] - set_range[1, 0]
+                dz = set_range[2, 1] - set_range[2, 0]
+                alpha = 0.4
+                if edgecolor == '#FF8000': 
+                    alpha = 0.6
+                ax.bar3d(x, y, z, dx, dy, dz, color=edgecolor, alpha=alpha)
+                # xy = set_range[[0, 1], 0]
+                # width, height = set_range[[0, 1], 1] - set_range[[0, 1], 0]
+                # if plot_3d:
+                #     z = set_range[2, 0]
+                #     depth = set_range[2, 1] - set_range[2, 0]
+                #     rect = Rectangle(xy, width, height, linewidth=linewidth, edgecolor=edgecolor, facecolor='none')
+                #     ax.add_patch(rect)
+                #     ax.bar3d(xy[0], xy[1], z, width, height, depth, color=edgecolor, alpha=0.1)
+                # else:
+                #     rect = Rectangle(xy, width, height, linewidth=linewidth, edgecolor=edgecolor, facecolor='none')
+                #     ax.add_patch(rect)
+                #     alpha = 0.1
+                #     if edgecolor == '#FF8000': 
+                #         alpha = 0.4
+                #     if edgecolor != 'k':
+                #         rect = Rectangle(xy, width, height, linewidth=linewidth, edgecolor=edgecolor, facecolor=edgecolor, alpha=alpha)
+                #         ax.add_patch(rect)
+
+        if self.cl_system.dynamics.name == "DoubleIntegrator":
+            ani_name = 'double_integrator.gif'
+        elif self.cl_system.dynamics.name == "Unicycle_NL":
+            ani_name = 'unicycle.gif'
+
+        for i in frames:
+            animate(i)
+            plt.show()
+
+    def another_plotter(self, info, frames, plot_partitions=False, plot_3d=False):
+        cl_system = self.cl_system
+        time_horizon = self.num_steps
+        time_multiplier = 5
+
+        if plot_3d:
+            fig = plt.figure(figsize=(10, 6))
+            ax = fig.add_subplot(111, projection='3d')
+        else:
+            fig, ax = plt.subplots(figsize=(10, 6))
+        
+        plt.rcParams.update({
+            "text.usetex": True,
+            "font.family": "Helvetica",
+            "font.size": 20
+        })
+
+        reachable_set_snapshots = []
+        info[-1]['time'] = 3
+        for j, snapshot in enumerate(info):
+            num_times = max(int(time_multiplier * 5 * snapshot['time']), 1)
+            reachable_set_snapshot = []
+            for i, reach_set_tuple in enumerate(snapshot['reachable_sets']):
+                state_range = reach_set_tuple[0]
+                is_symbolic = reach_set_tuple[1]
+                collides = reach_set_tuple[2]
+                edgecolor = '#2176FF'
+
+                if i == snapshot['child_idx'] and snapshot['child_idx'] != snapshot['parent_idx'] + 1:
+                    edgecolor = '#D63230'
+                
+                if i == 0:
+                    edgecolor = 'k'
+                elif is_symbolic:
+                    edgecolor = '#00CC00'
+
+                if i == snapshot['parent_idx'] and j < len(info) - 1:
+                    edgecolor = '#FF00FF'
+                
+                reachable_set_snapshot.append((state_range, edgecolor))
+            
+            reachable_set_snapshots.append(reachable_set_snapshot)
+
+        def animate(i):    
+            ax.clear()
+            xs = self.reachable_sets[0].sample_from_reachable_set(self.cl_system, num_steps=time_horizon, sample_corners=False)
+            
+            if plot_3d:
+                ax.scatter(xs[:, 0], xs[:, 1], xs[:, 2], s=1, c='k')
+            else:
+                ax.scatter(xs[:, 0], xs[:, 1], s=1, c='k')
             
             if self.cl_system.dynamics.name == "DoubleIntegrator":
                 delta = 0.
@@ -1407,12 +1547,9 @@ class Analyzer:
 
                 linewidth = 1.5
 
-                
             elif self.cl_system.dynamics.name == "Unicycle_NL":
                 fig.set_size_inches(10, 5)
                 delta = 0.0
-                # obstacles = [{'x': -10, 'y': -1, 'r': 3},
-                #              {'x': -3, 'y': 2.5, 'r': 2 }]
                 obstacles = [{'x': -6, 'y': -0.5, 'r': 2.4+delta},
                             {'x': -1.25, 'y': 1.75, 'r': 1.6+delta}]
                 for obstacle in obstacles:
@@ -1431,17 +1568,39 @@ class Analyzer:
 
                 linewidth = 1
 
-                
-            
+            elif self.cl_system.dynamics.name == "Quadrotor_NL":
+                fig.set_size_inches(10, 5)
+                delta = 0.0
+                obstacles = [{'x': -6, 'y': -0.5, 'r': 2.4+delta},
+                            {'x': -1.25, 'y': 1.75, 'r': 1.6+delta}]
+                for obstacle in obstacles:
+                    color = '#262626'
+                    circle = plt.Circle((obstacle['x'], obstacle['y']), obstacle['r'], edgecolor=color, facecolor='none')
+                    ax.add_patch(circle)
+                    circle = plt.Circle((obstacle['x'], obstacle['y']), obstacle['r'], edgecolor=color, facecolor=color, alpha=0.2)
+                    ax.add_patch(circle)
 
-            
+                ax.set_xlim([-10, 1])
+                ax.set_ylim([-1, 4])
+                ax.set_aspect('equal')
+
+                ax.set_xlabel('x')
+                ax.set_ylabel('y')
+
+                linewidth = 1
 
             for reachable_set_snapshot in reachable_set_snapshots[i]:
                 set_range = reachable_set_snapshot[0]
                 edgecolor = reachable_set_snapshot[1]
                 xy = set_range[[0, 1], 0]
                 width, height = set_range[[0, 1], 1] - set_range[[0, 1], 0]
-                if edgecolor == 'k':
+                if plot_3d:
+                    z = set_range[2, 0]
+                    depth = set_range[2, 1] - set_range[2, 0]
+                    rect = Rectangle(xy, width, height, linewidth=linewidth, edgecolor=edgecolor, facecolor='none')
+                    ax.add_patch(rect)
+                    ax.bar3d(xy[0], xy[1], z, width, height, depth, color=edgecolor, alpha=0.1)
+                else:
                     rect = Rectangle(xy, width, height, linewidth=linewidth, edgecolor=edgecolor, facecolor='none')
                     ax.add_patch(rect)
                     alpha = 0.1
@@ -1451,19 +1610,6 @@ class Analyzer:
                         rect = Rectangle(xy, width, height, linewidth=linewidth, edgecolor=edgecolor, facecolor=edgecolor, alpha=alpha)
                         ax.add_patch(rect)
 
-            
-            # for j in range(i):
-            #     set_range = reachable_sets_extended[j]
-            #     xy = set_range[[0, 1], 0]
-            #     width, height = set_range[[0, 1], 1] - set_range[[0, 1], 0]
-            #     rect = Rectangle(xy, width, height, linewidth=1, edgecolor=colors_extended[j], facecolor='none')
-
-
-
-            #     # import pdb; pdb.set_trace()
-            #     if j == i - 1 or not remove_extended[j]:
-            #         ax.add_patch(rect)
-                
         if self.cl_system.dynamics.name == "DoubleIntegrator":
             ani_name = 'double_integrator.gif'
         elif self.cl_system.dynamics.name == "Unicycle_NL":

@@ -32,6 +32,7 @@ from nfl_veripy.utils.nn_closed_loop import *
 import cl_systems
 from _static.dataloaders.double_integrator_loader import double_integrator_loaders, DIDataset
 from _static.dataloaders.unicycle_nl_loader import unicycle_nl_loaders, UniDataset
+from _static.dataloaders.quadrotor_nl_loader import quadrotor_nl_loaders
 from utils.robust_training_utils import calculate_reachable_sets
 from utils.robust_training_utils import Analyzer
 
@@ -40,7 +41,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--verify", action="store_true", help='verification mode, do not train')
 parser.add_argument("--load", type=str, default="", help='Load pretrained model')
 parser.add_argument("--device", type=str, default="cuda", choices=["cpu", "cuda"], help='use cpu or cuda')
-parser.add_argument("--data", type=str, default="default", choices=["MNIST", "CIFAR", "default", "expanded", "expanded_5hz", "dagger", "default_5hz", "default_more_data_5hz"], help='dataset')
+parser.add_argument("--data", type=str, default="default", choices=["MNIST", "CIFAR", "default", "expanded", "expanded_5hz", "dagger", "default_5hz", "default_more_data_5hz", "gates"], help='dataset')
 parser.add_argument("--seed", type=int, default=100, help='random seed')
 parser.add_argument("--eps", type=float, default=0.3, help='Target training epsilon')
 parser.add_argument("--norm", type=float, default='inf', help='p norm for epsilon perturbation')
@@ -57,7 +58,7 @@ parser.add_argument("--bound_opts", type=str, default=None, choices=["same-slope
                     help='bound options')
 parser.add_argument("--conv_mode", type=str, choices=["matrix", "patches"], default="patches")
 parser.add_argument("--save_model", type=str, default='')
-parser.add_argument("--system", type=str, choices=["double_integrator", "Unicycle_NL"], default='double_integrator')
+parser.add_argument("--system", type=str, choices=["double_integrator", "Unicycle_NL", "Quadrotor"], default='double_integrator')
 parser.add_argument("--training_method", type=str, choices=["natural", "robust", "constraint", "robust-constraint"], default='natural')
 parser.add_argument("--refinement_method", type=str, choices=["none", "smart-partition", "uniform-partition", "symbolic_indices", "smart-partition-recalculate"], default='none')
 # parser.add_argument("--constraint", type=str, choices=["none", "data", "bounds", "all"], default='none')
@@ -522,6 +523,45 @@ def main(args):
                 [-15., -14.],
                 [4., 5.],
                 [-np.pi/6, np.pi/6]
+            ], device=args.device)
+            analyzer = Analyzer(cl_dyn, num_steps, init_ranges, device=args.device)
+            if args.refinement_method in ["smart-partition", "smart-partition-recalculate"]:
+                analyzer.set_partition_strategy(0, np.array([3,3]))
+
+    if args.system == 'Quadrotor':
+        controller_name = "quadrotor_4layer"
+        neurons_per_layer = [40, 20, 10]
+        mean = torch.tensor([-5.25, 1.75, 1, 1, 0, 0], device=args.device)
+        std = torch.tensor([5.25, 1.75, 0.25, 0.25, 1, 1], device=args.device)
+        controller_ori = cl_systems.Controllers[controller_name](neurons_per_layer, mean, std)
+        ol_dyn = dynamics.Quadrotor_NL(dt=0.2)
+        ol_dyn.At_torch = ol_dyn.At_torch.to(args.device)
+        ol_dyn.bt_torch = ol_dyn.bt_torch.to(args.device)
+        ol_dyn.ct_torch = ol_dyn.ct_torch.to(args.device)
+        cl_dyn = cl_systems.Quadrotor(controller_ori, ol_dyn).to(args.device)
+
+        ## Step 2: Prepare dataset as usual
+        if args.data in ['default', 'gates']:
+            train_loader, val_loader, test_loader = quadrotor_nl_loaders(batch_size=64, dataset_name=args.data)
+            train_loader.mean = val_loader.mean = test_loader.mean = torch.tensor([0.])
+            train_loader.std = val_loader.std = test_loader.std = torch.tensor([1.])
+            dummy_input = torch.tensor([[-10, 3, 1., 1., 0., 0.,]], device=args.device)
+            cl_dyn(dummy_input)
+            # import pdb; pdb.set_trace()
+
+        
+            ## Step 3: wrap model with auto_LiRPA
+            # The second parameter dummy_input is for constructing the trace of the computational graph.
+            model = BoundedModule(controller_ori, dummy_input, bound_opts={'relu':args.bound_opts}, device=args.device)
+            bounded_cl_sys = BoundedModule(cl_dyn, dummy_input, bound_opts={'relu':args.bound_opts}, device=args.device)
+            num_steps = 5
+            init_ranges = torch.tensor([
+                [-10.5, -9.5],
+                [2.5, 3.5],
+                [0.75, 1.22],
+                [0.75, 1.25],
+                [-0.25, 0.25],
+                [-0.25, 0.25],
             ], device=args.device)
             analyzer = Analyzer(cl_dyn, num_steps, init_ranges, device=args.device)
             if args.refinement_method in ["smart-partition", "smart-partition-recalculate"]:

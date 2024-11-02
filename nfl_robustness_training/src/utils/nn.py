@@ -37,6 +37,19 @@ def load_controller(system, controller_name = 'default', dagger=False, device='c
         controller.load_state_dict(state_dict)
         if device == 'cuda':
             controller = controller.cuda()
+
+    elif system == "Quadrotor_NL":
+        neurons_per_layer = [40, 20, 10]
+        # neurons_per_layer = [15, 10, 5]
+        mean = torch.tensor([-5.25, 1.75, 1, 1, 0, 0], device=device)
+        std = torch.tensor([5.25, 1.75, 0.25, 0.25, 1, 1], device=device)
+        controller = cl_systems.Controllers["quadrotor_4layer"](neurons_per_layer, mean, std)
+        
+        controller_path = PATH + '/nfl_robustness_training/src/controller_models/Quadrotor/quadrotor_4layer/' + controller_name + '.pth'
+        state_dict = torch.load(controller_path)['state_dict']
+        controller.load_state_dict(state_dict)
+        if device == 'cuda':
+            controller = controller.cuda()
         
     else:
         raise NotImplementedError
