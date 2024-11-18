@@ -79,20 +79,59 @@ def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
         delta = 0.0
         # obstacles = [{'x': -6, 'y': -0.5, 'r': 2.4+delta},
         #              {'x': -1.25, 'y': 1.75, 'r': 1.6+delta}]
-        yoffset1 = 2
-        zoffset1 = 2
+        # yoffset1 = 2
+        # zoffset1 = 2
+        # yoffset2 = -1.5
+        # zoffset2 = 0.25
+        # little_radius = 1.25 * 0.5
+        # big_radius = 2.5
+        # yoffset1 = 1
+        # zoffset1 = 3
+        # yoffset2 = -1.5
+        # zoffset2 = 1
+        # little_radius = 1.25*0.75
+        # big_radius = 0.3
+        # yoffset3 = 0
+        # zoffset3 = 0
+        # obstacles = [{'x': -6, 'y': -2. + yoffset1, 'r': little_radius},
+        #              {'x': -6, 'y': 2. + yoffset1, 'r': little_radius},
+        #             #  {'x': -6, 'y': -4.5 + yoffset1, 'r': big_radius},
+        #             #  {'x': -6, 'y': 4.5 + yoffset1, 'r': big_radius},
+        #              {'x': -6, 'z': -1. + zoffset1, 'r': little_radius},
+        #              {'x': -6, 'z': 3. + zoffset1, 'r': little_radius},
+        #             #  {'x': -6, 'z': -3.5 + zoffset1, 'r': big_radius},
+        #             #  {'x': -6, 'z': 5.5 + zoffset1, 'r': big_radius},
+        
+        #              {'x': -3, 'y': -2. + yoffset2, 'r': little_radius},
+        #              {'x': -3, 'y': 2. + yoffset2, 'r': little_radius},
+        #              {'x': -3, 'y': -4.5 + yoffset2, 'r': big_radius},
+        #              {'x': -3, 'y': 4.5 + yoffset2, 'r': big_radius},
+        #              {'x': -3, 'z': -1. + zoffset2, 'r': little_radius},
+        #              {'x': -3, 'z': 3. + zoffset2, 'r': little_radius},
+        #              {'x': -3, 'z': -3.5 + zoffset2, 'r': big_radius},
+        #              {'x': -3, 'z': 5.5 + zoffset2, 'r': big_radius},
+                     
+        #              {'x': 0, 'y': -2. + yoffset3, 'r': little_radius},
+        #              {'x': 0, 'y': 2. + yoffset3, 'r': little_radius},
+        #              {'x': 0, 'z': -1. + zoffset3, 'r': little_radius},
+        #              {'x': 0, 'z': 3. + zoffset3, 'r': little_radius},]
+        
+        yoffset1 = 1
+        zoffset1 = 3
         yoffset2 = -1.5
-        zoffset2 = 0.25
-        little_radius = 1.25 * 0.5
-        big_radius = 2.5
+        zoffset2 = 1
+        little_radius = 1.25*0.4
+        big_radius = 0.03
+        yoffset3 = 0
+        zoffset3 = 0
         obstacles = [{'x': -6, 'y': -2. + yoffset1, 'r': little_radius},
                      {'x': -6, 'y': 2. + yoffset1, 'r': little_radius},
-                     {'x': -6, 'y': -4.5 + yoffset1, 'r': big_radius},
-                     {'x': -6, 'y': 4.5 + yoffset1, 'r': big_radius},
+                    #  {'x': -6, 'y': -4.5 + yoffset1, 'r': big_radius},
+                    #  {'x': -6, 'y': 4.5 + yoffset1, 'r': big_radius},
                      {'x': -6, 'z': -1. + zoffset1, 'r': little_radius},
                      {'x': -6, 'z': 3. + zoffset1, 'r': little_radius},
-                     {'x': -6, 'z': -3.5 + zoffset1, 'r': big_radius},
-                     {'x': -6, 'z': 5.5 + zoffset1, 'r': big_radius},
+                    #  {'x': -6, 'z': -3.5 + zoffset1, 'r': big_radius},
+                    #  {'x': -6, 'z': 5.5 + zoffset1, 'r': big_radius},
         
                      {'x': -3, 'y': -2. + yoffset2, 'r': little_radius},
                      {'x': -3, 'y': 2. + yoffset2, 'r': little_radius},
@@ -101,7 +140,12 @@ def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
                      {'x': -3, 'z': -1. + zoffset2, 'r': little_radius},
                      {'x': -3, 'z': 3. + zoffset2, 'r': little_radius},
                      {'x': -3, 'z': -3.5 + zoffset2, 'r': big_radius},
-                     {'x': -3, 'z': 5.5 + zoffset2, 'r': big_radius},]
+                     {'x': -3, 'z': 5.5 + zoffset2, 'r': big_radius},
+                     
+                     {'x': 0, 'y': -2. + yoffset3, 'r': little_radius},
+                     {'x': 0, 'y': 2. + yoffset3, 'r': little_radius},
+                     {'x': 0, 'z': -1. + zoffset3, 'r': little_radius},
+                     {'x': 0, 'z': 3. + zoffset3, 'r': little_radius},]
         
         rx, ry, rz = input_range[[0, 1, 2], 0]
         length, width, height = input_range[[0, 1, 2], 1] - input_range[[0, 1, 2], 0]
@@ -114,14 +158,14 @@ def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
 
                 if (cx < rx):
                     testX = rx
-                elif (cx > rx + width):
-                    testX = rx + width
+                elif (cx > rx + length):
+                    testX = rx + length
 
 
                 if (cy < ry):
                     testY = ry
-                elif (cy > ry + height):
-                    testY = ry + height
+                elif (cy > ry + width):
+                    testY = ry + width
                 
                 dist = torch.sqrt((cx-testX)**2 + (cy - testY)**2)
                 if dist < obs['r']:
@@ -133,8 +177,8 @@ def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
 
                 if (cx < rx):
                     testX = rx
-                elif (cx > rx + width):
-                    testX = rx + width
+                elif (cx > rx + length):
+                    testX = rx + length
 
 
                 if (cz < rz):
@@ -168,8 +212,8 @@ def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
         analyzer = Analyzer(cl_dyn, time_horizon, init_range, max_diff=30, device=device)
 
         tstart = time.time()
-        reach_set_dict, info = analyzer.calculate_N_step_reachable_sets(indices=None, condition=di_condition) # 3, 4, 5, 6, 7
-        # reach_set_dict, info = analyzer.calculate_reachable_sets(training=False, autorefine=True, visualize=False, condition=di_condition)
+        # reach_set_dict, info = analyzer.calculate_N_step_reachable_sets(indices=None, condition=di_condition) # 3, 4, 5, 6, 7
+        reach_set_dict, info = analyzer.calculate_reachable_sets(training=False, autorefine=True, visualize=False, condition=di_condition)
         # reach_set_dict = analyzer.calculate_N_step_reachable_sets(indices=[3, 4, 5, 6, 7, 8]) # 3, 4, 5, 6, 7
         # reach_set_dict, info = analyzer.pseudo(condition = di_condition)
         tend = time.time()
@@ -205,15 +249,15 @@ def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
 
 
         init_range = torch.from_numpy(init_range).type(torch.float32).to(device)
-        analyzer = Analyzer(cl_dyn, time_horizon, init_range, max_diff=24, device=device, save_info=True)
+        analyzer = Analyzer(cl_dyn, time_horizon, init_range, max_diff=10, device=device, save_info=True)
 
         # analyzer.set_partition_strategy(0, np.array([6,6,18]))
         # tracemalloc.start()
         tstart = time.time()
         # reach_set_dict, info = analyzer.calculate_N_step_reachable_sets(indices=None, condition=unicycle_condition) # 3, 4, 5, 6, 7
         # reach_set_dict, info = analyzer.calculate_reachable_sets(training=False, autorefine=True, condition=unicycle_condition, visualize=False)
-        # reach_set_dict, info = analyzer.hybr(condition = unicycle_condition)
-        reach_set_dict, info = analyzer.pseudo(condition = unicycle_condition)
+        reach_set_dict, info = analyzer.hybr(condition = unicycle_condition)
+        # reach_set_dict, info = analyzer.pseudo(condition = unicycle_condition)
         tend = time.time()
         # analyzer.switch_sets_on_off(condition)
         print('Calculation Time: {}'.format(tend-tstart))
@@ -259,28 +303,29 @@ def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
         #     [-0.01, 0.01],
         # ])
         init_range = np.array([
-            [-10.501, -10.499],
+            [-10.55, -10.45],
+            [-0.05, 0.05],
+            [0.95, 1.05],
+            [0.99, 1.01],
             [-0.01, 0.01],
-            [0.999, 1.001],
-            [0.999, 1.001],
-            [-0.001, 0.001],
             [-0.01, 0.01],
         ])
 
 
-        time_horizon = 53
+        time_horizon = 41
         # time_horizon = 33
+        # time_horizon = 20
 
 
         init_range = torch.from_numpy(init_range).type(torch.float32).to(device)
-        analyzer = Analyzer(cl_dyn, time_horizon, init_range, max_diff=20, device=device, save_info=True)
+        analyzer = Analyzer(cl_dyn, time_horizon, init_range, max_diff=42, device=device, save_info=True)
 
         # analyzer.set_partition_strategy(0, np.array([1,16,1,1,10,1]))
         # tracemalloc.start()
         tstart = time.time()
-        # reach_set_dict, info = analyzer.calculate_N_step_reachable_sets(indices=None, condition=unicycle_condition) # 3, 4, 5, 6, 7
-        reach_set_dict, info = analyzer.calculate_reachable_sets(training=False, autorefine=True, condition=quadrotor_condition, visualize=False)
-        # reach_set_dict, info = analyzer.hybr(condition = unicycle_condition)
+        reach_set_dict, info = analyzer.calculate_N_step_reachable_sets(indices=None, condition=quadrotor_condition) # 3, 4, 5, 6, 7
+        # reach_set_dict, info = analyzer.calculate_reachable_sets(training=False, autorefine=True, condition=quadrotor_condition, visualize=False)
+        # reach_set_dict, info = analyzer.hybr(condition = quadrotor_condition)
         # reach_set_dict, info = analyzer.pseudo(condition = unicycle_condition)
         tend = time.time()
         # analyzer.switch_sets_on_off(condition)

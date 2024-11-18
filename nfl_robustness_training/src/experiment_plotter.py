@@ -2,6 +2,7 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
+from matplotlib.legend_handler import HandlerTuple
 import pickle
 import os
 
@@ -11,20 +12,20 @@ from utils.nn import *
 dir_path = os.path.dirname(os.path.realpath(__file__))
 
 # nicks colorblind color palette (bad)
-# lightblue = '#56B4E9'
-# lightorange = '#FFC20A'
-# blue = '#2E72F2' # '#5087F5' # '#005AB5'# '#1C44FE'
-# green = '#28DD51'
-# orange = '#FB762F' # '#D11F40' # '#D66A37' # '#DC3220'
-# magenta = '#FB5CDB'
+lightblue = '#56B4E9'
+lightorange = '#FFC20A'
+blue = '#2E72F2' # '#5087F5' # '#005AB5'# '#1C44FE'
+green = '#28DD51'
+orange = '#FB762F' # '#D11F40' # '#D66A37' # '#DC3220'
+magenta = '#FB5CDB'
 
 # Wong colorblind palette
-lightblue = '#56B4E9'
-lightorange = '#E69F00'
-blue = '#0072B2' # '#5087F5' # '#005AB5'# 
-green = '#009E73'
-orange = '#D55E00' # '#D11F40' # '#D66A37' # 
-magenta = '#CC79A7'
+# lightblue = '#56B4E9'
+# lightorange = '#E69F00'
+# blue = '#0072B2' # '#5087F5' # '#005AB5'# 
+# green = '#009E73'
+# orange = '#D55E00' # '#D11F40' # '#D66A37' # 
+# magenta = '#CC79A7'
 
 # lightblue = '#56B4E9'
 # lightorange = '#FFC20A'
@@ -188,6 +189,463 @@ def official_plotter(info, cl_system, frames):
         plt.show()
 
 
+def official_3D_plotter(info, cl_system, frames):
+    num_steps = len(info[-1]["reachable_sets"]) - 1
+    
+    fig = plt.figure(figsize=(10, 6))
+    ax = fig.add_subplot(111, projection='3d')
+    
+    plt.rcParams.update({
+        "text.usetex": True,
+        "font.family": "Times",
+        "font.size": 20,
+    })
+
+    reachable_set_snapshots = []
+    # info[-1]['time'] = 3
+    for j, snapshot in enumerate(info):
+        reachable_set_snapshot = []
+        for i, reach_set_tuple in enumerate(snapshot['reachable_sets']):
+            state_range = reach_set_tuple[0]
+            is_symbolic = reach_set_tuple[1]
+            collides = reach_set_tuple[2]
+            edgecolor = blue # '#2176FF'
+
+            if i == snapshot['child_idx'] and snapshot['child_idx'] != snapshot['parent_idx'] + 1:
+                edgecolor = blue #'#D63230' #F45B69'
+            
+            if i == 0:
+                edgecolor = 'k'
+            elif is_symbolic:
+                edgecolor = green # '#00CC00' # edgecolor = '#D112E2' # '#D14081' # '#53917E' # '#20A39E' # '#44BBA4'
+
+            if i == snapshot['parent_idx'] and j < len(info) - 1:
+                edgecolor = magenta #'#FF00FF' # '#FFAE03'
+            if collides:
+                edgecolor = orange # '#FF8000' # '#D63230'
+            
+            
+            reachable_set_snapshot.append((state_range, edgecolor))
+        
+        # for i in range(num_times):
+        reachable_set_snapshots.append(reachable_set_snapshot)
+            
+
+    def animate(i):    
+        ax.clear()
+        state_range = info[0]["reachable_sets"][0][0]
+        num_trajectories = 100
+        xs = sample_from_range(state_range, cl_system, num_steps, num_trajectories = num_trajectories)
+        
+        ax.scatter(xs[:, 0], xs[:, 1], xs[:, 2], s=1, c='k')
+    
+
+        fig.set_size_inches(15, 10)
+        # yoffset1 = 2
+        # zoffset1 = 2
+        # yoffset2 = -1.5
+        # zoffset2 = 0.25
+        # little_radius = 1.25 * 0.5
+        # big_radius = 2.5
+        yoffset1 = 1
+        zoffset1 = 3
+        yoffset2 = -1.5
+        zoffset2 = 1
+        little_radius = 1.25*0.4
+        big_radius = 0.3
+        yoffset3 = 0
+        zoffset3 = 0
+        obstacles = [{'x': -6, 'y': -2. + yoffset1, 'r': little_radius, 'gate_number': 1},
+                    {'x': -6, 'y': 2. + yoffset1, 'r': little_radius, 'gate_number': 1},
+                    {'x': -6, 'z': -1. + zoffset1, 'r': little_radius, 'gate_number': 1},
+                    {'x': -6, 'z': 3. + zoffset1, 'r': little_radius, 'gate_number': 1},
+
+                    {'x': -3, 'y': -2. + yoffset2, 'r': little_radius, 'gate_number': 2},
+                    {'x': -3, 'y': 2. + yoffset2, 'r': little_radius, 'gate_number': 2},
+                    {'x': -3, 'z': -1. + zoffset2, 'r': little_radius, 'gate_number': 2},
+                    {'x': -3, 'z': 3. + zoffset2, 'r': little_radius, 'gate_number': 2},
+                    
+                    {'x': 0, 'y': -2. + yoffset3, 'r': little_radius, 'gate_number': 3},
+                    {'x': 0, 'y': 2. + yoffset3, 'r': little_radius, 'gate_number': 3},
+                    {'x': 0, 'z': -1. + zoffset3, 'r': little_radius, 'gate_number': 3},
+                    {'x': 0, 'z': 3. + zoffset3, 'r': little_radius, 'gate_number': 3},]
+        # obstacles = [{'x': -6, 'y': -2. + yoffset1, 'r': little_radius},
+        #             {'x': -6, 'y': 2. + yoffset1, 'r': little_radius},
+        #             {'x': -6, 'y': -4.5 + yoffset1, 'r': big_radius},
+        #             {'x': -6, 'y': 4.5 + yoffset1, 'r': big_radius},
+        #             {'x': -6, 'z': -1. + zoffset1, 'r': little_radius},
+        #             {'x': -6, 'z': 3. + zoffset1, 'r': little_radius},
+        #             {'x': -6, 'z': -3.5 + zoffset1, 'r': big_radius},
+        #             {'x': -6, 'z': 5.5 + zoffset1, 'r': big_radius},
+        
+        #             {'x': -3, 'y': -2. + yoffset2, 'r': little_radius},
+        #             {'x': -3, 'y': 2. + yoffset2, 'r': little_radius},
+        #             {'x': -3, 'y': -4.5 + yoffset2, 'r': big_radius},
+        #             {'x': -3, 'y': 4.5 + yoffset2, 'r': big_radius},
+        #             {'x': -3, 'z': -1. + zoffset2, 'r': little_radius},
+        #             {'x': -3, 'z': 3. + zoffset2, 'r': little_radius},
+        #             {'x': -3, 'z': -3.5 + zoffset2, 'r': big_radius},
+        #             {'x': -3, 'z': 5.5 + zoffset2, 'r': big_radius},
+                    
+        #             {'x': 0, 'y': -2. + yoffset3, 'r': little_radius},
+        #             {'x': 0, 'y': 2. + yoffset3, 'r': little_radius},
+        #             {'x': 0, 'z': -1. + zoffset3, 'r': little_radius},
+        #             {'x': 0, 'z': 3. + zoffset3, 'r': little_radius},]
+        for obstacle in obstacles:
+            color = '#262626'
+            if 'z' in obstacle and 'y' in obstacle:
+                u, v = np.mgrid[0:2*np.pi:20j, 0:np.pi:10j]
+                x = obstacle['r'] * np.cos(u) * np.sin(v) + obstacle['x']
+                y = obstacle['r'] * np.sin(u) * np.sin(v) + obstacle['y']
+                z = obstacle['r'] * np.cos(v) + obstacle['z']
+            elif 'y' in obstacle and obstacle['r'] == little_radius:
+                if obstacle['gate_number'] == 1:
+                    offset = zoffset1 + 1
+                elif obstacle['gate_number'] == 2:
+                    offset = zoffset2 + 1
+                elif obstacle['gate_number'] == 3:
+                    offset = zoffset3 + 1
+
+                height = (4 + little_radius)/2
+                num_points = 64
+                u = np.linspace(0, 2 * np.pi, num_points)
+                v = np.linspace(-height + offset, height + offset, num_points)
+                x = obstacle['r'] * np.outer(np.cos(u), np.ones(np.size(v))) + obstacle['x']
+                y = obstacle['r'] * np.outer(np.sin(u), np.ones(np.size(v))) + obstacle['y']
+                z = np.outer(np.ones(np.size(u)), v)
+
+            elif 'z' in obstacle and obstacle['r'] == little_radius:
+                if obstacle['gate_number'] == 1:
+                    offset = yoffset1
+                elif obstacle['gate_number'] == 2:
+                    offset = yoffset2
+                elif obstacle['gate_number'] == 3:
+                    offset = yoffset3
+                
+                height = (4 + little_radius)/2
+                num_points = 64
+                u = np.linspace(0, 2 * np.pi, num_points)
+                v = np.linspace(-height + offset, height + offset, num_points)
+                x = obstacle['r'] * np.outer(np.cos(u), np.ones(np.size(v))) + obstacle['x']
+                z = obstacle['r'] * np.outer(np.sin(u), np.ones(np.size(v))) + obstacle['z']
+                y = np.outer(np.ones(np.size(u)), v)
+            ax.plot_surface(x, y, z, color=color, alpha=0.1)
+
+        for reachable_set_snapshot in reachable_set_snapshots[i]:
+            set_range = reachable_set_snapshot[0]
+            edgecolor = reachable_set_snapshot[1]
+            
+            x = set_range[0, 0]
+            y = set_range[1, 0]
+            z = set_range[2, 0]
+            dx = set_range[0, 1] - set_range[0, 0]
+            dy = set_range[1, 1] - set_range[1, 0]
+            dz = set_range[2, 1] - set_range[2, 0]
+            # alpha = 0.18
+            alpha = 0.15
+            if edgecolor == '#FF8000' or edgecolor == green: 
+                alpha = 0.65
+            ax.bar3d(x, y, z, dx, dy, dz, color=edgecolor, alpha=alpha)
+
+
+        # 2D Projection
+        zmin = -3
+
+        ax.scatter(xs[:, 0], xs[:, 1], zmin, s=1, c='k', alpha=0.1)
+        for obstacle in obstacles:
+            color = '#262626'
+            if 'z' in obstacle and 'y' in obstacle:
+                u, v = np.mgrid[0:2*np.pi:20j, 0:np.pi:10j]
+                x = obstacle['r'] * np.cos(u) * np.sin(v) + obstacle['x']
+                y = obstacle['r'] * np.sin(u) * np.sin(v) + obstacle['y']
+                z = zmin
+            elif 'y' in obstacle and obstacle['r'] == little_radius:
+                offset = zmin
+
+                height = 0.01
+                num_points = 64
+                # u = np.linspace(0, 2 * np.pi, num_points)
+                # v = np.linspace(-height + offset, height + offset, 2)
+                # x = obstacle['r'] * np.outer(np.cos(u), np.ones(np.size(v))) + obstacle['x']
+                # y = obstacle['r'] * np.outer(np.sin(u), np.ones(np.size(v))) + obstacle['y']
+                # z = np.outer(np.ones(np.size(u)), v)
+                # theta = np.linspace(0, 2 * np.pi, 100)
+                # x = obstacle['x'] + obstacle['r'] * np.cos(theta)
+                # y = obstacle['y'] + obstacle['r'] * np.sin(theta)
+                # z = np.full_like(x, zmin)
+
+                # import mpl_toolkits.mplot3d.art3d as
+                import mpl_toolkits.mplot3d.art3d as art3d
+                circle = plt.Circle((obstacle['x'], obstacle['y']), obstacle['r'], edgecolor=color, facecolor=color, alpha=0.2)
+                ax.add_patch(circle)
+                art3d.pathpatch_2d_to_3d(circle, z=zmin, zdir="z")
+
+        for reachable_set_snapshot in reachable_set_snapshots[i]:
+            set_range = reachable_set_snapshot[0]
+            edgecolor = reachable_set_snapshot[1]
+            
+            x = set_range[0, 0]
+            y = set_range[1, 0]
+            z = zmin
+            dx = set_range[0, 1] - set_range[0, 0]
+            dy = set_range[1, 1] - set_range[1, 0]
+            dz = 0.01
+            # alpha = 0.15
+            alpha = 0.18
+            if edgecolor == '#FF8000' or edgecolor == green: 
+                alpha = 0.65
+            ax.bar3d(x, y, z, dx, dy, dz, color=edgecolor, alpha=alpha)
+
+
+        
+        ymax = 5
+
+        # ax.scatter(xs[:, 0], ymax, xs[:, 2], s=1, c='k', alpha=0.1)
+        # for obstacle in obstacles:
+        #     color = '#262626'
+        #     if 'z' in obstacle and 'y' in obstacle:
+        #         u, v = np.mgrid[0:2*np.pi:20j, 0:np.pi:10j]
+        #         x = obstacle['r'] * np.cos(u) * np.sin(v) + obstacle['x']
+        #         y = obstacle['r'] * np.sin(u) * np.sin(v) + obstacle['y']
+        #         z = zmin
+        #     elif 'z' in obstacle and obstacle['r'] == little_radius:
+        #         offset = ymax
+
+        #         height = 0.01
+        #         num_points = 64
+        #         # u = np.linspace(0, 2 * np.pi, num_points)
+        #         # v = np.linspace(-height + offset, height + offset, 2)
+        #         # x = obstacle['r'] * np.outer(np.cos(u), np.ones(np.size(v))) + obstacle['x']
+        #         # y = obstacle['r'] * np.outer(np.sin(u), np.ones(np.size(v))) + obstacle['y']
+        #         # z = np.outer(np.ones(np.size(u)), v)
+        #         # theta = np.linspace(0, 2 * np.pi, 100)
+        #         # x = obstacle['x'] + obstacle['r'] * np.cos(theta)
+        #         # y = obstacle['y'] + obstacle['r'] * np.sin(theta)
+        #         # z = np.full_like(x, zmin)
+
+        #         # import mpl_toolkits.mplot3d.art3d as
+        #         import mpl_toolkits.mplot3d.art3d as art3d
+        #         circle = plt.Circle((obstacle['x'], obstacle['z']), obstacle['r'], edgecolor=color, facecolor=color, alpha=0.2)
+        #         ax.add_patch(circle)
+        #         art3d.pathpatch_2d_to_3d(circle, z=ymax, zdir="y")
+
+        # for reachable_set_snapshot in reachable_set_snapshots[i]:
+        #     set_range = reachable_set_snapshot[0]
+        #     edgecolor = reachable_set_snapshot[1]
+            
+        #     x = set_range[0, 0]
+        #     y = ymax
+        #     z = set_range[2, 0]
+        #     dx = set_range[0, 1] - set_range[0, 0]
+        #     dy = 0.01
+        #     dz = set_range[2, 1] - set_range[2, 0]
+        #     alpha = 0.2
+        #     if edgecolor == '#FF8000': 
+        #         alpha = 0.6
+        #     ax.bar3d(x, y, z, dx, dy, dz, color=edgecolor, alpha=alpha)
+        
+        
+
+        ax.set_xlim([-11.5, 2])
+        ax.set_ylim([-5, ymax])
+        # ax.set_zlim([zmin, 7])
+        ax.set_zlim([zmin, 6])
+        ax.set_aspect('equal')
+        ax.set_zticks(np.arange(-2, 7, 2))
+
+        # elevation = 16
+        # azimuth = -80
+        elevation = 22
+        azimuth = -99
+        ax.view_init(elevation, azimuth)
+
+        ax.xaxis.labelpad = 15
+        ax.yaxis.labelpad = 15
+        ax.zaxis.labelpad = 15
+        ax.set_xlabel('$p_x$ [m]')
+        ax.set_ylabel('$p_y$ [m]')
+        ax.set_zlabel('$p_z$ [m]')
+        # ax.set_ylabel('y')
+        # ax.set_zlabel('z')
+
+    if cl_system.dynamics.name == "DoubleIntegrator":
+        ani_name = 'double_integrator.gif'
+    elif cl_system.dynamics.name == "Unicycle_NL":
+        ani_name = 'unicycle.gif'
+    elif cl_system.dynamics.name == "Quadrotor_NL":
+        ani_name = 'quadrotor.gif'
+
+    for i in frames:
+        animate(i)
+        plt.show()
+
+
+def unified_plotter(cl_system, frames, experiments):        
+    plt.rcParams.update({
+        "text.usetex": True,
+        "font.family": "Times",
+        "font.size": 20,
+    })
+    
+    fig, ax = plt.subplots(figsize=(10,6))
+
+    colors = {experiments[0]: orange, experiments[1]: blue, experiments[2]: '#AD00AB'} # 90008E 730071
+    zorders = {experiments[0]: 1, experiments[1]: 3, experiments[2]: 2}
+    legend_patches = []
+
+    if cl_system.dynamics.name == "DoubleIntegrator":
+        fs = 26
+        plt.rcParams.update({"font.size": fs})
+        plt.subplots_adjust(left=0.176, bottom=0.15, right=0.9, top=0.88, wspace=0.2, hspace=0.2)
+        fig.set_size_inches(9.6, 7.2)
+        constraint_color = '#262626'
+        ax.plot(np.array([-1.5, 3.25]), np.array([-1, -1]), c=constraint_color, linewidth=2)
+        rect = Rectangle(np.array([0.0, -1.25]), 3.25, 0.25, linewidth=1, edgecolor=constraint_color, facecolor=constraint_color, alpha=0.2)
+        ax.add_patch(rect)
+
+        ax.plot(np.array([0, 0]), np.array([-1.25, 1.]), c=constraint_color, linewidth=2)
+        rect = Rectangle(np.array([-1.5, -1.25]), 1.5, 2.25, linewidth=1, edgecolor=constraint_color, facecolor=constraint_color, alpha=0.2)
+        ax.add_patch(rect)
+
+        ax.set_xlim([-0.5, 3.25])
+        ax.set_ylim([-1.25, 0.5])
+
+        ax.set_xlabel('$\mathbf{x}[0]$', fontsize=fs)
+        ax.set_ylabel('$\mathbf{x}[1]$', fontsize=fs)
+
+        linewidth = 1.5
+
+        
+    elif cl_system.dynamics.name == "Unicycle_NL":
+        fig.set_size_inches(10, 5)
+        delta = 0.
+        # obstacles = [{'x': -10, 'y': -1, 'r': 3},
+        #              {'x': -3, 'y': 2.5, 'r': 2 }]
+        obstacles = [{'x': -6, 'y': -0.5, 'r': 2.4+delta},
+                    {'x': -1.25, 'y': 1.75, 'r': 1.6+delta}]
+        for obstacle in obstacles:
+            color = '#262626'
+            circle = plt.Circle((obstacle['x'], obstacle['y']), obstacle['r'], edgecolor=color, facecolor='none')
+            ax.add_patch(circle)
+            circle = plt.Circle((obstacle['x'], obstacle['y']), obstacle['r'], edgecolor=color, facecolor=color, alpha=0.2)
+            ax.add_patch(circle)
+
+        ax.set_xlim([-10, 1])
+        ax.set_ylim([-1.1, 4])
+        ax.set_aspect('equal')
+
+        ax.set_xlabel('$x$ [m]')
+        ax.set_ylabel('$y$ [m]')
+
+        
+
+    for expr in experiments:
+
+        data_file = dir_path + '/experimental_data/' + expr + '.pkl'
+        with open(data_file, 'rb') as f:
+            info = pickle.load(f)
+
+        num_steps = len(info[-1]["reachable_sets"]) - 1
+        reachable_set_snapshots = []
+
+
+        
+
+
+        # info[-1]['time'] = 3
+        for j, snapshot in enumerate(info):
+            reachable_set_snapshot = []
+            for i, reach_set_tuple in enumerate(snapshot['reachable_sets']):
+                state_range = reach_set_tuple[0]
+                is_symbolic = reach_set_tuple[1]
+                collides = reach_set_tuple[2]
+                # edgecolor = blue # '#2176FF'
+    
+                # if i == snapshot['child_idx'] and snapshot['child_idx'] != snapshot['parent_idx'] + 1:
+                #     edgecolor = blue #'#D63230' #F45B69'
+                
+                # if i == 0:
+                #     edgecolor = 'k'
+                # elif is_symbolic:
+                #     edgecolor = green # '#00CC00' # edgecolor = '#D112E2' # '#D14081' # '#53917E' # '#20A39E' # '#44BBA4'
+
+                # if i == snapshot['parent_idx'] and j < len(info) - 1:
+                #     edgecolor = magenta #'#FF00FF' # '#FFAE03'
+                # if collides:
+                #     edgecolor = orange # '#FF8000' # '#D63230'
+
+                edgecolor = colors[expr]
+                
+                
+                reachable_set_snapshot.append((state_range, edgecolor))
+            
+            # for i in range(num_times):
+            reachable_set_snapshots.append(reachable_set_snapshot)
+                
+
+
+        # ax.clear()
+        state_range = info[0]["reachable_sets"][0][0]
+        num_trajectories = 500
+        xs = sample_from_range(state_range, cl_system, num_steps, num_trajectories = num_trajectories)
+        
+        plot_exact_reachable_sets = False
+        if plot_exact_reachable_sets:
+            xs_sorted = xs.reshape((num_steps+1, num_trajectories, 3))
+            for timestep_states in xs_sorted:
+                xy = np.min(timestep_states, axis=0)
+                width, height = (np.max(timestep_states, axis=0) - xy)[[0, 1]]
+                rect = Rectangle(xy, width, height, linewidth=1, edgecolor='k', facecolor='none')
+                ax.add_patch(rect)
+
+        
+        ax.scatter(xs[:, 0], xs[:, 1], s=1, c='k')
+
+        # xy = initial_set[[0, 1], 0]
+        # width, height = initial_set[[0, 1], 1] - initial_set[[0, 1], 0]
+        # rect = Rectangle(xy, width, height, linewidth=1, edgecolor='k', facecolor='none')
+        # ax.add_patch(rect)
+        
+        
+
+            
+        
+        linewidth = 0.9
+        if expr == 'unicycle_CARV':
+            linewidth = 1.0
+
+        for reachable_set_snapshot in reachable_set_snapshots[-1]:
+            set_range = reachable_set_snapshot[0]
+            edgecolor = reachable_set_snapshot[1]
+            xy = set_range[[0, 1], 0]
+            width, height = set_range[[0, 1], 1] - set_range[[0, 1], 0]
+            rect = Rectangle(xy, width, height, linewidth=linewidth, edgecolor=edgecolor, facecolor='none', zorder=zorders[expr])
+            ax.add_patch(rect)
+            alpha = 0.2
+            if edgecolor == '#FF8000':
+                alpha = 0.4
+            if edgecolor == orange:
+                alpha = 0.4
+
+            if edgecolor != 'k':
+                rect = Rectangle(xy, width, height, linewidth=linewidth, edgecolor=edgecolor, facecolor=edgecolor, alpha=alpha, zorder=zorders[expr])
+                ax.add_patch(rect)
+                if expr == 'unicycle_CARV':
+                    label = 'CARV'
+                else:
+                    label = f'\\texttt{{{expr[9:]}}}'
+                rect = Rectangle(xy, width, height, linewidth=linewidth, edgecolor=edgecolor, facecolor=edgecolor, alpha=1, zorder=zorders[expr], label=label)
+        
+        legend_patches.append(rect)
+
+    legend_patches[1], legend_patches[0] = legend_patches[0], legend_patches[1]
+    plt.legend(handles=legend_patches, loc='upper right', fontsize=16, framealpha=1)
+    # for i in frames:
+        # animate(i)
+
+    plt.show()
+
+
 def sample_from_range(state_range, cl_system, num_steps, num_trajectories = 100):
     np.random.seed(0)
     num_states = cl_system.At.shape[0]
@@ -233,7 +691,7 @@ def plot_comparison(info):
     })
 
     
-    for y_axis in ["time"]:
+    for y_axis in ["time", "error"]:
         fig, ax = plt.subplots()
         fig.set_size_inches(8, 5)
         plt.subplots_adjust(left=0.137, bottom=0.194, right=0.9, top=0.88, wspace=0.2, hspace=0.2)
@@ -241,14 +699,19 @@ def plot_comparison(info):
         if y_axis == "time":
             carv_y = carv_time
             ttt_y = ttt_time
+            ax.set_ylim([5, 34])
         elif y_axis == "error":
             carv_y = carv_error
             ttt_y = ttt_error
+            ax.set_yscale('log')
+
         
         carv_label, = ax.plot(carv_k_max, carv_y, c=lightblue, zorder=3) # 2176FF
         ttt_label, = ax.plot(ttt_k_max, ttt_y, c=lightorange, zorder=1) # FF8000 FF00FF 00CC00
-        o_marker = ax.scatter(carv_k_max[-1], carv_y[-1], marker='o', c='k', s=omarkersize, zorder=0)
-        x_marker = ax.scatter(ttt_k_max[-1], ttt_y[-1], marker='s', c='k', s=smarkersize, zorder=0)
+        blue_o_marker = ax.scatter(carv_k_max[-1], carv_y[-1], marker='o', c=blue, s=omarkersize, zorder=0)
+        orange_o_marker = ax.scatter(carv_k_max[-1], carv_y[-1], marker='o', c=orange, s=omarkersize, zorder=0)
+        blue_x_marker = ax.scatter(ttt_k_max[-1], ttt_y[-1], marker='s', c=blue, s=smarkersize, zorder=0)
+        orange_x_marker = ax.scatter(ttt_k_max[-1], ttt_y[-1], marker='s', c=orange, s=smarkersize, zorder=0)
 
         for idx, k in enumerate(carv_k_max):
             marker = 'o'
@@ -276,9 +739,8 @@ def plot_comparison(info):
         elif y_axis == "error":
             ax.set_ylabel('Approximation Error')
 
-        ax.legend([carv_label, ttt_label, o_marker, x_marker], ['CARV', '$\\mathtt{hybr}$', 'verified safe', 'verification failed'], fontsize=16)
+        ax.legend([carv_label, ttt_label, (blue_o_marker, orange_o_marker), (blue_x_marker, orange_x_marker)], ['CARV', '$\\mathtt{unif}$', 'verified safe', 'verification failed'], fontsize=16, handler_map={tuple: HandlerTuple(ndivide=None)})
         ax.set_xticks([6, 12, 18, 24])
-        ax.set_ylim([5, 34])
         plt.show()
 
 
@@ -362,16 +824,30 @@ def plot_sweep_constraint(info, system):
         fig.set_size_inches(8, 5)
         plt.subplots_adjust(left=0.137, bottom=0.194, right=0.9, top=0.88, wspace=0.2, hspace=0.2)
         # import pdb; pdb.set_trace()
-        carv10_line, = ax.semilogy(carv10_delta, carv10_time, c='#0072B2', linewidth=2)
-        carv14_line, = ax.semilogy(carv14_delta, carv14_time, c='#009E73', linewidth=2)
-        part_line, = ax.plot([0.0, 0.11], [525, 525], c='#D55E00', linewidth=2)
-        hybr_line, = ax.plot([0.0, 0.002], [7.20, 7.20], c='#CC79A7', linewidth=2)
+
+        # Submission color scheme:
+        # blue: #0072B2
+        # green: #009E73
+        # magenta: #CC79A7
+        # orange: #D55E00
+
+        # Revised color scheme:
+        blue = '#2E72F2' # '#5087F5' # '#005AB5'# '#1C44FE'
+        green = '#28DD51'
+        orange = '#FB762F'
+        purple = '#AD00AB'
+
+
+        carv10_line, = ax.semilogy(carv10_delta, carv10_time, c=blue, linewidth=2)
+        carv14_line, = ax.semilogy(carv14_delta, carv14_time, c=green, linewidth=2)
+        part_line, = ax.plot([0.0, 0.11], [525, 525], c=purple, linewidth=2)
+        hybr_line, = ax.plot([0.0, 0.002], [7.20, 7.20], c=orange, linewidth=2)
         
         alpha = 0.8
-        ax.plot([carv10_delta[-1], carv10_delta[-1]], [5, 900], c='#1857BD', linestyle='--', alpha=alpha)
-        ax.plot([carv14_delta[-1], carv14_delta[-1]], [5, 900], c='#008F00', linestyle='--', alpha=alpha)
-        ax.plot([0.11, 0.11], [5, 900], c='#C96500', linestyle='--', alpha=alpha)
-        ax.plot([0.002, 0.002], [5, 900], c='#C200C2', linestyle='--', alpha=alpha)
+        ax.plot([carv10_delta[-1], carv10_delta[-1]], [5, 900], c=blue, linestyle='--', alpha=alpha)
+        ax.plot([carv14_delta[-1], carv14_delta[-1]], [5, 900], c=green, linestyle='--', alpha=alpha)
+        ax.plot([0.11, 0.11], [5, 900], c=purple, linestyle='--', alpha=alpha)
+        ax.plot([0.002, 0.002], [5, 900], c=orange, linestyle='--', alpha=alpha)
         # ax.plot([0.33, 0.33], [5, 900], c='k', linestyle='--')
         
         # ax.plot([0.38, 0.38], [0, 275], 'k--')
@@ -387,7 +863,7 @@ def plot_sweep_constraint(info, system):
         # plt.annotate('best $\\mathtt{part}$', (0.115, 130), fontsize=20)
 
         ax.legend([part_line, carv14_line, carv10_line, hybr_line], 
-                  ['$\\mathtt{part}$', '$\\mathrm{CARV}_{24}$', '$\\mathrm{CARV}_{10}$', '$\\mathtt{hybr}$'],
+                  ['$\\mathtt{part}$', '$\\mathrm{CARV}_{24}$', '$\\mathrm{CARV}_{10}$', '$\\mathtt{unif}$'],
                   loc='upper right',
                   framealpha=1,
                   fontsize=16,
@@ -399,8 +875,10 @@ if __name__ == "__main__":
 
     # experiment = "double_integrator"
     # experiment = "unicycle"
+    experiment = "quadrotor_gates"
+    # experiment = "unified_unicycle"
     # experiment = "comparison"
-    experiment = "sweep_unicycle_constraints"
+    # experiment = "sweep_unicycle_constraints"
     # experiment = "sweep_double_integrator_constraints"
 
     if experiment == "double_integrator":
@@ -427,6 +905,28 @@ if __name__ == "__main__":
         frames = [-1]
         for i in frames:
                 official_plotter(info, cl_system, [i])
+
+    elif experiment == "quadrotor_gates":
+        data_file = dir_path + '/experimental_data/quadrotor_gates.pkl'
+        with open(data_file, 'rb') as f:
+            info = pickle.load(f)
+        
+        controller = load_controller("Quadrotor_NL", "natural_none_gates", False, device='cpu')
+        ol_dyn = dynamics.Quadrotor_NL(dt=0.2)
+        cl_system = cl_systems.Quadrotor(controller, ol_dyn)
+        frames = [-1]
+        for i in frames:
+                official_3D_plotter(info, cl_system, [i])
+    
+    elif experiment == "unified_unicycle":
+        experiments = ["unicycle_hybr", "unicycle_CARV", "unicycle_part"]
+        controller = load_controller("Unicycle_NL", "natural_none_default", False, device='cpu')
+        ol_dyn = dynamics.Unicycle_NL(dt=0.2)
+        cl_system = cl_systems.Unicycle_NL(controller, ol_dyn)
+        frames = [-1]
+        for i in frames:
+                unified_plotter(cl_system, [i], experiments)
+
     elif experiment == "comparison":
         # data_file = dir_path + '/experimental_data/comparison_short.pkl'
         data_file = dir_path + '/experimental_data/sweep_k_amended.pkl'

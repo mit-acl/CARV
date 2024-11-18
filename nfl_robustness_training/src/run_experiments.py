@@ -63,6 +63,84 @@ def unicycle_condition(input_range, delta = 0):
         
     return True
 
+def quadrotor_condition(input_range):
+    delta = 0.0    
+    yoffset1 = 1
+    zoffset1 = 3
+    yoffset2 = -1.5
+    zoffset2 = 1
+    little_radius = 1.25*0.4
+    big_radius = 0.03
+    yoffset3 = 0
+    zoffset3 = 0
+    obstacles = [{'x': -6, 'y': -2. + yoffset1, 'r': little_radius},
+                    {'x': -6, 'y': 2. + yoffset1, 'r': little_radius},
+                #  {'x': -6, 'y': -4.5 + yoffset1, 'r': big_radius},
+                #  {'x': -6, 'y': 4.5 + yoffset1, 'r': big_radius},
+                    {'x': -6, 'z': -1. + zoffset1, 'r': little_radius},
+                    {'x': -6, 'z': 3. + zoffset1, 'r': little_radius},
+                #  {'x': -6, 'z': -3.5 + zoffset1, 'r': big_radius},
+                #  {'x': -6, 'z': 5.5 + zoffset1, 'r': big_radius},
+    
+                    {'x': -3, 'y': -2. + yoffset2, 'r': little_radius},
+                    {'x': -3, 'y': 2. + yoffset2, 'r': little_radius},
+                    {'x': -3, 'y': -4.5 + yoffset2, 'r': big_radius},
+                    {'x': -3, 'y': 4.5 + yoffset2, 'r': big_radius},
+                    {'x': -3, 'z': -1. + zoffset2, 'r': little_radius},
+                    {'x': -3, 'z': 3. + zoffset2, 'r': little_radius},
+                    {'x': -3, 'z': -3.5 + zoffset2, 'r': big_radius},
+                    {'x': -3, 'z': 5.5 + zoffset2, 'r': big_radius},
+                    
+                    {'x': 0, 'y': -2. + yoffset3, 'r': little_radius},
+                    {'x': 0, 'y': 2. + yoffset3, 'r': little_radius},
+                    {'x': 0, 'z': -1. + zoffset3, 'r': little_radius},
+                    {'x': 0, 'z': 3. + zoffset3, 'r': little_radius},]
+    
+    rx, ry, rz = input_range[[0, 1, 2], 0]
+    length, width, height = input_range[[0, 1, 2], 1] - input_range[[0, 1, 2], 0]
+
+    for obs in obstacles:
+        if 'y' in obs:
+            cx, cy = obs['x'], obs['y']
+            testX = torch.tensor(cx)
+            testY = torch.tensor(cy)
+
+            if (cx < rx):
+                testX = rx
+            elif (cx > rx + length):
+                testX = rx + length
+
+
+            if (cy < ry):
+                testY = ry
+            elif (cy > ry + width):
+                testY = ry + width
+            
+            dist = torch.sqrt((cx-testX)**2 + (cy - testY)**2)
+            if dist < obs['r']:
+                return False
+        if 'z' in obs:
+            cx, cz = obs['x'], obs['z']
+            testX = torch.tensor(cx)
+            testZ = torch.tensor(cz)
+
+            if (cx < rx):
+                testX = rx
+            elif (cx > rx + length):
+                testX = rx + length
+
+
+            if (cz < rz):
+                testZ = rz
+            elif (cz > rz + height):
+                testZ = rz + height
+            
+            dist = torch.sqrt((cx-testX)**2 + (cz - testZ)**2)
+            if dist < obs['r']:
+                return False
+        
+    return True
+
 def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
     import torch
     import matplotlib.pyplot as plt
@@ -166,6 +244,57 @@ def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
         analyzer.plot_reachable_sets()
 
         with open(dir_path + '/experimental_data/unicycle_part_more.pkl', 'wb') as f:
+            pickle.dump(info, f)
+        
+        # for i in [34, 58, -1]:
+        #     analyzer.another_plotter(info, [i])
+
+        # import pdb; pdb.set_trace()
+        # analyzer.plot_all_subsets()
+        # analyzer.animate_reachability_calculation(info)
+
+    if params["system"]["type"] == 'Quadrotor_NL':
+        controller = load_controller(params['system']['type'], params['system']['controller'], params["system"]["dagger"], device=device)
+        ol_dyn = dynamics.Quadrotor_NL(dt=0.2)
+        ol_dyn.At_torch = ol_dyn.At_torch.to(device)
+        ol_dyn.bt_torch = ol_dyn.bt_torch.to(device)
+        ol_dyn.ct_torch = ol_dyn.ct_torch.to(device)
+        cl_dyn = cl_systems.Quadrotor(controller, ol_dyn, device=device)
+
+        init_range = np.array([
+            [-10.55, -10.45],
+            [-0.05, 0.05],
+            [0.95, 1.05],
+            [0.99, 1.01],
+            [-0.01, 0.01],
+            [-0.01, 0.01],
+        ])
+
+
+        time_horizon = 51
+        
+        # def condition(input_range):
+        #     return input_range[1, 0] >= -1
+
+        init_range = torch.from_numpy(init_range).type(torch.float32).to(device)
+        analyzer = Analyzer(cl_dyn, time_horizon, init_range, max_diff=15, device=device, save_info=True)
+
+        # analyzer.set_partition_strategy(0, np.array([1,16,1,1,10,1]))
+        # tracemalloc.start()
+        tstart = time.time()
+        # reach_set_dict, info = analyzer.calculate_N_step_reachable_sets(indices=None, condition=unicycle_condition) # 3, 4, 5, 6, 7
+        reach_set_dict, info = analyzer.calculate_reachable_sets(training=False, autorefine=True, condition=quadrotor_condition, visualize=False)
+        # reach_set_dict, info = analyzer.hybr(condition = unicycle_condition)
+        # reach_set_dict, info = analyzer.pseudo(condition = unicycle_condition)
+        tend = time.time()
+        # analyzer.switch_sets_on_off(condition)
+        print('Calculation Time: {}'.format(tend-tstart))
+
+        # analyzer.switch_sets_on_off(condition)
+        
+        analyzer.plot_reachable_sets()
+
+        with open(dir_path + '/experimental_data/quadrotor_gates.pkl', 'wb') as f:
             pickle.dump(info, f)
         
         # for i in [34, 58, -1]:
@@ -811,12 +940,12 @@ def setup_parser() -> dict:
 if __name__ == "__main__":
     experiment_params = setup_parser()
 
-    run_multiple_experiments(experiment_params)
+    # run_multiple_experiments(experiment_params)
     # sweep_k(experiment_params)
     # sweep_constraints(experiment_params)
 
-    save_data = False
-    if experiment_params["analysis"]["reachability_direction"] == "forward" and save_data:
+    save_data = True
+    if save_data:
         main_forward_nick(experiment_params)
 
 # if __name__ == "__main__":

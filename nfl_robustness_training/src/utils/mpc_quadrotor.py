@@ -313,12 +313,12 @@ def generate_data(num_trajectories = 50, system = 'quadrotor', noisy = False, pr
             [-0.25, 0.25],
         ])
     else:
-        yoffset1 = 2
-        zoffset1 = 2
+        yoffset1 = 1
+        zoffset1 = 3
         yoffset2 = -1.5
-        zoffset2 = 0.25
+        zoffset2 = 1
         little_radius = 1.25
-        big_radius = 2.5
+        big_radius = 3
         obstacles = [{'x': -6, 'y': -2. + yoffset1, 'r': little_radius},
                      {'x': -6, 'y': 2. + yoffset1, 'r': little_radius},
                      {'x': -6, 'y': -4.5 + yoffset1, 'r': big_radius},
@@ -474,5 +474,4 @@ def correct_data():
 if __name__ == "__main__":
     # main(noisy=False)
     generate_data(num_trajectories=1000, noisy=True, prob_short=0.0)
-    # correct_data()
-    
+    # correct_data()    

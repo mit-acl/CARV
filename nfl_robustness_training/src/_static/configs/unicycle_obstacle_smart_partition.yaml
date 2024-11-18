@@ -1,5 +1,5 @@
 system:
-  type: Quadrotor_NL
+  type: Unicycle_NL
   feedback: FullState
   controller: natural_none_default
   dagger: false

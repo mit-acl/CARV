@@ -283,16 +283,30 @@ class Analyzer:
             # self.reachable_sets[i+1] = ReachableSet(i+1, reach_set_range)
             # import pdb; pdb.set_trace()
             self.reachable_sets[i].get_partitions()
-            tstart = time.time()
-            self.reachable_sets[i].populate_next_reachable_set(self.bounded_cl_system, self.reachable_sets[i+1], training)
-            tend = time.time()
-            self.reachable_sets[i+1].consolidate()
-            if self.save_info:
-                current_snapshot['reachable_sets'] = deepcopy([(reachable_set.full_set.cpu().detach().numpy(), reachable_set.symbolic, not condition(reachable_set.full_set)) for _, reachable_set in self.reachable_sets.items()])
-                current_snapshot['time'] = tend - tstart
-                current_snapshot['child_idx'] = i + 1
-                current_snapshot['parent_idx'] = i
-                snapshots.append(current_snapshot)
+            try:
+                tstart = time.time()
+                self.reachable_sets[i].populate_next_reachable_set(self.bounded_cl_system, self.reachable_sets[i+1], training)
+                tend = time.time()
+                self.reachable_sets[i+1].consolidate()
+                if self.save_info:
+                    current_snapshot['reachable_sets'] = deepcopy([(reachable_set.full_set.cpu().detach().numpy(), reachable_set.symbolic, not condition(reachable_set.full_set)) for _, reachable_set in self.reachable_sets.items()])
+                    current_snapshot['time'] = tend - tstart
+                    current_snapshot['child_idx'] = i + 1
+                    current_snapshot['parent_idx'] = i
+                    snapshots.append(current_snapshot)
+            except RuntimeError:
+                print("Error in calculating set at time {}".format(i+1))
+                self.refine(self.reachable_sets[i], condition, snapshots, i, force=True)
+                tstart = time.time()
+                self.reachable_sets[i].populate_next_reachable_set(self.bounded_cl_system, self.reachable_sets[i+1], training)
+                tend = time.time()
+                self.reachable_sets[i+1].consolidate()
+                if self.save_info:
+                    current_snapshot['reachable_sets'] = deepcopy([(reachable_set.full_set.cpu().detach().numpy(), reachable_set.symbolic, not condition(reachable_set.full_set)) for _, reachable_set in self.reachable_sets.items()])
+                    current_snapshot['time'] = tend - tstart
+                    current_snapshot['child_idx'] = i + 1
+                    current_snapshot['parent_idx'] = i
+                    snapshots.append(current_snapshot)
 
 
             # if autorefine:
@@ -438,21 +452,26 @@ class Analyzer:
                         current_snapshot['parent_idx'] = next_idx
 
                     # import pdb; pdb.set_trace()
-                    tstart = time.time()
-                    self.reachable_sets[next_idx].populate_next_reachable_set(self.bounded_cl_systems[tf - next_idx - 1], reachable_set)
-                    reachable_set.symbolic = True
-                    tend = time.time()
-                    if self.save_info:
-                        current_snapshot['time'] = tend - tstart
-                        snapshots.append(current_snapshot)
+                    try:
+                        tstart = time.time()
+                        self.reachable_sets[next_idx].populate_next_reachable_set(self.bounded_cl_systems[tf - next_idx - 1], reachable_set)
+                        reachable_set.symbolic = True
+                        tend = time.time()
 
-                    if self.save_info:
-                        current_snapshot = {}
-                        current_snapshot['reachable_sets'] = deepcopy([(reachable_set.full_set.cpu().detach().numpy(), reachable_set.symbolic, not condition(reachable_set.full_set)) for _, reachable_set in self.reachable_sets.items()])
-                        current_snapshot['time'] = 0
-                        current_snapshot['child_idx'] = next_idx + 1
-                        current_snapshot['parent_idx'] = next_idx
-                        snapshots.append(current_snapshot)
+                        if self.save_info:
+                            current_snapshot['time'] = tend - tstart
+                            snapshots.append(current_snapshot)
+
+                        if self.save_info:
+                            current_snapshot = {}
+                            current_snapshot['reachable_sets'] = deepcopy([(reachable_set.full_set.cpu().detach().numpy(), reachable_set.symbolic, not condition(reachable_set.full_set)) for _, reachable_set in self.reachable_sets.items()])
+                            current_snapshot['time'] = 0
+                            current_snapshot['child_idx'] = next_idx + 1
+                            current_snapshot['parent_idx'] = next_idx
+                            snapshots.append(current_snapshot)
+                    except:
+                        print("Error in recalculating set {} from time {}".format(tf, next_idx))
+                        pass
                     # info[tf-1]['refined'] = reachable_set.full_set.cpu().detach().numpy()
                     # info[tf-1]['recalc_time'] = tend - tstart
                 else:
@@ -481,20 +500,24 @@ class Analyzer:
                         current_snapshot['parent_idx'] = i
                         # snapshots.append(current_snapshot)
 
-                    tstart = time.time()
-                    self.reachable_sets[i].populate_next_reachable_set(self.bounded_cl_systems[tf - i - 1], reachable_set)
-                    reachable_set.symbolic = True
-                    tend = time.time()
-                    if self.save_info:
-                        current_snapshot['time'] = tend - tstart
-                        snapshots.append(current_snapshot)
+                    try:
+                        tstart = time.time()
+                        self.reachable_sets[i].populate_next_reachable_set(self.bounded_cl_systems[tf - i - 1], reachable_set)
+                        reachable_set.symbolic = True
+                        tend = time.time()
+                        if self.save_info:
+                            current_snapshot['time'] = tend - tstart
+                            snapshots.append(current_snapshot)
 
-                        current_snapshot = {}
-                        current_snapshot['reachable_sets'] = deepcopy([(reachable_set.full_set.cpu().detach().numpy(), reachable_set.symbolic, not condition(reachable_set.full_set)) for _, reachable_set in self.reachable_sets.items()])
-                        current_snapshot['time'] = 0
-                        current_snapshot['child_idx'] = i+1
-                        current_snapshot['parent_idx'] = i
-                        snapshots.append(current_snapshot)
+                            current_snapshot = {}
+                            current_snapshot['reachable_sets'] = deepcopy([(reachable_set.full_set.cpu().detach().numpy(), reachable_set.symbolic, not condition(reachable_set.full_set)) for _, reachable_set in self.reachable_sets.items()])
+                            current_snapshot['time'] = 0
+                            current_snapshot['child_idx'] = i+1
+                            current_snapshot['parent_idx'] = i
+                            snapshots.append(current_snapshot)
+                    except:
+                        print("Error in recalculating set {} from time {}".format(tf, i))
+                        pass
                     # info[tf-1]['refined'] = reachable_set.full_set.cpu().detach().numpy()
                     # info[tf-1]['recalc_time'] = tend - tstart
                 elif diff == max_diff:
@@ -546,6 +569,111 @@ class Analyzer:
 
         return refined
         
+    # def refine_greedy(self, reachable_set, condition, snapshots, t, force=False, current_set=None):
+        # refined = not condition(reachable_set.full_set) or force
+        # tf = reachable_set.t
+        # min_diff = 2
+        # max_diff = self.max_diff
+
+        # if force and not reachable_set.symbolic:
+        #     marching_back = False
+        #     tf = current_set.t
+        #     final_idx = max(tf - self.max_diff, 0)
+        #     i = tf - 2
+        #     while i >= final_idx and not condition(reachable_set.full_set):
+                
+            
+            
+            
+            
+            
+        #     while not marching_back:
+        #         next_idx = max(next_idx - 1, max(tf - self.max_diff, 0)
+        #         print("marching back from set {} to set {}".format(tf, next_idx))
+        #         if self.reachable_sets[next_idx].symbolic:
+
+        #             print("{} is symbolic, marching back".format(next_idx))
+        #             marching_back = True
+        #             if self.save_info:
+        #                 current_snapshot = {}
+        #                 current_snapshot['reachable_sets'] = deepcopy([(reachable_set.full_set.cpu().detach().numpy(), reachable_set.symbolic, not condition(reachable_set.full_set)) for _, reachable_set in self.reachable_sets.items()])
+        #                 current_snapshot['child_idx'] = tf
+        #                 current_snapshot['parent_idx'] = next_idx
+
+        #             try:
+        #                 tstart = time.time()
+        #                 self.reachable_sets[next_idx].populate_next_reachable_set(self.bounded_cl_systems[tf - next_idx - 1], reachable_set)
+        #                 reachable_set.symbolic = True
+        #                 tend = time.time()
+
+        #                 if self.save_info:
+        #                     current_snapshot['time'] = tend - tstart
+        #                     snapshots.append(current_snapshot)
+
+        #                 if self.save_info:
+        #                     current_snapshot = {}
+        #                     current_snapshot['reachable_sets'] = deepcopy([(reachable_set.full_set.cpu().detach().numpy(), reachable_set.symbolic, not condition(reachable_set.full_set)) for _, reachable_set in self.reachable_sets.items()])
+        #                     current_snapshot['time'] = 0
+        #                     current_snapshot['child_idx'] = next_idx + 1
+        #                     current_snapshot['parent_idx'] = next_idx
+        #                     snapshots.append(current_snapshot)
+        #             except RuntimeError:
+        #                 print("Error in recalculating set {} from time {}".format(tf, next_idx))
+        #                 pass
+        #         else:
+        #             self.refine(self.reachable_sets[next_idx], condition, snapshots, next_idx, force=True)
+        # else:
+        #     final_idx = max(tf - self.max_diff, 0)
+        #     i = tf - 2
+        #     if not condition(reachable_set.full_set):
+        #         print("Collision detected at t = {}".format(tf))
+        #     while i >= final_idx and not condition(reachable_set.full_set):
+        #         diff = tf - i
+        #         if self.reachable_sets[i].symbolic and (diff >= min_diff or i == 0):
+        #             print("recalculating set {} from time {}".format(tf, i))
+        #             if self.save_info:
+        #                 current_snapshot = {}
+        #                 current_snapshot['reachable_sets'] = deepcopy([(reachable_set.full_set.cpu().detach().numpy(), reachable_set.symbolic, not condition(reachable_set.full_set)) for _, reachable_set in self.reachable_sets.items()])
+        #                 current_snapshot['child_idx'] = tf
+        #                 current_snapshot['parent_idx'] = i
+
+        #             try:
+        #                 tstart = time.time()
+        #                 self.reachable_sets[i].populate_next_reachable_set(self.bounded_cl_systems[tf - i - 1], reachable_set)
+        #                 reachable_set.symbolic = True
+        #                 tend = time.time()
+        #                 if self.save_info:
+        #                     current_snapshot['time'] = tend - tstart
+        #                     snapshots.append(current_snapshot)
+
+        #                     current_snapshot = {}
+        #                     current_snapshot['reachable_sets'] = deepcopy([(reachable_set.full_set.cpu().detach().numpy(), reachable_set.symbolic, not condition(reachable_set.full_set)) for _, reachable_set in self.reachable_sets.items()])
+        #                     current_snapshot['time'] = 0
+        #                     current_snapshot['child_idx'] = i+1
+        #                     current_snapshot['parent_idx'] = i
+        #                     snapshots.append(current_snapshot)
+        #             except RuntimeError:
+        #                 print("Error in recalculating set {} from time {}".format(tf, i))
+        #                 pass
+
+        #         elif diff == max_diff:
+        #             print("cannot do full symbolic from tf = {}, starting march".format(tf))
+        #             if i >=  1:
+        #                 self.refine(self.reachable_sets[i], condition, snapshots, i, force=True)
+        #                 i = i + 1
+                
+        #         if self.save_info:
+        #             current_snapshot = {}
+        #             current_snapshot['reachable_sets'] = deepcopy([(reachable_set.full_set.cpu().detach().numpy(), reachable_set.symbolic, not condition(reachable_set.full_set)) for _, reachable_set in self.reachable_sets.items()])
+        #             current_snapshot['time'] = 0
+        #             current_snapshot['child_idx'] = tf
+        #             current_snapshot['parent_idx'] = i
+        #             snapshots.append(current_snapshot)
+
+        #         i -= 1
+
+        # return refined
+
 
     def hybr(self, visualize = False, condition = None):
         initial_range = self.reachable_sets[0].full_set
@@ -1362,6 +1490,9 @@ class Analyzer:
 
                 if i == snapshot['parent_idx'] and j < len(info) - 1:
                     edgecolor = '#FF00FF'
+
+                if collides:
+                    edgecolor = '#FF8000'
                 
                 reachable_set_snapshot.append((state_range, edgecolor))
             
@@ -1375,30 +1506,65 @@ class Analyzer:
         
 
             if self.cl_system.dynamics.name == "Quadrotor_NL":
-                fig.set_size_inches(10, 5)
-                yoffset1 = 2
-                zoffset1 = 2
+                fig.set_size_inches(20, 10)
+                # yoffset1 = 2
+                # zoffset1 = 2
+                # yoffset2 = -1.5
+                # zoffset2 = 0.25
+                # little_radius = 1.25 * 0.5
+                # big_radius = 2.5
+                yoffset1 = 1
+                zoffset1 = 3
                 yoffset2 = -1.5
-                zoffset2 = 0.25
-                little_radius = 1.25 * 0.5
-                big_radius = 2.5
-                obstacles = [{'x': -6, 'y': -2. + yoffset1, 'r': little_radius},
-                            {'x': -6, 'y': 2. + yoffset1, 'r': little_radius},
-                            {'x': -6, 'y': -4.5 + yoffset1, 'r': big_radius},
-                            {'x': -6, 'y': 4.5 + yoffset1, 'r': big_radius},
-                            {'x': -6, 'z': -1. + zoffset1, 'r': little_radius},
-                            {'x': -6, 'z': 3. + zoffset1, 'r': little_radius},
-                            {'x': -6, 'z': -3.5 + zoffset1, 'r': big_radius},
-                            {'x': -6, 'z': 5.5 + zoffset1, 'r': big_radius},
+                zoffset2 = 1
+                little_radius = 1.25*0.4
+                big_radius = 0.3
+                yoffset3 = 0
+                zoffset3 = 0
+                obstacles = [{'x': -6, 'y': -2. + yoffset1, 'r': little_radius, 'gate_number': 1},
+                            {'x': -6, 'y': 2. + yoffset1, 'r': little_radius, 'gate_number': 1},
+                            {'x': -6, 'y': -4.5 + yoffset1, 'r': big_radius, 'gate_number': 1},
+                            {'x': -6, 'y': 4.5 + yoffset1, 'r': big_radius, 'gate_number': 1},
+                            {'x': -6, 'z': -1. + zoffset1, 'r': little_radius, 'gate_number': 1},
+                            {'x': -6, 'z': 3. + zoffset1, 'r': little_radius, 'gate_number': 1},
+                            {'x': -6, 'z': -3.5 + zoffset1, 'r': big_radius, 'gate_number': 1},
+                            {'x': -6, 'z': 5.5 + zoffset1, 'r': big_radius, 'gate_number': 1},
                 
-                            {'x': -3, 'y': -2. + yoffset2, 'r': little_radius},
-                            {'x': -3, 'y': 2. + yoffset2, 'r': little_radius},
-                            {'x': -3, 'y': -4.5 + yoffset2, 'r': big_radius},
-                            {'x': -3, 'y': 4.5 + yoffset2, 'r': big_radius},
-                            {'x': -3, 'z': -1. + zoffset2, 'r': little_radius},
-                            {'x': -3, 'z': 3. + zoffset2, 'r': little_radius},
-                            {'x': -3, 'z': -3.5 + zoffset2, 'r': big_radius},
-                            {'x': -3, 'z': 5.5 + zoffset2, 'r': big_radius},]
+                            {'x': -3, 'y': -2. + yoffset2, 'r': little_radius, 'gate_number': 2},
+                            {'x': -3, 'y': 2. + yoffset2, 'r': little_radius, 'gate_number': 2},
+                            {'x': -3, 'y': -4.5 + yoffset2, 'r': big_radius, 'gate_number': 2},
+                            {'x': -3, 'y': 4.5 + yoffset2, 'r': big_radius, 'gate_number': 2},
+                            {'x': -3, 'z': -1. + zoffset2, 'r': little_radius, 'gate_number': 2},
+                            {'x': -3, 'z': 3. + zoffset2, 'r': little_radius, 'gate_number': 2},
+                            {'x': -3, 'z': -3.5 + zoffset2, 'r': big_radius, 'gate_number': 2},
+                            {'x': -3, 'z': 5.5 + zoffset2, 'r': big_radius, 'gate_number': 2},
+                            
+                            {'x': 0, 'y': -2. + yoffset3, 'r': little_radius, 'gate_number': 3},
+                            {'x': 0, 'y': 2. + yoffset3, 'r': little_radius, 'gate_number': 3},
+                            {'x': 0, 'z': -1. + zoffset3, 'r': little_radius, 'gate_number': 3},
+                            {'x': 0, 'z': 3. + zoffset3, 'r': little_radius, 'gate_number': 3},]
+                # obstacles = [{'x': -6, 'y': -2. + yoffset1, 'r': little_radius},
+                #             {'x': -6, 'y': 2. + yoffset1, 'r': little_radius},
+                #             {'x': -6, 'y': -4.5 + yoffset1, 'r': big_radius},
+                #             {'x': -6, 'y': 4.5 + yoffset1, 'r': big_radius},
+                #             {'x': -6, 'z': -1. + zoffset1, 'r': little_radius},
+                #             {'x': -6, 'z': 3. + zoffset1, 'r': little_radius},
+                #             {'x': -6, 'z': -3.5 + zoffset1, 'r': big_radius},
+                #             {'x': -6, 'z': 5.5 + zoffset1, 'r': big_radius},
+                
+                #             {'x': -3, 'y': -2. + yoffset2, 'r': little_radius},
+                #             {'x': -3, 'y': 2. + yoffset2, 'r': little_radius},
+                #             {'x': -3, 'y': -4.5 + yoffset2, 'r': big_radius},
+                #             {'x': -3, 'y': 4.5 + yoffset2, 'r': big_radius},
+                #             {'x': -3, 'z': -1. + zoffset2, 'r': little_radius},
+                #             {'x': -3, 'z': 3. + zoffset2, 'r': little_radius},
+                #             {'x': -3, 'z': -3.5 + zoffset2, 'r': big_radius},
+                #             {'x': -3, 'z': 5.5 + zoffset2, 'r': big_radius},
+                            
+                #             {'x': 0, 'y': -2. + yoffset3, 'r': little_radius},
+                #             {'x': 0, 'y': 2. + yoffset3, 'r': little_radius},
+                #             {'x': 0, 'z': -1. + zoffset3, 'r': little_radius},
+                #             {'x': 0, 'z': 3. + zoffset3, 'r': little_radius},]
                 for obstacle in obstacles:
                     color = '#262626'
                     if 'z' in obstacle and 'y' in obstacle:
@@ -1407,27 +1573,146 @@ class Analyzer:
                         y = obstacle['r'] * np.sin(u) * np.sin(v) + obstacle['y']
                         z = obstacle['r'] * np.cos(v) + obstacle['z']
                     elif 'y' in obstacle and obstacle['r'] == little_radius:
-                        height = 5
-                        num_points = 8
+                        if obstacle['gate_number'] == 1:
+                            offset = zoffset1 + 1
+                        elif obstacle['gate_number'] == 2:
+                            offset = zoffset2 + 1
+                        elif obstacle['gate_number'] == 3:
+                            offset = zoffset3 + 1
+
+                        height = (4 + little_radius)/2
+                        num_points = 64
                         u = np.linspace(0, 2 * np.pi, num_points)
-                        v = np.linspace(-height, height, num_points)
+                        v = np.linspace(-height + offset, height + offset, num_points)
                         x = obstacle['r'] * np.outer(np.cos(u), np.ones(np.size(v))) + obstacle['x']
                         y = obstacle['r'] * np.outer(np.sin(u), np.ones(np.size(v))) + obstacle['y']
                         z = np.outer(np.ones(np.size(u)), v)
 
                     elif 'z' in obstacle and obstacle['r'] == little_radius:
-                        height = 5
-                        num_points = 8
+                        if obstacle['gate_number'] == 1:
+                            offset = yoffset1
+                        elif obstacle['gate_number'] == 2:
+                            offset = yoffset2
+                        elif obstacle['gate_number'] == 3:
+                            offset = yoffset3
+                        
+                        height = (4 + little_radius)/2
+                        num_points = 64
                         u = np.linspace(0, 2 * np.pi, num_points)
-                        v = np.linspace(-height, height, num_points)
+                        v = np.linspace(-height + offset, height + offset, num_points)
                         x = obstacle['r'] * np.outer(np.cos(u), np.ones(np.size(v))) + obstacle['x']
                         z = obstacle['r'] * np.outer(np.sin(u), np.ones(np.size(v))) + obstacle['z']
                         y = np.outer(np.ones(np.size(u)), v)
                     ax.plot_surface(x, y, z, color=color, alpha=0.1)
 
-                ax.set_xlim([-10, 1])
-                ax.set_ylim([-1, 4])
+
+
+
+                # 2D Projection
+                zmin = -3
+
+                ax.scatter(xs[:, 0], xs[:, 1], zmin, s=1, c='k', alpha=0.1)
+                for obstacle in obstacles:
+                    color = '#262626'
+                    if 'z' in obstacle and 'y' in obstacle:
+                        u, v = np.mgrid[0:2*np.pi:20j, 0:np.pi:10j]
+                        x = obstacle['r'] * np.cos(u) * np.sin(v) + obstacle['x']
+                        y = obstacle['r'] * np.sin(u) * np.sin(v) + obstacle['y']
+                        z = zmin
+                    elif 'y' in obstacle and obstacle['r'] == little_radius:
+                        offset = zmin
+
+                        height = 0.01
+                        num_points = 64
+                        # u = np.linspace(0, 2 * np.pi, num_points)
+                        # v = np.linspace(-height + offset, height + offset, 2)
+                        # x = obstacle['r'] * np.outer(np.cos(u), np.ones(np.size(v))) + obstacle['x']
+                        # y = obstacle['r'] * np.outer(np.sin(u), np.ones(np.size(v))) + obstacle['y']
+                        # z = np.outer(np.ones(np.size(u)), v)
+                        # theta = np.linspace(0, 2 * np.pi, 100)
+                        # x = obstacle['x'] + obstacle['r'] * np.cos(theta)
+                        # y = obstacle['y'] + obstacle['r'] * np.sin(theta)
+                        # z = np.full_like(x, zmin)
+
+                        # import mpl_toolkits.mplot3d.art3d as
+                        import mpl_toolkits.mplot3d.art3d as art3d
+                        circle = plt.Circle((obstacle['x'], obstacle['y']), obstacle['r'], edgecolor=color, facecolor=color, alpha=0.2)
+                        ax.add_patch(circle)
+                        art3d.pathpatch_2d_to_3d(circle, z=zmin, zdir="z")
+
+                for reachable_set_snapshot in reachable_set_snapshots[i]:
+                    set_range = reachable_set_snapshot[0]
+                    edgecolor = reachable_set_snapshot[1]
+                    
+                    x = set_range[0, 0]
+                    y = set_range[1, 0]
+                    z = zmin
+                    dx = set_range[0, 1] - set_range[0, 0]
+                    dy = set_range[1, 1] - set_range[1, 0]
+                    dz = 0.01
+                    alpha = 0.2
+                    if edgecolor == '#FF8000': 
+                        alpha = 0.6
+                    ax.bar3d(x, y, z, dx, dy, dz, color=edgecolor, alpha=alpha)
+
+
+                
+                ymax = 5
+
+                # ax.scatter(xs[:, 0], ymax, xs[:, 2], s=1, c='k', alpha=0.1)
+                # for obstacle in obstacles:
+                #     color = '#262626'
+                #     if 'z' in obstacle and 'y' in obstacle:
+                #         u, v = np.mgrid[0:2*np.pi:20j, 0:np.pi:10j]
+                #         x = obstacle['r'] * np.cos(u) * np.sin(v) + obstacle['x']
+                #         y = obstacle['r'] * np.sin(u) * np.sin(v) + obstacle['y']
+                #         z = zmin
+                #     elif 'z' in obstacle and obstacle['r'] == little_radius:
+                #         offset = ymax
+
+                #         height = 0.01
+                #         num_points = 64
+                #         # u = np.linspace(0, 2 * np.pi, num_points)
+                #         # v = np.linspace(-height + offset, height + offset, 2)
+                #         # x = obstacle['r'] * np.outer(np.cos(u), np.ones(np.size(v))) + obstacle['x']
+                #         # y = obstacle['r'] * np.outer(np.sin(u), np.ones(np.size(v))) + obstacle['y']
+                #         # z = np.outer(np.ones(np.size(u)), v)
+                #         # theta = np.linspace(0, 2 * np.pi, 100)
+                #         # x = obstacle['x'] + obstacle['r'] * np.cos(theta)
+                #         # y = obstacle['y'] + obstacle['r'] * np.sin(theta)
+                #         # z = np.full_like(x, zmin)
+
+                #         # import mpl_toolkits.mplot3d.art3d as
+                #         import mpl_toolkits.mplot3d.art3d as art3d
+                #         circle = plt.Circle((obstacle['x'], obstacle['z']), obstacle['r'], edgecolor=color, facecolor=color, alpha=0.2)
+                #         ax.add_patch(circle)
+                #         art3d.pathpatch_2d_to_3d(circle, z=ymax, zdir="y")
+
+                # for reachable_set_snapshot in reachable_set_snapshots[i]:
+                #     set_range = reachable_set_snapshot[0]
+                #     edgecolor = reachable_set_snapshot[1]
+                    
+                #     x = set_range[0, 0]
+                #     y = ymax
+                #     z = set_range[2, 0]
+                #     dx = set_range[0, 1] - set_range[0, 0]
+                #     dy = 0.01
+                #     dz = set_range[2, 1] - set_range[2, 0]
+                #     alpha = 0.2
+                #     if edgecolor == '#FF8000': 
+                #         alpha = 0.6
+                #     ax.bar3d(x, y, z, dx, dy, dz, color=edgecolor, alpha=alpha)
+                
+                
+
+                ax.set_xlim([-11.5, 2])
+                ax.set_ylim([-5, ymax])
+                ax.set_zlim([zmin, 7])
                 ax.set_aspect('equal')
+
+                elevation = 20
+                azimuth = -75
+                ax.view_init(elevation, azimuth)
 
                 ax.set_xlabel('x')
                 ax.set_ylabel('y')
@@ -1513,6 +1798,9 @@ class Analyzer:
 
                 if i == snapshot['parent_idx'] and j < len(info) - 1:
                     edgecolor = '#FF00FF'
+
+                if collides:
+                    edgecolor = '#FF8000'
                 
                 reachable_set_snapshot.append((state_range, edgecolor))
             
