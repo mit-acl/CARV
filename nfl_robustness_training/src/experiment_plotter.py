@@ -3,6 +3,7 @@ import torch
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 from matplotlib.legend_handler import HandlerTuple
+from matplotlib.animation import FuncAnimation, PillowWriter
 import pickle
 import os
 
@@ -34,7 +35,7 @@ magenta = '#FB5CDB'
 # orange = '#D55E00' # '#D11F40' # '#D66A37' # '#DC3220'
 # magenta = '#FB5CDB'
 
-def official_plotter(info, cl_system, frames):
+def official_plotter(info, cl_system, frames = [-1], save_animation=False, save=False, name='default'):
     num_steps = len(info[-1]["reachable_sets"]) - 1
     
     fig, ax = plt.subplots(figsize=(10,6))
@@ -48,6 +49,9 @@ def official_plotter(info, cl_system, frames):
     reachable_set_snapshots = []
     # info[-1]['time'] = 3
     for j, snapshot in enumerate(info):
+        num_times = 1
+        if j == len(info) - 1:
+            num_times = 20
         reachable_set_snapshot = []
         for i, reach_set_tuple in enumerate(snapshot['reachable_sets']):
             state_range = reach_set_tuple[0]
@@ -71,8 +75,8 @@ def official_plotter(info, cl_system, frames):
             
             reachable_set_snapshot.append((state_range, edgecolor))
         
-        # for i in range(num_times):
-        reachable_set_snapshots.append(reachable_set_snapshot)
+        for i in range(num_times):
+            reachable_set_snapshots.append(reachable_set_snapshot)
             
 
     def animate(i):
@@ -123,7 +127,7 @@ def official_plotter(info, cl_system, frames):
             
         elif cl_system.dynamics.name == "Unicycle_NL":
             fig.set_size_inches(10, 5)
-            delta = 0.
+            delta = 0.29
             # obstacles = [{'x': -10, 'y': -1, 'r': 3},
             #              {'x': -3, 'y': 2.5, 'r': 2 }]
             obstacles = [{'x': -6, 'y': -0.5, 'r': 2.4+delta},
@@ -178,21 +182,22 @@ def official_plotter(info, cl_system, frames):
         #     # import pdb; pdb.set_trace()
         #     if j == i - 1 or not remove_extended[j]:
         #         ax.add_patch(rect)
-            
-    if cl_system.dynamics.name == "DoubleIntegrator":
-        ani_name = 'double_integrator.gif'
-    elif cl_system.dynamics.name == "Unicycle_NL":
-        ani_name = 'unicycle.gif'
+    figure_path = dir_path + '/plots/forward/LCSS24/' + cl_system.dynamics.name + '/'
+    if save_animation:
+        ani_name = figure_path + cl_system.dynamics.name + '_' + name + '.gif'
+        time_multiplier = 5
+        ani = FuncAnimation(fig, animate, frames=len(reachable_set_snapshots), repeat=True)
+        ani.save(ani_name, dpi=300, writer=PillowWriter(fps=time_multiplier*2))
+    else:
+        for i in frames:
+            animate(i)
+            plt.show()
 
-    for i in frames:
-        animate(i)
-        plt.show()
 
-
-def official_3D_plotter(info, cl_system, frames):
+def official_3D_plotter(info, cl_system, frames = [-1], save_animation=False, save=False, name='default'):
     num_steps = len(info[-1]["reachable_sets"]) - 1
     
-    fig = plt.figure(figsize=(10, 6))
+    fig = plt.figure(figsize=(8, 6))
     ax = fig.add_subplot(111, projection='3d')
     
     plt.rcParams.update({
@@ -204,6 +209,9 @@ def official_3D_plotter(info, cl_system, frames):
     reachable_set_snapshots = []
     # info[-1]['time'] = 3
     for j, snapshot in enumerate(info):
+        num_times = 1
+        if j == len(info) - 1:
+            num_times = 30
         reachable_set_snapshot = []
         for i, reach_set_tuple in enumerate(snapshot['reachable_sets']):
             state_range = reach_set_tuple[0]
@@ -227,8 +235,8 @@ def official_3D_plotter(info, cl_system, frames):
             
             reachable_set_snapshot.append((state_range, edgecolor))
         
-        # for i in range(num_times):
-        reachable_set_snapshots.append(reachable_set_snapshot)
+        for i in range(num_times):
+            reachable_set_snapshots.append(reachable_set_snapshot)
             
 
     def animate(i):    
@@ -240,7 +248,7 @@ def official_3D_plotter(info, cl_system, frames):
         ax.scatter(xs[:, 0], xs[:, 1], xs[:, 2], s=1, c='k')
     
 
-        fig.set_size_inches(15, 10)
+        fig.set_size_inches(10, 9)
         # yoffset1 = 2
         # zoffset1 = 2
         # yoffset2 = -1.5
@@ -343,8 +351,10 @@ def official_3D_plotter(info, cl_system, frames):
             dz = set_range[2, 1] - set_range[2, 0]
             # alpha = 0.18
             alpha = 0.15
-            if edgecolor == '#FF8000' or edgecolor == green: 
+            if edgecolor == green or edgecolor == magenta:
                 alpha = 0.65
+            if edgecolor == orange:
+                alpha = 0.3
             ax.bar3d(x, y, z, dx, dy, dz, color=edgecolor, alpha=alpha)
 
 
@@ -392,8 +402,10 @@ def official_3D_plotter(info, cl_system, frames):
             dz = 0.01
             # alpha = 0.15
             alpha = 0.18
-            if edgecolor == '#FF8000' or edgecolor == green: 
+            if edgecolor == green or edgecolor == magenta:
                 alpha = 0.65
+            if edgecolor == orange:
+                alpha = 0.3
             ax.bar3d(x, y, z, dx, dy, dz, color=edgecolor, alpha=alpha)
 
 
@@ -452,11 +464,17 @@ def official_3D_plotter(info, cl_system, frames):
         ax.set_zlim([zmin, 6])
         ax.set_aspect('equal')
         ax.set_zticks(np.arange(-2, 7, 2))
+        plt.subplots_adjust(left=0.1, right=0.9, top=0.9, bottom=0.1)
 
         # elevation = 16
         # azimuth = -80
         elevation = 22
         azimuth = -99
+        if save_animation:
+            azimuth = -105 + np.sin(np.pi/2*i/len(reachable_set_snapshots)) * 20 + 20
+            elevation = 22 - np.sin(np.pi/2*i/len(reachable_set_snapshots)) * 6
+            # azimuth = -105 - np.cos(np.pi*i/len(reachable_set_snapshots)) * 10 + 10
+            # elevation = 22 - np.sin(np.pi/2*i/len(reachable_set_snapshots)) * 6
         ax.view_init(elevation, azimuth)
 
         ax.xaxis.labelpad = 15
@@ -468,16 +486,23 @@ def official_3D_plotter(info, cl_system, frames):
         # ax.set_ylabel('y')
         # ax.set_zlabel('z')
 
-    if cl_system.dynamics.name == "DoubleIntegrator":
-        ani_name = 'double_integrator.gif'
-    elif cl_system.dynamics.name == "Unicycle_NL":
-        ani_name = 'unicycle.gif'
-    elif cl_system.dynamics.name == "Quadrotor_NL":
-        ani_name = 'quadrotor.gif'
-
-    for i in frames:
-        animate(i)
-        plt.show()
+    figure_path = dir_path + '/plots/forward/LCSS24/' + cl_system.dynamics.name + '/'
+    if save_animation:
+        ani_name = figure_path + cl_system.dynamics.name + '_' + name + '.gif'
+        time_multiplier = 5
+        ani = FuncAnimation(fig, animate, frames=len(reachable_set_snapshots), repeat=True)
+        ani.save(ani_name, dpi=300, writer=PillowWriter(fps=time_multiplier*2))
+    else:
+        for i in frames:
+            animate(i)
+            plt.show()
+    
+        if save:
+            for i in frames:
+                idx = i
+                if i < 0:
+                    idx = len(reachable_set_snapshots) + i
+                fig.savefig(figure_path + cl_system.dynamics.name + '_' + name + '_' + str(idx) + '.png', dpi=300, bbox_inches='tight')
 
 
 def unified_plotter(cl_system, frames, experiments):        
@@ -632,6 +657,8 @@ def unified_plotter(cl_system, frames, experiments):
                 ax.add_patch(rect)
                 if expr == 'unicycle_CARV':
                     label = 'CARV'
+                elif expr == 'unicycle_hybr':
+                    label = '\\texttt{unif}'
                 else:
                     label = f'\\texttt{{{expr[9:]}}}'
                 rect = Rectangle(xy, width, height, linewidth=linewidth, edgecolor=edgecolor, facecolor=edgecolor, alpha=1, zorder=zorders[expr], label=label)
@@ -875,8 +902,8 @@ if __name__ == "__main__":
 
     # experiment = "double_integrator"
     # experiment = "unicycle"
-    experiment = "quadrotor_gates"
-    # experiment = "unified_unicycle"
+    # experiment = "quadrotor_gates"
+    experiment = "unified_unicycle"
     # experiment = "comparison"
     # experiment = "sweep_unicycle_constraints"
     # experiment = "sweep_double_integrator_constraints"
@@ -914,9 +941,11 @@ if __name__ == "__main__":
         controller = load_controller("Quadrotor_NL", "natural_none_gates", False, device='cpu')
         ol_dyn = dynamics.Quadrotor_NL(dt=0.2)
         cl_system = cl_systems.Quadrotor(controller, ol_dyn)
-        frames = [-1]
+        frames = []
         for i in frames:
-                official_3D_plotter(info, cl_system, [i])
+                official_3D_plotter(info, cl_system, [i], save=True, name='CARV15')
+        
+        official_3D_plotter(info, cl_system, save_animation=True, name='CARV15_pan_adjusted')
     
     elif experiment == "unified_unicycle":
         experiments = ["unicycle_hybr", "unicycle_CARV", "unicycle_part"]

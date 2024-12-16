@@ -27,6 +27,7 @@ from matplotlib.patches import Rectangle
 import nfl_veripy.dynamics as dynamics
 import cl_systems
 from utils.robust_training_utils import Analyzer, ReachableSet
+from experiment_plotter import official_plotter, official_3D_plotter
 
 
 from utils.nn import *
@@ -46,7 +47,7 @@ def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
             return input_range[1, 0] >= -1 and input_range[0, 0] >= 0 + delta
         
     def unicycle_condition(input_range):
-        delta = 0.0
+        delta = 0.29
         obstacles = [{'x': -6, 'y': -0.5, 'r': 2.4+delta},
                      {'x': -1.25, 'y': 1.75, 'r': 1.6+delta}]
         
@@ -213,9 +214,9 @@ def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
 
         tstart = time.time()
         # reach_set_dict, info = analyzer.calculate_N_step_reachable_sets(indices=None, condition=di_condition) # 3, 4, 5, 6, 7
-        reach_set_dict, info = analyzer.calculate_reachable_sets(training=False, autorefine=True, visualize=False, condition=di_condition)
+        # reach_set_dict, info = analyzer.calculate_reachable_sets(training=False, autorefine=True, visualize=False, condition=di_condition)
         # reach_set_dict = analyzer.calculate_N_step_reachable_sets(indices=[3, 4, 5, 6, 7, 8]) # 3, 4, 5, 6, 7
-        # reach_set_dict, info = analyzer.pseudo(condition = di_condition)
+        reach_set_dict, info = analyzer.pseudo(condition = di_condition)
         tend = time.time()
         # analyzer.switch_sets_on_off(condition)
         print('Calculation Time: {}'.format(tend-tstart))
@@ -249,14 +250,14 @@ def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
 
 
         init_range = torch.from_numpy(init_range).type(torch.float32).to(device)
-        analyzer = Analyzer(cl_dyn, time_horizon, init_range, max_diff=10, device=device, save_info=True)
+        analyzer = Analyzer(cl_dyn, time_horizon, init_range, max_diff=24, device=device, save_info=True)
 
         # analyzer.set_partition_strategy(0, np.array([6,6,18]))
         # tracemalloc.start()
         tstart = time.time()
         # reach_set_dict, info = analyzer.calculate_N_step_reachable_sets(indices=None, condition=unicycle_condition) # 3, 4, 5, 6, 7
-        # reach_set_dict, info = analyzer.calculate_reachable_sets(training=False, autorefine=True, condition=unicycle_condition, visualize=False)
-        reach_set_dict, info = analyzer.hybr(condition = unicycle_condition)
+        reach_set_dict, info = analyzer.calculate_reachable_sets(training=False, autorefine=True, condition=unicycle_condition, visualize=False)
+        # reach_set_dict, info = analyzer.hybr(condition = unicycle_condition)
         # reach_set_dict, info = analyzer.pseudo(condition = unicycle_condition)
         tend = time.time()
         # analyzer.switch_sets_on_off(condition)
@@ -274,6 +275,8 @@ def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
         # for i in [34, 58, -1]:
         for i in [-1]:
             analyzer.another_plotter(info, [i])
+        
+        official_plotter(info, cl_dyn, save_animation=True, name='CARV24')
 
         # analyzer.animate_reachability_calculation(info)
     
@@ -312,19 +315,19 @@ def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
         ])
 
 
-        time_horizon = 41
+        time_horizon = 51
         # time_horizon = 33
         # time_horizon = 20
 
 
         init_range = torch.from_numpy(init_range).type(torch.float32).to(device)
-        analyzer = Analyzer(cl_dyn, time_horizon, init_range, max_diff=42, device=device, save_info=True)
+        analyzer = Analyzer(cl_dyn, time_horizon, init_range, max_diff=15, device=device, save_info=True)
 
         # analyzer.set_partition_strategy(0, np.array([1,16,1,1,10,1]))
         # tracemalloc.start()
         tstart = time.time()
-        reach_set_dict, info = analyzer.calculate_N_step_reachable_sets(indices=None, condition=quadrotor_condition) # 3, 4, 5, 6, 7
-        # reach_set_dict, info = analyzer.calculate_reachable_sets(training=False, autorefine=True, condition=quadrotor_condition, visualize=False)
+        # reach_set_dict, info = analyzer.calculate_N_step_reachable_sets(indices=None, condition=quadrotor_condition) # 3, 4, 5, 6, 7
+        reach_set_dict, info = analyzer.calculate_reachable_sets(training=False, autorefine=True, condition=quadrotor_condition, visualize=False)
         # reach_set_dict, info = analyzer.hybr(condition = quadrotor_condition)
         # reach_set_dict, info = analyzer.pseudo(condition = unicycle_condition)
         tend = time.time()
@@ -425,6 +428,7 @@ def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
             analyzer.three_dimensional_plotter(info, [i])
 
         # analyzer.animate_reachability_calculation(info)
+        official_3D_plotter(info, cl_dyn, save_animation=True, name='CARV15')
 
 def setup_parser() -> dict:
     """Load yaml config file with experiment params."""

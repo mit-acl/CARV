@@ -119,19 +119,19 @@ class ReachableSet:
                 lb, ub = bounded_cl_system.compute_bounds(x=(range_tensor,), method=None, IBP=True)
                 tend = time.time()
                 print("first calc: {}".format(tend-tstart))
-                # tstart = time.time()
-                # lb, _ = bounded_cl_system.compute_bounds(x=(range_tensor,), method="backward", IBP=False,  bound_upper=False)
-                # tend = time.time()
-                # print("second calc: {}".format(tend-tstart))
+                tstart = time.time()
+                lb, _ = bounded_cl_system.compute_bounds(x=(range_tensor,), method="backward", IBP=False,  bound_upper=False)
+                tend = time.time()
+                print("second calc: {}".format(tend-tstart))
                 # lb, ub = bounded_cl_system.compute_bounds(x=(range_tensor,), method="backward")
             else:
                 lb, ub = bounded_cl_system.compute_bounds(x=(range_tensor,), method="backward")
             
-            # if next_reachable_set.populated:
-            #     lb_ = torch.hstack((lb.T, next_reachable_set.full_set))
-            #     ub_ = torch.hstack((ub.T, next_reachable_set.full_set))
-            #     lb = torch.max(lb_[:,[0, 1]], axis = 1)[0].reshape((1, -1))
-            #     ub = torch.min(ub_[:,[0, 2]], axis = 1)[0].reshape((1, -1))
+            if next_reachable_set.populated:
+                lb_ = torch.hstack((lb.T, next_reachable_set.full_set))
+                ub_ = torch.hstack((ub.T, next_reachable_set.full_set))
+                lb = torch.max(lb_[:,[0, 1]], axis = 1)[0].reshape((1, -1))
+                ub = torch.min(ub_[:,[0, 2]], axis = 1)[0].reshape((1, -1))
                 
 
             reach_set_range = torch.hstack((lb.T, ub.T))
@@ -1795,6 +1795,7 @@ class Analyzer:
                     edgecolor = 'k'
                 elif is_symbolic:
                     edgecolor = '#00CC00'
+                    edgecolor = '#2176FF'
 
                 if i == snapshot['parent_idx'] and j < len(info) - 1:
                     edgecolor = '#FF00FF'
@@ -1820,12 +1821,12 @@ class Analyzer:
                 fig.set_size_inches(9.6, 7.2)
                 constraint_color = '#262626'
                 ax.plot(np.array([-1.5, 3.25]), np.array([-1, -1]), c=constraint_color, linewidth=2)
-                rect = Rectangle(np.array([0.0, -1.25]), 3.25, 0.25, linewidth=1, edgecolor=constraint_color, facecolor=constraint_color, alpha=0.2)
+                rect = Rectangle(np.array([-1.0, -1.25]), 4.25, 0.25, linewidth=1, edgecolor=constraint_color, facecolor=constraint_color, alpha=0.2)
                 ax.add_patch(rect)
 
-                ax.plot(np.array([0+delta, 0+delta]), np.array([-1.25, 1.]), c=constraint_color, linewidth=2)
-                rect = Rectangle(np.array([-1.5, -1.25]), 1.5+delta, 2.25, linewidth=1, edgecolor=constraint_color, facecolor=constraint_color, alpha=0.2)
-                ax.add_patch(rect)
+                # ax.plot(np.array([0+delta, 0+delta]), np.array([-1.25, 1.]), c=constraint_color, linewidth=2)
+                # rect = Rectangle(np.array([-1.5, -1.25]), 1.5+delta, 2.25, linewidth=1, edgecolor=constraint_color, facecolor=constraint_color, alpha=0.2)
+                # ax.add_patch(rect)
 
                 ax.set_xlim([-0.5, 3.25])
                 ax.set_ylim([-1.25, 0.5])
@@ -1906,6 +1907,7 @@ class Analyzer:
         for i in frames:
             animate(i)
             plt.show()
+            fig.savefig("transparent_plot.png", transparent=True)
             
 
 
