@@ -127,11 +127,11 @@ class ReachableSet:
             else:
                 lb, ub = bounded_cl_system.compute_bounds(x=(range_tensor,), method="backward")
             
-            if next_reachable_set.populated:
-                lb_ = torch.hstack((lb.T, next_reachable_set.full_set))
-                ub_ = torch.hstack((ub.T, next_reachable_set.full_set))
-                lb = torch.max(lb_[:,[0, 1]], axis = 1)[0].reshape((1, -1))
-                ub = torch.min(ub_[:,[0, 2]], axis = 1)[0].reshape((1, -1))
+            # if next_reachable_set.populated:
+            #     lb_ = torch.hstack((lb.T, next_reachable_set.full_set))
+            #     ub_ = torch.hstack((ub.T, next_reachable_set.full_set))
+            #     lb = torch.max(lb_[:,[0, 1]], axis = 1)[0].reshape((1, -1))
+            #     ub = torch.min(ub_[:,[0, 2]], axis = 1)[0].reshape((1, -1))
                 
 
             reach_set_range = torch.hstack((lb.T, ub.T))

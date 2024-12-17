@@ -35,7 +35,7 @@ magenta = '#FB5CDB'
 # orange = '#D55E00' # '#D11F40' # '#D66A37' # '#DC3220'
 # magenta = '#FB5CDB'
 
-def official_plotter(info, cl_system, frames = [-1], save_animation=False, save=False, name='default'):
+def official_plotter(info, cl_system, frames = [-1], save_animation=False, save=False, name='default', constraint=None):
     num_steps = len(info[-1]["reachable_sets"]) - 1
     
     fig, ax = plt.subplots(figsize=(10,6))
@@ -107,14 +107,15 @@ def official_plotter(info, cl_system, frames = [-1], save_animation=False, save=
             plt.rcParams.update({"font.size": fs})
             plt.subplots_adjust(left=0.176, bottom=0.15, right=0.9, top=0.88, wspace=0.2, hspace=0.2)
             fig.set_size_inches(9.6, 7.2)
-            constraint_color = '#262626'
-            ax.plot(np.array([-1.5, 3.25]), np.array([-1, -1]), c=constraint_color, linewidth=2)
-            rect = Rectangle(np.array([0.0, -1.25]), 3.25, 0.25, linewidth=1, edgecolor=constraint_color, facecolor=constraint_color, alpha=0.2)
-            ax.add_patch(rect)
+            constraint.plot(ax)
+            # constraint_color = '#262626'
+            # ax.plot(np.array([-1.5, 3.25]), np.array([-1, -1]), c=constraint_color, linewidth=2)
+            # rect = Rectangle(np.array([0.0, -1.25]), 3.25, 0.25, linewidth=1, edgecolor=constraint_color, facecolor=constraint_color, alpha=0.2)
+            # ax.add_patch(rect)
 
-            ax.plot(np.array([0, 0]), np.array([-1.25, 1.]), c=constraint_color, linewidth=2)
-            rect = Rectangle(np.array([-1.5, -1.25]), 1.5, 2.25, linewidth=1, edgecolor=constraint_color, facecolor=constraint_color, alpha=0.2)
-            ax.add_patch(rect)
+            # ax.plot(np.array([0, 0]), np.array([-1.25, 1.]), c=constraint_color, linewidth=2)
+            # rect = Rectangle(np.array([-1.5, -1.25]), 1.5, 2.25, linewidth=1, edgecolor=constraint_color, facecolor=constraint_color, alpha=0.2)
+            # ax.add_patch(rect)
 
             ax.set_xlim([-0.5, 3.25])
             ax.set_ylim([-1.25, 0.5])
@@ -127,17 +128,18 @@ def official_plotter(info, cl_system, frames = [-1], save_animation=False, save=
             
         elif cl_system.dynamics.name == "Unicycle_NL":
             fig.set_size_inches(10, 5)
-            delta = 0.29
-            # obstacles = [{'x': -10, 'y': -1, 'r': 3},
-            #              {'x': -3, 'y': 2.5, 'r': 2 }]
-            obstacles = [{'x': -6, 'y': -0.5, 'r': 2.4+delta},
-                        {'x': -1.25, 'y': 1.75, 'r': 1.6+delta}]
-            for obstacle in obstacles:
-                color = '#262626'
-                circle = plt.Circle((obstacle['x'], obstacle['y']), obstacle['r'], edgecolor=color, facecolor='none')
-                ax.add_patch(circle)
-                circle = plt.Circle((obstacle['x'], obstacle['y']), obstacle['r'], edgecolor=color, facecolor=color, alpha=0.2)
-                ax.add_patch(circle)
+            constraint.plot(ax)
+            # delta = 0.29
+            # # obstacles = [{'x': -10, 'y': -1, 'r': 3},
+            # #              {'x': -3, 'y': 2.5, 'r': 2 }]
+            # obstacles = [{'x': -6, 'y': -0.5, 'r': 2.4+delta},
+            #             {'x': -1.25, 'y': 1.75, 'r': 1.6+delta}]
+            # for obstacle in obstacles:
+            #     color = '#262626'
+            #     circle = plt.Circle((obstacle['x'], obstacle['y']), obstacle['r'], edgecolor=color, facecolor='none')
+            #     ax.add_patch(circle)
+            #     circle = plt.Circle((obstacle['x'], obstacle['y']), obstacle['r'], edgecolor=color, facecolor=color, alpha=0.2)
+            #     ax.add_patch(circle)
 
             ax.set_xlim([-10, 1])
             ax.set_ylim([-1, 4])
@@ -194,7 +196,7 @@ def official_plotter(info, cl_system, frames = [-1], save_animation=False, save=
             plt.show()
 
 
-def official_3D_plotter(info, cl_system, frames = [-1], save_animation=False, save=False, name='default'):
+def official_3D_plotter(info, cl_system, frames = [-1], save_animation=False, save=False, name='default', constraint=None):
     num_steps = len(info[-1]["reachable_sets"]) - 1
     
     fig = plt.figure(figsize=(8, 6))
@@ -299,45 +301,47 @@ def official_3D_plotter(info, cl_system, frames = [-1], save_animation=False, sa
         #             {'x': 0, 'y': 2. + yoffset3, 'r': little_radius},
         #             {'x': 0, 'z': -1. + zoffset3, 'r': little_radius},
         #             {'x': 0, 'z': 3. + zoffset3, 'r': little_radius},]
-        for obstacle in obstacles:
-            color = '#262626'
-            if 'z' in obstacle and 'y' in obstacle:
-                u, v = np.mgrid[0:2*np.pi:20j, 0:np.pi:10j]
-                x = obstacle['r'] * np.cos(u) * np.sin(v) + obstacle['x']
-                y = obstacle['r'] * np.sin(u) * np.sin(v) + obstacle['y']
-                z = obstacle['r'] * np.cos(v) + obstacle['z']
-            elif 'y' in obstacle and obstacle['r'] == little_radius:
-                if obstacle['gate_number'] == 1:
-                    offset = zoffset1 + 1
-                elif obstacle['gate_number'] == 2:
-                    offset = zoffset2 + 1
-                elif obstacle['gate_number'] == 3:
-                    offset = zoffset3 + 1
+        
+        constraint.plot(ax)
+        # for obstacle in obstacles:
+        #     color = '#262626'
+        #     if 'z' in obstacle and 'y' in obstacle:
+        #         u, v = np.mgrid[0:2*np.pi:20j, 0:np.pi:10j]
+        #         x = obstacle['r'] * np.cos(u) * np.sin(v) + obstacle['x']
+        #         y = obstacle['r'] * np.sin(u) * np.sin(v) + obstacle['y']
+        #         z = obstacle['r'] * np.cos(v) + obstacle['z']
+        #     elif 'y' in obstacle and obstacle['r'] == little_radius:
+        #         if obstacle['gate_number'] == 1:
+        #             offset = zoffset1 + 1
+        #         elif obstacle['gate_number'] == 2:
+        #             offset = zoffset2 + 1
+        #         elif obstacle['gate_number'] == 3:
+        #             offset = zoffset3 + 1
 
-                height = (4 + little_radius)/2
-                num_points = 64
-                u = np.linspace(0, 2 * np.pi, num_points)
-                v = np.linspace(-height + offset, height + offset, num_points)
-                x = obstacle['r'] * np.outer(np.cos(u), np.ones(np.size(v))) + obstacle['x']
-                y = obstacle['r'] * np.outer(np.sin(u), np.ones(np.size(v))) + obstacle['y']
-                z = np.outer(np.ones(np.size(u)), v)
+        #         height = (4 + little_radius)/2
+        #         num_points = 64
+        #         u = np.linspace(0, 2 * np.pi, num_points)
+        #         v = np.linspace(-height + offset, height + offset, num_points)
+        #         x = obstacle['r'] * np.outer(np.cos(u), np.ones(np.size(v))) + obstacle['x']
+        #         y = obstacle['r'] * np.outer(np.sin(u), np.ones(np.size(v))) + obstacle['y']
+        #         z = np.outer(np.ones(np.size(u)), v)
 
-            elif 'z' in obstacle and obstacle['r'] == little_radius:
-                if obstacle['gate_number'] == 1:
-                    offset = yoffset1
-                elif obstacle['gate_number'] == 2:
-                    offset = yoffset2
-                elif obstacle['gate_number'] == 3:
-                    offset = yoffset3
+        #     elif 'z' in obstacle and obstacle['r'] == little_radius:
+        #         if obstacle['gate_number'] == 1:
+        #             offset = yoffset1
+        #         elif obstacle['gate_number'] == 2:
+        #             offset = yoffset2
+        #         elif obstacle['gate_number'] == 3:
+        #             offset = yoffset3
                 
-                height = (4 + little_radius)/2
-                num_points = 64
-                u = np.linspace(0, 2 * np.pi, num_points)
-                v = np.linspace(-height + offset, height + offset, num_points)
-                x = obstacle['r'] * np.outer(np.cos(u), np.ones(np.size(v))) + obstacle['x']
-                z = obstacle['r'] * np.outer(np.sin(u), np.ones(np.size(v))) + obstacle['z']
-                y = np.outer(np.ones(np.size(u)), v)
-            ax.plot_surface(x, y, z, color=color, alpha=0.1)
+        #         height = (4 + little_radius)/2
+        #         num_points = 64
+        #         u = np.linspace(0, 2 * np.pi, num_points)
+        #         v = np.linspace(-height + offset, height + offset, num_points)
+        #         x = obstacle['r'] * np.outer(np.cos(u), np.ones(np.size(v))) + obstacle['x']
+        #         z = obstacle['r'] * np.outer(np.sin(u), np.ones(np.size(v))) + obstacle['z']
+        #         y = np.outer(np.ones(np.size(u)), v)
+        #     ax.plot_surface(x, y, z, color=color, alpha=0.1)
 
         for reachable_set_snapshot in reachable_set_snapshots[i]:
             set_range = reachable_set_snapshot[0]
