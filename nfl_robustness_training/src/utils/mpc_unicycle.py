@@ -7,8 +7,11 @@ import matplotlib.pyplot as plt
 import matplotlib as mpl
 import pickle
 import os
+import yaml
 
-dir_path = os.getcwd()
+# dir_path = os.getcwd()
+dir_path = os.getcwd()+'/CARV'
+print(f'dir_path = {dir_path}')
 
 def setup_model(dt = 0.1, obstacles = []):
     model_type = 'discrete' # either 'discrete' or 'continuous'
@@ -60,7 +63,7 @@ def setup_mpc_controller(model, dt = 0.1):
         'state_discretization': 'discrete',
         'store_full_solution':True,
         # Use MA27 linear solver in ipopt for faster calculations:
-        'nlpsol_opts': {'ipopt.linear_solver': 'MA27'},
+        # 'nlpsol_opts': {'ipopt.linear_solver': 'MA27'},
     }
     mpc.set_param(**setup_mpc)
 
@@ -161,12 +164,37 @@ def main(noisy = False):
     ax.scatter(xs[:, 0], xs[:, 1], s=1, c='k')
     plt.show()
 
-def generate_data(num_trajectories = 50, system = 'unicycle', noisy = False, prob_short = 0.):
+def read_obstacles(environment='safety_test', config_path=''):
+    """
+    Read circular obstacles for a yaml file for use with the simulator_lidar repository
+    """
+    with open(config_path+environment+'.yaml') as file:
+        yaml_data = yaml.load(file, Loader=yaml.FullLoader)
+
+        # load environment area parameters
+        area = yaml_data['area']
+        area = (area['x_min'], area['x_max'], area['y_min'], area['y_max'])
+
+        # load static and dynamic obstacles
+        obs = yaml_data['obstacles']
+        # all_obstacles = []
+        # for i in range(len(obs)):
+        #     obs_i = [{'x': obs[i]['centroid_x'], 'y': obs[i]['centroid_y'], 'r': obs[i]['radius']}]
+        #     all_obstacles.append(obs_i)
+        all_obstacles = [{'x': o['centroid_x'], 'y': o['centroid_y'], 'r': o['radius']} for o in obs]
+        
+    return all_obstacles
+
+def generate_data(num_trajectories = 50, system = 'unicycle', noisy = False, prob_short = 0., use_config=False, environment='safety_test', config_path='', save_dir=None):
     dt = 0.2
-    # obstacles = [{'x': -10, 'y': -1, 'r': 4},
-    #              {'x': -3.5, 'y': 3, 'r': 3}]
-    obstacles = [{'x': -6, 'y': -0.5, 'r': 2.75},
-                 {'x': -1.25, 'y': 1.75, 'r': 2.}]
+    if not use_config:
+        # obstacles = [{'x': -10, 'y': -1, 'r': 4},
+        #              {'x': -3.5, 'y': 3, 'r': 3}]
+        obstacles = [{'x': -6, 'y': -0.5, 'r': 2.75},
+                    {'x': -1.25, 'y': 1.75, 'r': 2.}]
+    else:
+        obstacles = read_obstacles(environment=environment, config_path=config_path)
+
     model = setup_model(obstacles=obstacles, dt=dt)
     mpc = setup_mpc_controller(model, dt=dt)
     simulator = setup_simulator(model, dt=dt)
@@ -251,6 +279,7 @@ def generate_data(num_trajectories = 50, system = 'unicycle', noisy = False, pro
     ax.set_aspect('equal')
     ax.scatter(xs[:, 0], xs[:, 1], s=1, c='k')
     plt.show()
+    print(f'data saved to {path}')
 
 def correct_data():
     system = "unicycle"
@@ -263,6 +292,6 @@ def correct_data():
 
 if __name__ == "__main__":
     # main(noisy=False)
-    generate_data(num_trajectories=1000, noisy=False, prob_short=0.0)
+    generate_data(num_trajectories=1, noisy=False, prob_short=0.0, use_config=True, config_path='/Users/dgaillard/Desktop/aerospace_controls_lab/learned_control/simulator_lidar/config/')
     # correct_data()
     
