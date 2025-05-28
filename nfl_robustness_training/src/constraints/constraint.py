@@ -157,6 +157,9 @@ class Constraint:
 
     def is_safe(self, input_range):
         raise NotImplementedError("Subclasses should implement this method")
+    
+    def plot(self, input_range):
+        raise NotImplementedError("Subclasses should implement this method")
 
 # class DIConstraint(Constraint):
 #     def is_safe(self, input_range):

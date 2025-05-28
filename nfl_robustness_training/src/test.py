@@ -40,9 +40,27 @@ logger = logging.getLogger(__name__)
 logger.setLevel(level=logging.INFO)
 
 def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
+    """
+    Main function to perform forward analysis for different system types.
+    Args:
+        params (dict): Dictionary containing parameters for the analysis. 
+            Expected keys include:
+            - "system": Dictionary with keys:
+            - "type": Type of the system ('DoubleIntegrator', 'Unicycle_NL', 'Quadrotor_NL').
+            - "controller": Controller type.
+            - "dagger": Dagger parameter.
+            - "method": Method to be used for analysis ('carv', 'part', 'symb', 'unif', 'pseudo').
+    Returns:
+        Tuple[Dict, Dict]: A tuple containing:
+            - reach_set_dict (Dict): Dictionary of reachable sets.
+            - info (Dict): Dictionary containing additional information about the analysis.
+    Raises:
+        ValueError: If an unknown method is specified in params.
+    """
     device = 'cpu'
     torch.no_grad()
 
+    # Set up the system, controller, and analysis parameters for different system types
     if params["system"]["type"] == 'DoubleIntegrator':
         controller = load_controller(params['system']['type'], params['system']['controller'], params["system"]["dagger"], device=device)
         ol_dyn = dynamics.DoubleIntegrator(dt=0.2)
@@ -57,10 +75,12 @@ def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
         ])
         time_horizon = 30
 
+        # Initialize the analyzer and constraint for the system
         init_range = torch.from_numpy(init_range).type(torch.float32).to(device)
-        analyzer = Analyzer(cl_dyn, time_horizon, init_range, max_diff=15, device=device)
+        analyzer = Analyzer(cl_dyn, time_horizon, init_range, max_diff=30, device=device)
         constraint = constraints.DoubleIntegratorTwoConstraint()
 
+        # Perform forward reachability analysis using the specified method
         tstart = time.time()
         if params['method'] == 'carv':
             reach_set_dict, info = analyzer.calculate_reachable_sets(training=False, autorefine=True, visualize=False, condition=constraint.is_safe)
@@ -68,6 +88,7 @@ def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
             analyzer.set_partition_strategy(0, np.array([10,10]))
             reach_set_dict, info = analyzer.calculate_reachable_sets(training=False, autorefine=False, visualize=False, condition=constraint.is_safe)
         elif params['method'] == 'symb':
+            analyzer = Analyzer(cl_dyn, time_horizon, init_range, max_diff=time_horizon, device=device)
             reach_set_dict, info = analyzer.calculate_N_step_reachable_sets(indices=None, condition=constraint.is_safe)
         elif params['method'] == 'unif':
             reach_set_dict, info = analyzer.hybr(condition=constraint.is_safe)
@@ -96,11 +117,12 @@ def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
         ])
         time_horizon = 52
 
-
+        # Initialize the analyzer and constraint for the system
         init_range = torch.from_numpy(init_range).type(torch.float32).to(device)
         analyzer = Analyzer(cl_dyn, time_horizon, init_range, max_diff=10, device=device, save_info=True)
         constraint = constraints.UnicycleConstraint()
 
+        # Perform forward reachability analysis using the specified method
         tstart = time.time()
         if params['method'] == 'carv':
             reach_set_dict, info = analyzer.calculate_reachable_sets(training=False, autorefine=True, visualize=False, condition=constraint.is_safe)
@@ -108,6 +130,7 @@ def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
             analyzer.set_partition_strategy(0, np.array([6,6,18]))
             reach_set_dict, info = analyzer.calculate_reachable_sets(training=False, autorefine=False, visualize=False, condition=constraint.is_safe)
         elif params['method'] == 'symb':
+            analyzer = Analyzer(cl_dyn, time_horizon, init_range, max_diff=time_horizon, device=device)
             reach_set_dict, info = analyzer.calculate_N_step_reachable_sets(indices=None, condition=constraint.is_safe)
         elif params['method'] == 'unif':
             reach_set_dict, info = analyzer.hybr(condition=constraint.is_safe)
@@ -139,10 +162,12 @@ def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
         ])
         time_horizon = 51
 
+        # Initialize the analyzer and constraint for the system
         init_range = torch.from_numpy(init_range).type(torch.float32).to(device)
         analyzer = Analyzer(cl_dyn, time_horizon, init_range, max_diff=15, device=device, save_info=True)
         constraint = constraints.GatesConstraint()
 
+        # Perform forward reachability analysis using the specified method
         tstart = time.time()
         if params['method'] == 'carv':
             reach_set_dict, info = analyzer.calculate_reachable_sets(training=False, autorefine=True, visualize=False, condition=constraint.is_safe)
@@ -163,6 +188,20 @@ def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
         official_3D_plotter(info, cl_dyn, save_animation=False, name='CARV15', constraint=constraint)
 
 def setup_parser() -> dict:
+    """
+    Parses command-line arguments and loads a YAML configuration file with experiment parameters.
+    Returns:
+        dict: A dictionary containing the experiment parameters loaded from the YAML file,
+              with an additional key 'method' indicating the chosen method for the experiment.
+    Command-line Arguments:
+        --config (str): Absolute or relative path to the YAML file describing the experiment configuration.
+                        If the path starts with 'configs/', the configuration files in the installed package
+                        will be used (ignoring the current working directory).
+        --method (str): Method to use for the experiment. Choices are 'carv', 'part', 'symb', 'unif', or 'pseudo'.
+    Raises:
+        FileNotFoundError: If the specified YAML configuration file does not exist.
+        yaml.YAMLError: If there is an error in parsing the YAML file.
+    """
     """Load yaml config file with experiment params."""
     parser = argparse.ArgumentParser(
         description="Analyze a closed loop system w/ NN controller."
