@@ -8,7 +8,7 @@ import pickle
 import os
 
 import nfl_veripy.dynamics as dynamics  # noqa: E402
-from utils.nn import *
+from src.utils.nn import *
 
 dir_path = os.path.dirname(os.path.realpath(__file__))
 
