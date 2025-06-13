@@ -127,8 +127,8 @@ def main_forward_nick(params: dict) -> Tuple[Dict, Dict]:
         if params['method'] == 'carv':
             reach_set_dict, info = analyzer.calculate_reachable_sets(training=False, autorefine=True, visualize=False, condition=constraint.is_safe)
         elif params['method'] == 'part':
-            analyzer.set_partition_strategy(0, np.array([6,6,18]))
-            reach_set_dict, info = analyzer.calculate_reachable_sets(training=False, autorefine=False, visualize=False, condition=constraint.is_safe)
+            # analyzer.set_partition_strategy(0, np.array([6,6,18]))
+            reach_set_dict, info = analyzer.calculate_reachable_sets(num_partitions=np.array([3,3,9]), training=False, autorefine=False, visualize=False, condition=constraint.is_safe)
         elif params['method'] == 'symb':
             analyzer = Analyzer(cl_dyn, time_horizon, init_range, max_diff=time_horizon, device=device)
             reach_set_dict, info = analyzer.calculate_N_step_reachable_sets(indices=None, condition=constraint.is_safe)

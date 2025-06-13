@@ -66,63 +66,44 @@ class ReachableSet:
     sample_from_reachable_set(cl_system, num_steps=1, num_trajectories=100, sample_corners=False):
         Samples trajectories from the reachable set.
     """
-    def __init__(self, t, ranges = None, partition_strategy = 'maintain', thread = 0, device='cpu') -> None:
+    def __init__(self, t, ranges, device='cpu') -> None:
         self.t = t
-        
-        if ranges is None:
-            # ranges = torch.tensor([[0, 0], [0, 0]], device=device)
-            ranges = torch.zeros((6, 2), device=device)
+        self.subsets = ranges.unsqueeze(0)
         self.full_set = ranges
-        self.subsets = {}
-        self.partition_strategy = partition_strategy
-        self.get_partitions()
-        self.thread = thread
         self.recalculate = True
         self.device = device
-        self.t_parent = -1
         self.symbolic = True
         self.populated = False
 
-    def set_range(self, ranges):
+    def update_full_set(self, ranges):
         self.full_set = ranges
 
-    def add_subset(self, ranges, index):
-        self.subsets[index] = ReachableSet(self.t, ranges, thread=index)
+    def update(self, subsets):
+        self.subsets = subsets
 
-    def get_thread(self, thread):
-        if thread == 0 and self.subsets == {}:
-            return self
-        else:
-            return self.subsets[thread]
+        self.full_set = torch.vstack(
+            [torch.min(subsets[:, :, 0], dim=0)[0], torch.max(subsets[:, :, 1], dim=0)[0]]
+        ).T.to(self.device)
+        
+    # def calculate_full_set(self):
+    #     num_subsets = len(self.subsets)
+    #     num_states = self.subsets[0].full_set.shape[0]
+    #     subset_tensor = torch.zeros((num_subsets, num_states, 2), device=self.device)
+
+    #     for i, subset in self.subsets.items():
+    #         subset_tensor[i] = subset.full_set
+        
+    #     lb, _ = torch.min(subset_tensor[:, :, 0], dim=0)
+    #     ub, _ = torch.max(subset_tensor[:, :, 1], dim=0)
+    #     self.full_set = torch.vstack((lb, ub)).T.to(self.device)
         
     
-    def set_partition_strategy(self, partition_strategy):
-        if partition_strategy in ['maintain', 'consolidate'] or isinstance(partition_strategy, np.ndarray):
-            self.partition_strategy = partition_strategy
-        else:
-            raise NotImplementedError
+    def partition(self, num_partitions=None):
         
-    def calculate_full_set(self):
-        num_subsets = len(self.subsets)
-        num_states = self.subsets[0].full_set.shape[0]
-        subset_tensor = torch.zeros((num_subsets, num_states, 2), device=self.device)
-
-        for i, subset in self.subsets.items():
-            subset_tensor[i] = subset.full_set
-        
-        lb, _ = torch.min(subset_tensor[:, :, 0], dim=0)
-        ub, _ = torch.max(subset_tensor[:, :, 1], dim=0)
-        self.full_set = torch.vstack((lb, ub)).T.to(self.device)
-        
-    
-    def get_partitions(self):
-        num_partitions = self.partition_strategy
-        
-        if self.partition_strategy == 'maintain' or self.partition_strategy == 'consolidate':
+        if num_partitions is None:
             pass
-        else:
+        elif isinstance(num_partitions, np.ndarray) and len(num_partitions) == self.full_set.shape[:-1][0]:
             # num_partitions = np.array(literal_eval(self.partition_strategy))
-            self.subsets = {}
             prev_set = self.full_set
 
             input_shape = self.full_set.shape[:-1]
@@ -131,11 +112,10 @@ class ReachableSet:
                 (prev_set[..., 1] - prev_set[..., 0]), torch.from_numpy(num_partitions).type(torch.float32).to(self.device)
             )
 
-            ranges = []
-            output_range = None
+            self.subsets = torch.zeros((np.prod(num_partitions), *input_shape, 2), dtype=torch.float32, device=self.device)
 
-            for element in product(
-                *[range(num) for num in num_partitions.flatten()]
+            for i, element in enumerate(product(
+                *[range(num) for num in num_partitions.flatten()])
             ):
                 element_ = torch.tensor(element).reshape(input_shape).to(self.device)
                 input_range_ = torch.empty_like(prev_set)
@@ -146,10 +126,10 @@ class ReachableSet:
                     element_ + 1, slope
                 )
 
-                ranges.append(input_range_,)
+                self.subsets[i] = input_range_
 
-            for i, partition in enumerate(ranges):
-                self.subsets[i] = ReachableSet(self.t, torch.tensor(partition).to(self.device), thread = i, device = self.device)
+            # for i, partition in enumerate(ranges):
+            #     self.subsets[i] = torch.tensor(partition).to(self.device)
 
     def consolidate(self):
         if self.partition_strategy != 'consolidate':
@@ -170,12 +150,12 @@ class ReachableSet:
         Returns:
             None
         """
-        if self.subsets == {} and next_reachable_set.recalculate:
-            x = torch.mean(self.full_set, axis=1).reshape((1, -1))
-            eps = (self.full_set[:, 1] - self.full_set[:, 0])/2
+        if next_reachable_set.recalculate and len(self.subsets) == 1:
+            x = torch.mean(self.subsets, axis=2)
+            eps = (self.subsets[0, :, 1] - self.subsets[0, :, 0])/2
             ptb = PerturbationLpNorm(eps = eps)
             range_tensor = BoundedTensor(x, ptb)
-            # import pdb; pdb.set_trace()
+            import pdb; pdb.set_trace()
             if training:
                 print("crown fast")
                 tstart = time.time()
@@ -196,15 +176,38 @@ class ReachableSet:
             #     lb = torch.max(lb_[:,[0, 1]], axis = 1)[0].reshape((1, -1))
             #     ub = torch.min(ub_[:,[0, 2]], axis = 1)[0].reshape((1, -1))
                 
+            # import pdb; pdb.set_trace()
+            reach_set_subsets = torch.transpose(torch.transpose(torch.stack((lb, ub)), 0, 1), 1, 2)
+            next_reachable_set.update(reach_set_subsets)
+        elif len(self.subsets) > 1:
+            # If the set is partitioned, we need to calculate the bounds for each subset
+            reach_set_subsets = torch.zeros((len(self.subsets), *self.full_set.shape), device=self.device)
+            for i, subset in enumerate(self.subsets):
+                x = torch.mean(subset, axis=1).unsqueeze(0)
+                eps = (subset[:, 1] - subset[:, 0])/2
+                ptb = PerturbationLpNorm(eps = eps)
+                range_tensor = BoundedTensor(x, ptb)
+                # import pdb; pdb.set_trace()
+                if training:
+                    print("crown fast")
+                    tstart = time.time()
+                    lb, ub = bounded_cl_system.compute_bounds(x=(range_tensor,), method=None, IBP=True)
+                    tend = time.time()
+                    print("first calc: {}".format(tend-tstart))
+                    tstart = time.time()
+                    lb, _ = bounded_cl_system.compute_bounds(x=(range_tensor,), method="backward", IBP=False, bound_upper=False)
+                    tend = time.time()
+                    print("second calc: {}".format(tend-tstart))
+                else:
+                    lb, ub = bounded_cl_system.compute_bounds(x=(range_tensor,), method="backward")
+                
+                # import pdb; pdb.set_trace()
+                reach_set_subsets[i] = torch.transpose(torch.transpose(torch.stack((lb, ub)), 0, 1), 1, 2)[0]
 
-            reach_set_range = torch.hstack((lb.T, ub.T))
-            next_reachable_set.add_subset(reach_set_range, self.thread)
-        else:
-            for i, subset in self.subsets.items():
-                subset.populate_next_reachable_set(bounded_cl_system, next_reachable_set, training)
+            next_reachable_set.update(reach_set_subsets)
 
-        next_reachable_set.calculate_full_set()
-        next_reachable_set.t_parent = self.t
+        # next_reachable_set.calculate_full_set()
+        # next_reachable_set.t_parent = self.t
         if next_reachable_set.t - self.t == 1:
             next_reachable_set.symbolic = False
         next_reachable_set.populated = True
@@ -318,16 +321,16 @@ class Analyzer:
             # 'zero-lb': True,
             # 'same-slope': False,
         }
-        self.reachable_sets = {0: ReachableSet(0, initial_range, partition_strategy = 'maintain', device=device)}
+        self.reachable_sets = {0: ReachableSet(0, initial_range, device=device)}
         self.bounded_cl_systems = {0: BoundedModule(cl_system, dummy_input, bound_opts=bound_opts, device=device)}
         for i in range(num_steps):
-            self.reachable_sets[i+1] = ReachableSet(i+1, device=device)
+            self.reachable_sets[i+1] = ReachableSet(i+1, torch.zeros((6, 2), device=device), device=device)
             cl_system.set_num_steps(i+2)
             if i < self.max_diff:
                 self.bounded_cl_systems[i+1] = BoundedModule(cl_system, dummy_input, bound_opts=bound_opts, device=device)
 
 
-    def calculate_reachable_sets(self, training = False, autorefine = False, visualize = False, condition = None):
+    def calculate_reachable_sets(self, num_partitions = None, training = False, autorefine = False, visualize = False, condition = None):
         """
         Calculate the reachable sets for a given system over a number of steps.
         Args:
@@ -350,17 +353,17 @@ class Analyzer:
             current_snapshot['child_idx'] = 0
             current_snapshot['parent_idx'] = 0
         
-
+        self.reachable_sets[0].partition(num_partitions)
         for i in range(self.num_steps):
             current_snapshot = {}
-            self.reachable_sets[i].get_partitions()
+            # self.reachable_sets[i].get_partitions()
             # Error handling to catch issues with bounding tan function in auto_LiRPA; if bounds are too big, use refinement
             try:
                 tstart = time.time()
                 # By default, calculate concrete reachable sets
                 self.reachable_sets[i].populate_next_reachable_set(self.bounded_cl_systems[0], self.reachable_sets[i+1], training)
                 tend = time.time()
-                self.reachable_sets[i+1].consolidate()
+                # self.reachable_sets[i+1].consolidate()
                 if self.save_info:
                     current_snapshot['reachable_sets'] = deepcopy([(reachable_set.full_set.cpu().detach().numpy(), reachable_set.symbolic, not condition(reachable_set.full_set)) for _, reachable_set in self.reachable_sets.items()])
                     current_snapshot['time'] = tend - tstart
@@ -374,7 +377,7 @@ class Analyzer:
                 tstart = time.time()
                 self.reachable_sets[i].populate_next_reachable_set(self.bounded_cl_systems[0], self.reachable_sets[i+1], training)
                 tend = time.time()
-                self.reachable_sets[i+1].consolidate()
+                # self.reachable_sets[i+1].consolidate()
                 if self.save_info:
                     current_snapshot['reachable_sets'] = deepcopy([(reachable_set.full_set.cpu().detach().numpy(), reachable_set.symbolic, not condition(reachable_set.full_set)) for _, reachable_set in self.reachable_sets.items()])
                     current_snapshot['time'] = tend - tstart
@@ -507,7 +510,6 @@ class Analyzer:
     def calculate_N_step_reachable_sets(self, training = False, indices = None, condition = None):
         if indices is None:
             indices = list(range(self.num_steps))
-        import time
 
         snapshots = []
 
