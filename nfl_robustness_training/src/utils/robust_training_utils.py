@@ -109,6 +109,46 @@ class ReachableSet:
             for i, partition in enumerate(ranges):
                 self.subsets[i] = ReachableSet(self.t, torch.tensor(partition).to(self.device), thread = i, device = self.device)
 
+    def partition_set(self, div_per_axis: list | int):
+        """
+        Partitions the current reachable set into smaller subsets based on the specified divisions per axis.
+        Args:
+            div_per_axis (list | int): Number of partitions per axis. If an integer is provided,
+                                        the same number of partitions will be applied to all axes.
+        Returns:
+            list: A list of partitioned reachable sets.
+        """
+
+        prev_set = self.full_set
+        input_shape = self.full_set.shape[:-1]
+
+        if isinstance(div_per_axis, int):
+            num_partitions = np.full(input_shape, div_per_axis)
+        else:
+            num_partitions = np.array(div_per_axis)
+        slope = torch.divide(
+            (prev_set[..., 1] - prev_set[..., 0]), torch.from_numpy(num_partitions).type(torch.float32).to(self.device)
+        )
+
+        ranges = []
+        output_range = None
+
+        for element in product(
+            *[range(num) for num in num_partitions.flatten()]
+        ):
+            element_ = torch.tensor(element).reshape(input_shape).to(self.device)
+            input_range_ = torch.empty_like(prev_set)
+            input_range_[..., 0] = prev_set[..., 0] + torch.multiply(
+                element_, slope
+            )
+            input_range_[..., 1] = prev_set[..., 0] + torch.multiply(
+                element_ + 1, slope
+            )
+
+            ranges.append(input_range_,)
+        
+        return ranges
+        
     def consolidate(self):
         if self.partition_strategy != 'consolidate':
             pass

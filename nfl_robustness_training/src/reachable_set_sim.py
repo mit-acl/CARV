@@ -81,7 +81,6 @@ class ReachabilityTester:
         self.calc_id_to_reachset: Dict[int, int] = {}  # maps calc_id -> "timestep" in analyzer
 
 
-
         init_bounds = analyzer.reachable_sets[0].full_set.cpu().numpy()
         init_record = CalculationRecord(
             global_timestep=0,
@@ -447,9 +446,79 @@ class ReachabilityTester:
             print(f"  Volume: {calc.volume:.6f}")
             print(f"  Bounds:\n{calc.bounds.T}")  # Transpose for readability
 
+    def get_bounds(self, timestep: int = None, calc_id: int = None, calc_type: CalculationType = CalculationType.CONCRETE):
+        """Get bounds of a calculation by ID and type"""
 
+        if calc_id is not None:
+            # print(f"DEBUG: self.calculations =", self.calculations)
+            if calc_id not in self.calculations:
+                raise ValueError(f"No calculation with ID {calc_id}")
 
+            calc = self.calculations[calc_id]
+            return calc.bounds
 
+        elif timestep is not None:
+            # TODO: Handle multiple calculations of the same type at the same timestep/which to return?
+            # print("DEBUG: calcs_by_timestep =", self.calcs_by_timestep)
+            if timestep not in self.calcs_by_timestep:
+                raise ValueError(f"No calculations at t={timestep}")
+            calc_ids = self.calcs_by_timestep[timestep]
+            # print("DEBUG: calc_ids at t=", calc_ids)
+            for calc_id_i in calc_ids:
+                calc = self.calculations[calc_id_i]
+                # print("DEBUG: calculation type is", calc.calculation_type)
+                if calc.calculation_type == calc_type:
+                    return calc.bounds
+            raise ValueError(f"No calculation of type {calc_type} at t={timestep}")
+
+        else:
+            raise ValueError("Must provide either timestep or calc_id")
+
+    # def check_intersection(self, calc_id_a: int, calc_id_b: int):
+    #     """Check if two calculations' bounds intersect"""
+    #     if calc_id_a not in self.calculations:
+    #         raise ValueError(f"No calculation with ID {calc_id_a}")
+    #     if calc_id_b not in self.calculations:
+    #         raise ValueError(f"No calculation with ID {calc_id_b}")
+
+    #     bounds_a = self.calculations[calc_id_a].bounds
+    #     bounds_b = self.calculations[calc_id_b].bounds
+
+    #     return self.bounds_intersect(bounds_a, bounds_b)
+
+    # def bounds_intersect(self, bounds_a: np.ndarray, bounds_b: np.ndarray):
+    #     """
+    #     Check if two N-dimensional bounding boxes intersect.
+        
+    #     Each bounds array should have shape (n_dims, 2),
+    #     where bounds[i, 0] = lower bound, bounds[i, 1] = upper bound.
+    #     """
+    #     if bounds_a.shape != bounds_b.shape:
+    #         raise ValueError("Bounds must have the same shape.")
+
+    #     # Ensure lower <= upper for both (in case inputs are unsorted)
+    #     a_min, a_max = np.minimum(bounds_a[:, 0], bounds_a[:, 1]), np.maximum(bounds_a[:, 0], bounds_a[:, 1])
+    #     b_min, b_max = np.minimum(bounds_b[:, 0], bounds_b[:, 1]), np.maximum(bounds_b[:, 0], bounds_b[:, 1])
+
+    #     # Check overlap along each dimension
+    #     overlap = np.all((a_min <= b_max) & (b_min <= a_max))
+    #     return overlap
+        
+    def get_partitions(self, calc_id: int, num_partitions: int):
+        """
+        Get partitions of a calculation's reachable set
+        
+        Args:
+            calc_id (int): Calculation ID
+            num_partitions (int): Number of partitions along each dimension or total number of partitions
+        Returns:
+            Dict[int, np.ndarray]: Mapping from partition index to bounds array
+        
+        """
+
+        reachset = self.analyzer.reachable_sets[self.calc_id_to_reachset[calc_id]]
+        partition_list = reachset.partition_set(num_partitions)
+        return {i: p for i, p in enumerate(partition_list)}
 
     #================== BELOW ARE SOLELY FOR PLOTTING/ANIMATION ==================#
     #=============================================================================#
@@ -932,7 +1001,7 @@ class ReachabilityTester:
 
 
 
-def setup_analyzer(system_type='DoubleIntegrator', controller_name='constraint_default_more_data_5hz'):
+def setup_analyzer(system_type='DoubleIntegrator', controller_name='constraint_default_more_data_5hz', init_range = None):
     """
     Setup analyzer for simlulation testing
     """
@@ -950,9 +1019,13 @@ def setup_analyzer(system_type='DoubleIntegrator', controller_name='constraint_d
         ol_dyn.At_torch = ol_dyn.At_torch.to(device)
         ol_dyn.bt_torch = ol_dyn.bt_torch.to(device)
         ol_dyn.ct_torch = ol_dyn.ct_torch.to(device)
-        cl_dyn = cl_systems.ClosedLoopDynamics(controller, ol_dyn, device=device)
 
-        init_range = torch.tensor([[2.5, 3.0], [-0.25, 0.25]], device=device)
+        cl_dyn = cl_systems.ClosedLoopDynamics(controller, ol_dyn, device=device)
+        if init_range is None:
+            init_range = torch.tensor([[2.5, 3.0], [-0.25, 0.25]], device=device)
+        else:
+            init_range = torch.tensor(init_range, device=device)
+
         time_horizon = 30
         max_diff = 10
 
@@ -965,11 +1038,15 @@ def setup_analyzer(system_type='DoubleIntegrator', controller_name='constraint_d
         ol_dyn.ct_torch = ol_dyn.ct_torch.to(device)
         cl_dyn = cl_systems.Unicycle_NL(controller, ol_dyn, device=device)
 
-        init_range = torch.tensor([
-            [-9.55, -9.45],
-            [3.45, 3.55],
-            [-np.pi/24, np.pi/24]
-        ], device=device)
+        if init_range is None:
+            init_range = torch.tensor([
+                [-9.55, -9.45],
+                [3.45, 3.55],
+                [-np.pi/24, np.pi/24]
+            ], device=device)
+        else:
+            init_range = torch.tensor(init_range, device=device)
+
         time_horizon = 52
         max_diff = 10
 
@@ -1035,6 +1112,8 @@ def test():
 
     id_0 = 0  # Initial set
     id_1 = tester.concrete(id_0, visualize=False)
+    demo_bounds = tester.get_bounds(calc_id=id_1, calc_type=CalculationType.CONCRETE)
+    print("DEBUG: bounds for id_1:", demo_bounds, type(demo_bounds))
     id_2 = tester.concrete(id_1, visualize=False)
     id_3 = tester.concrete(id_2, visualize=False)
     id_4 = tester.concrete(id_3, visualize=False)
