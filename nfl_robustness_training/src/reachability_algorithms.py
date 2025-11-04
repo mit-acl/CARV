@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 from matplotlib.animation import FuncAnimation, PillowWriter
+from matplotlib.patches import Patch
 
 class ReachabilityAlgorithm:
     def __init__(self):
@@ -199,6 +200,7 @@ class ReachabilityPruning(ReachabilityAlgorithm):
         })
 
         fig, ax = plt.subplots(figsize=(10, 8))
+        fig.suptitle("Reachability Animation: Concrete Evaluation Pruning Originating from t=0", fontsize=16, fontweight="bold")
 
         # Helper to plot a rectangle
         def plot_rectangle(ax, bounds, color='blue', alpha=0.3, linewidth=1.5):
@@ -280,6 +282,12 @@ class ReachabilityPruning(ReachabilityAlgorithm):
             ax.set_title(f"Timestep {timestep}")
             ax.grid(True, alpha=0.3)
             ax.set_aspect('equal', adjustable='box')
+
+            legend_elements = [
+                Patch(facecolor='blue', edgecolor='blue', alpha=0.3, label='Concrete (Partition Reachability)'),  # <--
+                Patch(facecolor='red', edgecolor='red', alpha=0.3, label='Empirical (State Estimate)')            # <--
+            ]
+            ax.legend(handles=legend_elements, loc='upper right')  # <-- adds the legend
 
             return ax
 
