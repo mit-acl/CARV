@@ -44,6 +44,7 @@ class CalculationRecord:
         self.calc_id = calc_id                              #Used as the Identifier
         self.parent_calc_id = parent_calc_id                #Immediate predecessor's calculation ID
         self.count_child_steps = count_child_steps          #Number of calculations done from origin (The reachable set based on actual state. Eg: If concrete steps were taken from t=3, their origin would be the t=3 empirical reach-set)
+        self.child_calc_id = None
         self.origin_timestep = origin_timestep              #From which empirical data calculations started from
         self.calculation_type = calculation_type            #empirical, symbolic, concrete
         self.computation_time = computation_time
@@ -61,6 +62,55 @@ class CalculationRecord:
                 f"steps={self.step_size}, "
                 f"volume={self.volume}"
                 )
+
+class ReachableSetHorizon:
+    """
+    For each timestep, we have this class to store all ReachableSet Objects and calculate the tightest bounds
+    """
+    def __init__(self, global_timestep:int):
+        self.global_timestep = global_timestep
+        self.count = 0
+        self.calc_ids = []  # Store all calculation IDs at this timestep
+        self.tight_bound = None
+
+    def __repr__(self):
+        return (f"ReachableSetHorizon(t={self.global_timestep}, "
+                f"num_calcs={self.count}, "
+                f"tight_bound={'computed' if self.tight_bound is not None else 'not computed'})"
+        )
+
+    def add_calculation(self, calc_record: CalculationRecord):
+        """Add a new calculation and update tightest bounds"""
+        self.calc_ids.append(calc_record.calc_id)
+        self.count += 1
+
+        # Update tight bound as intersection of all bounds
+        new_bounds = calc_record.bounds
+
+        if self.tight_bound is None:
+            self.tight_bound = new_bounds.copy()
+        else:
+            # Intersection: max of lower bounds, min of upper bounds
+            self.tight_bound[:, 0] = np.maximum(self.tight_bound[:, 0], new_bounds[:, 0])
+            self.tight_bound[:, 1] = np.minimum(self.tight_bound[:, 1], new_bounds[:, 1])
+
+            # Check if intersection is empty
+            if np.any(self.tight_bound[:, 0] > self.tight_bound[:, 1]):
+                print(f"Warning: Empty intersection at t={self.global_timestep}")
+
+    def get_bound(self):
+        """Return the tightest bound (intersection of all calculations)"""
+        return self.tight_bound
+
+    def get_tight_volume(self):
+        """Return volume of tightest bound"""
+        if self.tight_bound is None:
+            return None
+        return np.prod(self.tight_bound[:, 1] - self.tight_bound[:, 0])
+
+    def get_all_calc_ids(self):
+        """Return all calculation IDs at this timestep"""
+        return self.calc_ids.copy()
 
 class ReachabilityTester:
     """
@@ -107,7 +157,7 @@ class ReachabilityTester:
             plt.ion()
             self.fig, self.axes = self._setup_plot()
 
-    def concrete(self, parent_id: int, end: Optional[int]= None, visualize = True):
+    def concrete(self, start, end: Optional[int]= None, visualize = True):
         """
         Do 1 step concrete propagation
         Takes as args:
@@ -125,11 +175,13 @@ class ReachabilityTester:
             return
         parent_calc = self.calculations[parent_id]
         start = parent_calc.global_timestep
+
         if end is None:
             end = start+1
 
         # Get parent's reachable set
         parent_reachset_t = self.calc_id_to_reachset[parent_id]
+        # parent_reachset_t = Reachabi
 
         # Create temporary reachable set at target time
         temp_reachset_t = max(self.analyzer.reachable_sets.keys()) + 1
@@ -307,12 +359,12 @@ class ReachabilityTester:
         np.random.seed(None)
 
         # Run actual dynamics forward
-        x0s = np.random.uniform(
+        x0 = np.random.uniform(
             low=init_bounds[:, 0],
             high=init_bounds[:, 1],
             size=(num_samples, num_states)
         )
-        xt = x0s
+        xt = x0
         for step in range(start, end):
             u_nn = self.analyzer.cl_system.dynamics.control_nn(
                 xt, self.analyzer.cl_system.controller.cpu()

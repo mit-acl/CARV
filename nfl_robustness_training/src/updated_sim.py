@@ -155,36 +155,60 @@ class ReachabilityTester:
 
     def concrete(self, parent_timestep: int, parent_calc_id: Optional[int] = None,
                  end: Optional[int] = None, visualize=True):
+        """
+        Compute concrete reachable set using the analyzer's built-in method.
 
+        Args:
+            parent_timestep: Timestep to start from
+            parent_calc_id: Optional specific calculation ID at parent_timestep to use
+            end: End timestep (defaults to parent_timestep + 1)
+            visualize: Whether to update visualization
+
+        Returns:
+            calc_id of the new calculation or None if failed
+        """
+
+        # Get parent horizon
         if parent_timestep not in self.horizons:
-            print(f"No horizon at timestep {parent_timestep}")
+            print(f"Error: No horizon exists at timestep {parent_timestep}")
             return None
 
         parent_horizon = self.horizons[parent_timestep]
 
+        # Use specified calc_id or get the active one
+        if parent_calc_id is None:
+            parent_calc_id = self.active_calc_ids.get(parent_timestep)
+            if parent_calc_id is None:
+                print(f"Error: No active calculation at timestep {parent_timestep}")
+                return None
+
+        # Get parent calculation
+        parent_calc = parent_horizon.get_calculation(parent_calc_id)
+        if parent_calc is None:
+            print(f"Error: Calculation {parent_calc_id} not found at timestep {parent_timestep}")
+            return None
+
+        # Set end timestep
         if end is None:
             end = parent_timestep + 1
 
-        # Get parent calculation info
-        if parent_calc_id is not None:
-            parent_calc = parent_horizon.get_calculation(parent_calc_id)
-            if parent_calc is None:
-                print(f"No calculation {parent_calc_id} at t={parent_timestep}")
-                return None
-            origin_timestep = parent_calc['origin_timestep']
-        else:
-            parent_calc_id = self.active_calc_ids.get(parent_timestep, 0)
-            parent_calc = parent_horizon.get_calculation(parent_calc_id)
-            origin_timestep = parent_calc['origin_timestep'] if parent_calc else parent_timestep
+        num_steps = end - parent_timestep
+        if num_steps <= 0:
+            print(f"Error: Invalid step count (start={parent_timestep}, end={end})")
+            return None
 
-        # Use parent horizon's ReachableSet for propagation
+        # Create horizon at target timestep if it doesn't exist
+        if end not in self.horizons:
+            self.horizons[end] = ReachableSetHorizon(end, device=self.analyzer.device)
+
+        # Use parent's reachable set for propagation
         parent_reachset = parent_horizon.reachable_set
 
-        # Create temporary reachable set for result
+        # Create temporary reachable set for the result
         temp_reachset = ReachableSet(t=end, device=self.analyzer.device)
         temp_reachset.recalculate = True
 
-        # Propagate
+        # Perform concrete propagation
         t_start = time.time()
         parent_reachset.populate_next_reachable_set(
             self.analyzer.bounded_cl_system,
@@ -193,38 +217,32 @@ class ReachabilityTester:
         )
         t_elapsed = time.time() - t_start
 
-        # Get bounds
+        # Extract bounds
         bounds = temp_reachset.full_set.detach().cpu().numpy()
 
-        # Create or get horizon at target timestep
-        if end not in self.horizons:
-            self.horizons[end] = ReachableSetHorizon(end, device=self.analyzer.device)
-
-        # Add calculation to horizon
+        # Add calculation to target horizon
         calc_id = self.horizons[end].add_calculation(
             bounds=bounds,
             calc_type=CalculationType.CONCRETE,
             parent_id=parent_calc_id,
-            origin_timestep=origin_timestep,
+            origin_timestep=parent_calc['origin_timestep'],
             computation_time=t_elapsed,
-            step_size=1,
-            notes=f"Concrete 1-step from t={parent_timestep}"
+            step_size=num_steps,
+            notes=f'Concrete from t={parent_timestep}'
         )
 
-
-        # Set as active
+        # Update active calculation for this timestep
         self.active_calc_ids[end] = calc_id
 
-        # Print info
-        print("=" * 20 + " Concrete " + "=" * 20)
-        print(f"  From t={parent_timestep} to t={end}")
-        print(f"  Computed in {t_elapsed:.4f}s")
-        print(f"  Calculation ID: {calc_id}")
+        print(f"✓ Concrete: t={parent_timestep} → t={end} | "
+              f"vol={np.prod(bounds[:, 1] - bounds[:, 0]):.6f} | "
+              f"time={t_elapsed:.4f}s")
 
         if visualize and self.dynamic_plot:
-            self.plot()
+            self.visualize()
 
         return calc_id
+
 
     def symbolic(self, parent_timestep: int, end: int, parent_calc_id: Optional[int] = None,
                  visualize=True):
@@ -684,63 +702,12 @@ def test():
     print("\n" + "=" * 20 + " Initial State " + "=" * 20)
     print(tester.horizons[0])
 
-    # Calculate empirical bounds for several timesteps
-    print("\nComputing empirical bounds for t=1 to t=5...")
-    for i in range(5):
-        tester.empirical(0, i + 1, 1000, visualize=False)
+    timestep =0
+    while timestep<20:
+        tester.conrete()
 
-    print("\n" + "=" * 20 + " Empirical Computed " + "=" * 20)
-    tester.list_horizons()
-
-    # Now do concrete propagation from t=0
-    print("\nDoing concrete propagation from t=0 to t=5...")
-    for i in range(5):
-        tester.concrete(i, end=i + 1, visualize=False)
-
-    # Do symbolic propagation
-    print("\nDoing symbolic 5-step propagation from t=0 to t=5...")
-    tester.symbolic(0, 5, visualize=True)
-
-    # Compare at t=5
-    print("\nComparing calculations at t=5:")
-    tester.compare(5)
-
-    # Continue from different starting points
-    print("\n" + "=" * 20 + " Continuing from t=5 " + "=" * 20)
-
-    # Get the empirical calc_id at t=5
-    empirical_calc_id = None
-    for calc_id, calc in tester.horizons[5].calculations.items():
-        if calc['calc_type'] == CalculationType.EMPIRICAL:
-            empirical_calc_id = calc_id
-            break
-
-    print(f"\nOption A: Continue concrete from empirical (tightest) at t=5")
-    tester.concrete(5, parent_calc_id=empirical_calc_id, end=6, visualize=False)
-
-    print(f"\nOption B: Continue concrete from tight bound at t=5")
-    tester.concrete(5, end=6, visualize=True)
-
-    print("\nComparing calculations at t=6:")
-    tester.compare(6)
-
-    # Do multi-step symbolic
-    print("\n" + "=" * 20 + " Multi-step Symbolic " + "=" * 20)
-    print("\nDoing 4-step symbolic from empirical t=5 to t=9...")
-    tester.symbolic(5, 9, parent_calc_id=empirical_calc_id, visualize=False)
-
-    print("\nDoing concrete chain from t=5 to t=9...")
-    for i in range(5, 9):
-        tester.concrete(i, parent_calc_id=empirical_calc_id if i == 5 else None,
-                       end=i + 1, visualize=False)
-
-    tester.compare(9)
-
-    print("\n" + "=" * 20 + " Final Summary " + "=" * 20)
-    tester.list_horizons()
-
-    input("\nPress Enter to close...")
-
+        tester.emprical(timestep, timestep+1)
+        timestep+=1
 
 def animate():
     """Create animations of reachability propagation"""
