@@ -120,6 +120,7 @@ class ReachableSetHorizon:
             print(f"{calc_id:<5} {calc['calc_type'].value:<12} {calc['volume']:<12.6f} "
                   f"{calc['computation_time']:<8.4f} {calc['notes']}")
 
+        print(f"Tightest Bound: {self.get_tight_volume()}\n")
 
 
 class ReachabilityTester:
@@ -154,7 +155,7 @@ class ReachabilityTester:
             plt.ion()
             self.fig, self.axes = self._setup_plot()
 
-    def concrete(self, start_timestep: int, end: Optional[int] = None, visualize=True):
+    def concrete(self, start_timestep: int, end: Optional[int] = None, visualize=False):
         """
         Compute concrete reachable set
         Args: start timestep, end timeste[]
@@ -233,7 +234,7 @@ class ReachabilityTester:
 
         return t_elapsed
 
-    def empirical(self, start: int, end: int, num_samples: int = 10000, visualize=True):
+    def empirical(self, start: int, end: int, num_samples: int = 10000, visualize=False):
         """
         Use dynamics to calculate actual reachset
         Args:
@@ -313,7 +314,7 @@ class ReachabilityTester:
 
         return t_elapsed
 
-    def symbolic(self, start: int, end: int, visualize=True):
+    def symbolic(self, start: int, end: int, visualize=False):
         """
         Compute symbolic reachable set
         Args: start timestep, end timestep
@@ -713,11 +714,11 @@ def animate():
                 label = f'Tightest t={timestep}' if timestep == t-1 else None
                 linewidth = 2
             elif timestep == t:
-                # Current timestep
-                color = 'orange'
-                alpha = 0.8
-                label = f'Tightest t={t}'
-                linewidth = 3
+                # Current timestep - use distinctive cyan/teal color
+                color = 'cyan'
+                alpha = 0.9
+                label = f'Current t={t}'
+                linewidth = 4
             elif timestep == t + 3:
                 # Lookahead tightest
                 color = 'red'
