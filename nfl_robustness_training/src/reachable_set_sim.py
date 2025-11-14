@@ -101,21 +101,6 @@ class ReachabilityTester:
         # Map calc_id to its ReachableSet in analyzer
         self.calc_id_to_reachset: Dict[int, int] = {}  # maps calc_id -> "timestep" in analyzer
 
-
-        # init_bounds = analyzer.reachable_sets[0].full_set.cpu().numpy()
-        # init_record = CalculationRecord(
-        #     global_timestep=0,
-        #     origin_timestep=0,
-        #     calc_id=0,
-        #     parent_calc_id = None,
-        #     count_child_steps=0 ,
-        #     calculation_type=CalculationType.EMPIRICAL,
-        #     computation_time=0.0,
-        #     step_size=0,
-        #     bounds=init_bounds,
-        #     notes ='Initial set'
-        # )
-
         # new start
         # In ReachabilityTester.__init__:
         init_bounds = analyzer.reachable_sets[0].full_set.cpu().numpy()
@@ -165,6 +150,7 @@ class ReachabilityTester:
             B = analyzer.cl_system.dynamics.bt
 
         self.measurement_noise_std = measurement_noise_std
+        self.process_noise_std = process_noise_std
 
         # Create estimator
         self.estimator = LinearKalmanEstimator(
@@ -576,29 +562,6 @@ class ReachabilityTester:
 
         return calc_id
 
-    # def empirical_new(self, parent_id, end, visualize=True):
-    #     """
-    #     Use dynamics to propogate actual state.
-
-    #     Takes as args:
-    #         parent_calc_id: ID of parent calculation to sample from
-    #         end: Target global timestep
-    #         visualize: Update plot
-
-    #     Returns:
-    #         calc_id of new empirical calculation
-    #     """
-    #     if parent_id not in self.calculations:
-    #         print(f" No calculation with ID {parent_id}")
-    #         return None
-    #     parent_calc = self.calculations[parent_id]
-    #     start = parent_calc.global_timestep
-    #     #get parent bounds
-    #     init_bounds = parent_calc.bounds
-    #     num_states = init_bounds.shape[0]
-
-
-
     #=================== Below are for Printing/Visualization ===============#
 
 
@@ -702,36 +665,6 @@ class ReachabilityTester:
 
         else:
             raise ValueError("Must provide either timestep or calc_id")
-
-    # def check_intersection(self, calc_id_a: int, calc_id_b: int):
-    #     """Check if two calculations' bounds intersect"""
-    #     if calc_id_a not in self.calculations:
-    #         raise ValueError(f"No calculation with ID {calc_id_a}")
-    #     if calc_id_b not in self.calculations:
-    #         raise ValueError(f"No calculation with ID {calc_id_b}")
-
-    #     bounds_a = self.calculations[calc_id_a].bounds
-    #     bounds_b = self.calculations[calc_id_b].bounds
-
-    #     return self.bounds_intersect(bounds_a, bounds_b)
-
-    # def bounds_intersect(self, bounds_a: np.ndarray, bounds_b: np.ndarray):
-    #     """
-    #     Check if two N-dimensional bounding boxes intersect.
-        
-    #     Each bounds array should have shape (n_dims, 2),
-    #     where bounds[i, 0] = lower bound, bounds[i, 1] = upper bound.
-    #     """
-    #     if bounds_a.shape != bounds_b.shape:
-    #         raise ValueError("Bounds must have the same shape.")
-
-    #     # Ensure lower <= upper for both (in case inputs are unsorted)
-    #     a_min, a_max = np.minimum(bounds_a[:, 0], bounds_a[:, 1]), np.maximum(bounds_a[:, 0], bounds_a[:, 1])
-    #     b_min, b_max = np.minimum(bounds_b[:, 0], bounds_b[:, 1]), np.maximum(bounds_b[:, 0], bounds_b[:, 1])
-
-    #     # Check overlap along each dimension
-    #     overlap = np.all((a_min <= b_max) & (b_min <= a_max))
-    #     return overlap
         
     def get_partitions(self, calc_id: int, num_partitions: int):
         """

@@ -5,7 +5,6 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 from matplotlib.animation import FuncAnimation, PillowWriter
 from matplotlib.patches import Patch
-# import torch
 
 class ReachabilityAlgorithm:
     def __init__(self):
@@ -48,24 +47,6 @@ class ReachabilityPruning(ReachabilityAlgorithm):
         self.state_calc_sets = {0:0} # dict of timestep -> state_estimate_ids
         self.debug_state_calc_sets = {0:0}
         # self.consolidated_calc_sets = {} # dict of timestep -> consolidated set ids
-
-    # def bounds_intersect(self, bounds_a: np.ndarray, bounds_b: np.ndarray):
-    #     """
-    #     Check if two N-dimensional bounding boxes intersect.
-        
-    #     Each bounds array should have shape (n_dims, 2),
-    #     where bounds[i, 0] = lower bound, bounds[i, 1] = upper bound.
-    #     """
-    #     if bounds_a.shape != bounds_b.shape:
-    #         raise ValueError("Bounds must have the same shape.")
-
-    #     # Ensure lower <= upper for both (in case inputs are unsorted)
-    #     a_min, a_max = np.minimum(bounds_a[:, 0], bounds_a[:, 1]), np.maximum(bounds_a[:, 0], bounds_a[:, 1])
-    #     b_min, b_max = np.minimum(bounds_b[:, 0], bounds_b[:, 1]), np.maximum(bounds_b[:, 0], bounds_b[:, 1])
-
-    #     # Check overlap along each dimension
-    #     overlap = np.all((a_min <= b_max) & (b_min <= a_max))
-    #     return overlap
 
     def bounds_intersect(self, bounds_a: np.ndarray, bounds_b: np.ndarray, eps: float = 1e-8):
         """
@@ -201,7 +182,17 @@ class ReachabilityPruning(ReachabilityAlgorithm):
         })
 
         fig, ax = plt.subplots(figsize=(10, 8))
-        fig.suptitle("Reachability Animation: Concrete Evaluation Pruning Originating from t=0", fontsize=16, fontweight="bold")
+        
+        # Get noise parameters from the state tester's estimator
+        process_noise = self.state_tester.process_noise_std
+        measurement_noise = self.state_tester.measurement_noise_std
+        
+        # Add noise parameters to title
+        fig.suptitle(
+            f"Reachability Animation: Concrete Evaluation Pruning Originating from t=0\n"
+            f"Process Noise σ={process_noise:.3f} | Measurement Noise σ={measurement_noise:.3f}",
+            fontsize=14, fontweight="bold"
+        )
 
         # Helper to plot a rectangle
         def plot_rectangle(ax, bounds, color='blue', alpha=0.3, linewidth=1.5):
@@ -275,8 +266,7 @@ class ReachabilityPruning(ReachabilityAlgorithm):
                 )
                 plot_rectangle(ax, state_bounds, color='red', alpha=0.3)
                 
-                # ===== ADD THIS BLOCK: Plot true state as a dot =====
-                # Get the true state from the EmpiricalCalculationRecord
+                # Plot true state as a dot
                 state_calc_id = self.state_calc_sets[timestep]
                 state_calc = self.state_tester.calculations[state_calc_id]
                 
@@ -288,14 +278,13 @@ class ReachabilityPruning(ReachabilityAlgorithm):
                         marker='o', markersize=10, 
                         color='black', markeredgecolor='white', 
                         markeredgewidth=2, zorder=10)
-                # ===== END OF NEW BLOCK =====
 
             # Keep global limits fixed
             ax.set_xlim(global_xlim)
             ax.set_ylim(global_ylim)
-            ax.set_xlabel("State 1")
-            ax.set_ylabel("State 2")
-            ax.set_title(f"Timestep {timestep}")
+            ax.set_xlabel("State 1", fontsize=12)
+            ax.set_ylabel("State 2", fontsize=12)
+            ax.set_title(f"Timestep {timestep}", fontsize=13)
             ax.grid(True, alpha=0.3)
             ax.set_aspect('equal', adjustable='box')
 
@@ -305,9 +294,9 @@ class ReachabilityPruning(ReachabilityAlgorithm):
                 Patch(facecolor='red', edgecolor='red', alpha=0.3, label='Empirical (State Estimate)'),
                 plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='black', 
                         markeredgecolor='white', markeredgewidth=2, markersize=10, 
-                        label='True State')  # Add this line
+                        label='True State')
             ]
-            ax.legend(handles=legend_elements, loc='upper right')
+            ax.legend(handles=legend_elements, loc='upper right', fontsize=10)
 
             return ax
 
@@ -346,7 +335,7 @@ def run():
     print("Calculating reachability with pruning...")
     reach_algorithm.calculate_reachability(timestep=0, time_horizon=max_horizon)
 
-    reach_algorithm.animate_partitions(filename="partition_animation.gif", fps=2)
+    reach_algorithm.animate_partitions(filename="partition_animation.gif", fps=1)
 
 
 
