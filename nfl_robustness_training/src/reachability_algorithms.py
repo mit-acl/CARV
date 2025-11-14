@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 from matplotlib.animation import FuncAnimation, PillowWriter
 from matplotlib.patches import Patch
+# import torch
 
 class ReachabilityAlgorithm:
     def __init__(self):
@@ -31,7 +32,7 @@ class ReachabilityPruning(ReachabilityAlgorithm):
         self.partition_structure = partition_array
         # self.state_estimates = {} # dict of timestep -> state_estimate_bounds
         self.state_analyzer = rss.setup_analyzer('DoubleIntegrator', 'constraint_default_more_data_5hz')
-        self.state_tester = rss.ReachabilityTester(self.state_analyzer, dynamic_plot=False)
+        self.state_tester = rss.ReachabilityTester(self.state_analyzer, dynamic_plot=False, process_noise_std=0.01, measurement_noise_std=0.1)
         self.partition_analyzers = {}
         self.partition_testers = {}
 
@@ -45,6 +46,7 @@ class ReachabilityPruning(ReachabilityAlgorithm):
 
         self.partition_calc_sets = {i:{0:0} for i in range(self.num_partitions)} # dict of partition_index -> dict of timestep -> partition_ids
         self.state_calc_sets = {0:0} # dict of timestep -> state_estimate_ids
+        self.debug_state_calc_sets = {0:0}
         # self.consolidated_calc_sets = {} # dict of timestep -> consolidated set ids
 
     # def bounds_intersect(self, bounds_a: np.ndarray, bounds_b: np.ndarray):
@@ -163,9 +165,8 @@ class ReachabilityPruning(ReachabilityAlgorithm):
             np.ndarray: The bounds of the propagated state estimate.
         """
         for i in range(horizon):
-            # self.state_calc_sets[timestep+i] = self.state_tester.empirical(timestep, timestep + 1, num_samples=1000, visualize=True)
-            self.state_calc_sets[timestep + i + 1] = self.state_tester.empirical(timestep + i, timestep + i + 1, num_samples=1000, visualize=True)
-        # return self.get_state_estimate(timestep + horizon)
+            self.state_calc_sets[timestep + i + 1] = self.state_tester.real_state_empirical(timestep + i, timestep + i + 1, visualize=True)
+            # print(f'DEBUG: THE DEBUG STATE ESTIMATE IS: {self.state_calc_sets[timestep + i + 1]}')
 
     def get_state_estimate(self, timestep: int):
         """
@@ -266,13 +267,28 @@ class ReachabilityPruning(ReachabilityAlgorithm):
                 )
                 plot_rectangle(ax, bounds, color='blue', alpha=0.3)
 
-            # Plot state estimate
+            # Plot state estimate (bounds)
             if timestep in self.state_calc_sets:
                 state_bounds = self.state_tester.get_bounds(
                     calc_id=self.state_calc_sets[timestep],
                     calc_type=rss.CalculationType.EMPIRICAL
                 )
                 plot_rectangle(ax, state_bounds, color='red', alpha=0.3)
+                
+                # ===== ADD THIS BLOCK: Plot true state as a dot =====
+                # Get the true state from the EmpiricalCalculationRecord
+                state_calc_id = self.state_calc_sets[timestep]
+                state_calc = self.state_tester.calculations[state_calc_id]
+                
+                # Check if it's an EmpiricalCalculationRecord (has real_state)
+                if isinstance(state_calc, rss.EmpiricalCalculationRecord):
+                    true_state = state_calc.real_state
+                    # Plot as a large dot
+                    ax.plot(true_state[0], true_state[1], 
+                        marker='o', markersize=10, 
+                        color='black', markeredgecolor='white', 
+                        markeredgewidth=2, zorder=10)
+                # ===== END OF NEW BLOCK =====
 
             # Keep global limits fixed
             ax.set_xlim(global_xlim)
@@ -283,11 +299,15 @@ class ReachabilityPruning(ReachabilityAlgorithm):
             ax.grid(True, alpha=0.3)
             ax.set_aspect('equal', adjustable='box')
 
+            # Update legend to include true state
             legend_elements = [
-                Patch(facecolor='blue', edgecolor='blue', alpha=0.3, label='Concrete (Partition Reachability)'),  # <--
-                Patch(facecolor='red', edgecolor='red', alpha=0.3, label='Empirical (State Estimate)')            # <--
+                Patch(facecolor='blue', edgecolor='blue', alpha=0.3, label='Concrete (Partition Reachability)'),
+                Patch(facecolor='red', edgecolor='red', alpha=0.3, label='Empirical (State Estimate)'),
+                plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='black', 
+                        markeredgecolor='white', markeredgewidth=2, markersize=10, 
+                        label='True State')  # Add this line
             ]
-            ax.legend(handles=legend_elements, loc='upper right')  # <-- adds the legend
+            ax.legend(handles=legend_elements, loc='upper right')
 
             return ax
 

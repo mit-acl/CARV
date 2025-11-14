@@ -26,6 +26,7 @@ import cl_systems
 from utils.nn import load_controller
 from utils.robust_training_utils import ReachableSet
 from utils.robust_training_utils import Analyzer
+from state_estimator import LinearKalmanEstimator
 
 
 class CalculationType(Enum):
@@ -62,11 +63,31 @@ class CalculationRecord:
                 f"volume={self.volume}"
                 )
 
+class EmpiricalCalculationRecord(CalculationRecord):
+    def __init__(self, global_timestep:int, count_child_steps: int, real_state: np.ndarray,
+                  calc_id:int, parent_calc_id: int, origin_timestep:int, calculation_type:CalculationType, computation_time: float,
+                    step_size:int, num_samples: int=None, num_partitions:int = 1, notes:str ="", bounds:np.ndarray=None):
+        super().__init__(global_timestep=global_timestep, bounds=bounds, count_child_steps=count_child_steps,
+                  calc_id=calc_id, parent_calc_id=parent_calc_id, origin_timestep=origin_timestep, calculation_type=calculation_type, computation_time=computation_time,
+                    step_size=step_size, num_samples=num_samples, num_partitions=num_partitions, notes=notes)
+
+        self.real_state = real_state
+
+    def __repr__(self):
+        return (f"ReachableSetLog(t={self.global_timestep}), "
+                f"RealState(t={self.real_state}), "
+                f"origin_t={self.origin_timestep}, "
+                f"id={self.calc_id},"
+                f"type={self.calculation_type}, "
+                f"steps={self.step_size}, "
+                f"volume={self.volume}"
+                )
+
 class ReachabilityTester:
     """
     Manual testing framework for reachability calculations.
     """
-    def __init__(self, analyzer, dynamic_plot = True):
+    def __init__(self, analyzer, dynamic_plot = True, process_noise_std=0.01, measurement_noise_std=0.05):
         self.analyzer = analyzer
         self.dynamic_plot = dynamic_plot
 
@@ -81,19 +102,47 @@ class ReachabilityTester:
         self.calc_id_to_reachset: Dict[int, int] = {}  # maps calc_id -> "timestep" in analyzer
 
 
+        # init_bounds = analyzer.reachable_sets[0].full_set.cpu().numpy()
+        # init_record = CalculationRecord(
+        #     global_timestep=0,
+        #     origin_timestep=0,
+        #     calc_id=0,
+        #     parent_calc_id = None,
+        #     count_child_steps=0 ,
+        #     calculation_type=CalculationType.EMPIRICAL,
+        #     computation_time=0.0,
+        #     step_size=0,
+        #     bounds=init_bounds,
+        #     notes ='Initial set'
+        # )
+
+        # new start
+        # In ReachabilityTester.__init__:
         init_bounds = analyzer.reachable_sets[0].full_set.cpu().numpy()
-        init_record = CalculationRecord(
+        num_states = init_bounds.shape[0]
+
+        # Sample random initial state from the initial range
+        np.random.seed(None)  # Or set a seed for reproducibility
+        initial_state = np.random.uniform(
+            low=init_bounds[:, 0],
+            high=init_bounds[:, 1],
+            size=num_states
+        )
+
+        init_record = EmpiricalCalculationRecord(
             global_timestep=0,
             origin_timestep=0,
             calc_id=0,
-            parent_calc_id = None,
-            count_child_steps=0 ,
+            parent_calc_id=None,
+            count_child_steps=0,
             calculation_type=CalculationType.EMPIRICAL,
             computation_time=0.0,
             step_size=0,
             bounds=init_bounds,
-            notes ='Initial set'
+            real_state=initial_state,
+            notes='Initial state (randomly sampled from initial range)'
         )
+        # new stop
 
         self.calculations[0]=init_record
         self.calcs_by_timestep[0] = [0]
@@ -101,10 +150,31 @@ class ReachabilityTester:
         self.calc_id_to_reachset[0] = 0
         self.calc_counter = 1
 
-
         if self.dynamic_plot:
             plt.ion()
             self.fig, self.axes = self._setup_plot()
+
+        # Initialize Kalman Filter
+        # Get A and B matrices from dynamics
+        if isinstance(analyzer.cl_system.dynamics.At, torch.Tensor):
+            A = analyzer.cl_system.dynamics.At.cpu().numpy()
+            B = analyzer.cl_system.dynamics.bt.cpu().numpy()
+        else:
+            # Already numpy arrays
+            A = analyzer.cl_system.dynamics.At
+            B = analyzer.cl_system.dynamics.bt
+
+        self.measurement_noise_std = measurement_noise_std
+
+        # Create estimator
+        self.estimator = LinearKalmanEstimator(
+            initial_state, 
+            init_bounds,
+            A=A,
+            B=B,
+            process_noise_std=process_noise_std,
+            measurement_noise_std=self.measurement_noise_std
+        )
 
     def concrete(self, parent_id: int, end: Optional[int]= None, visualize = True):
         """
@@ -278,6 +348,143 @@ class ReachabilityTester:
             self.plot()
         return calc_id
 
+    def real_state_empirical(self, parent_id, end, visualize=True):
+        """
+        Propagate actual state using dynamics (no sampling, just single state).
+
+        Takes as args:
+            parent_calc_id: ID of parent calculation to propagate from
+            end: Target global timestep
+            visualize: Update plot
+
+        Returns:
+            calc_id of new empirical calculation
+        """
+        if parent_id not in self.calculations:
+            print(f"No calculation with ID {parent_id}")
+            return None
+
+        parent_calc = self.calculations[parent_id]
+        
+        # Get parent's real state
+        if not isinstance(parent_calc, EmpiricalCalculationRecord):
+            print(f"Error: Parent calculation {parent_id} is not an EmpiricalCalculationRecord")
+            print(f"Parent type: {type(parent_calc)}")
+            return None
+        
+        start = parent_calc.global_timestep
+        initial_state = parent_calc.real_state
+        num_states = initial_state.shape[0]
+
+        # Reset Kalman filter to parent's state and bounds
+        self.estimator.reset(parent_calc.real_state, parent_calc.bounds)
+
+        t_start = time.time()
+        
+        # Run actual dynamics forward (TRUE hidden state)
+        xt_true = initial_state.reshape(1, -1)  # Shape (1, num_states)
+        
+        for step in range(start, end):
+            # === Propagate TRUE state ===
+            u_nn_true = self.analyzer.cl_system.dynamics.control_nn(
+                xt_true, self.analyzer.cl_system.controller.cpu()
+            )
+            xt1_true = self.analyzer.cl_system.dynamics.dynamics_step(xt_true, u_nn_true)
+            xt_true = xt1_true
+            
+            # === Kalman Filter Predict Step ===
+            # Get control from KF's current estimate
+            xt_est = torch.tensor(self.estimator.state.reshape(1, -1), dtype=torch.float32)
+            u_nn_est = self.analyzer.cl_system.dynamics.control_nn(
+                xt_est, self.analyzer.cl_system.controller.cpu()
+            )
+            
+            # KF prediction (uses linear A, B matrices)
+            predicted_state, predicted_bounds = self.estimator.predict(
+                dynamics_fn=None,  # Not used in LinearKalmanEstimator
+                control_input=u_nn_est
+            )
+            
+            # === Kalman Filter Update Step (optional) ===
+            # Convert true state to numpy if it's a tensor
+            if isinstance(xt_true, torch.Tensor):
+                true_state_np = xt_true.squeeze().cpu().numpy()
+            else:
+                true_state_np = xt_true.squeeze() if isinstance(xt_true, np.ndarray) else xt_true
+            
+            # Simulate noisy measurement of TRUE state
+            measurement_noise = np.random.normal(0, self.measurement_noise_std, size=num_states)
+            noisy_measurement = true_state_np + measurement_noise
+            
+            # Update KF estimate with noisy measurement
+            self.estimator.update(noisy_measurement)
+
+        # Final states - handle both tensor and numpy array
+        if isinstance(xt_true, torch.Tensor):
+            real_state = xt_true.squeeze().cpu().numpy()
+        else:
+            real_state = xt_true.squeeze() if isinstance(xt_true, np.ndarray) else xt_true
+        
+        estimated_state = self.estimator.state.copy()  # KF estimate
+        kf_bounds = self.estimator.bounds.copy()  # KF uncertainty bounds
+        
+        t_elapsed = time.time() - t_start
+
+        # Create reachable set with KF bounds
+        temp_reachset_t = max(self.analyzer.reachable_sets.keys()) + 1
+        self.analyzer.reachable_sets[temp_reachset_t] = ReachableSet(
+            temp_reachset_t, device=self.analyzer.device
+        )
+        
+        self.analyzer.reachable_sets[temp_reachset_t].full_set = torch.tensor(
+            kf_bounds, dtype=torch.float32, device=self.analyzer.device
+        )
+        self.analyzer.reachable_sets[temp_reachset_t].symbolic = False
+
+        calc_id = self.calc_counter
+        self.calc_counter += 1
+
+        # Record using EmpiricalCalculationRecord
+        record = EmpiricalCalculationRecord(
+            global_timestep=end,
+            real_state=real_state,  # Store TRUE state as ground truth
+            bounds=kf_bounds,  # Store KF uncertainty bounds
+            count_child_steps=0,
+            calc_id=calc_id,
+            parent_calc_id=parent_id,
+            origin_timestep=end,
+            computation_time=t_elapsed,
+            step_size=end - start,
+            calculation_type=CalculationType.EMPIRICAL,
+            notes=f"KF estimate at t={end}"
+        )
+
+        self.calculations[calc_id] = record
+        if end not in self.calcs_by_timestep:
+            self.calcs_by_timestep[end] = []
+        self.calcs_by_timestep[end].append(calc_id)
+        self.active_calcs[end] = calc_id
+        self.calc_id_to_reachset[calc_id] = temp_reachset_t
+        
+        print("="*20 + " Empirical (Kalman) " + "="*20)
+        print(f"  True State: {real_state}")
+        print(f"  KF Estimate: {estimated_state}")
+        print(f"  Estimation Error: {np.linalg.norm(real_state - estimated_state):.6f}")
+        if isinstance(self.estimator, LinearKalmanEstimator):
+            print(f"  Std Devs: {np.sqrt(np.diag(self.estimator.P))}")
+        print(f"  Bounds Volume: {np.prod(kf_bounds[:, 1] - kf_bounds[:, 0]):.6f}")
+        print(f"  Computation Time: {t_elapsed:.4f}s")
+        print(f"  New Calculation ID: {calc_id}")
+
+        if visualize and self.dynamic_plot:
+            self.plot()
+
+        return calc_id
+
+    def estimate_bounds(self, real_state):
+        pass
+    
+
     def empirical(self, parent_id, end, num_samples=10000, visualize= True):
         """
         Sample actual dynamics to get actual reachable set.
@@ -368,6 +575,28 @@ class ReachabilityTester:
             self.plot()
 
         return calc_id
+
+    # def empirical_new(self, parent_id, end, visualize=True):
+    #     """
+    #     Use dynamics to propogate actual state.
+
+    #     Takes as args:
+    #         parent_calc_id: ID of parent calculation to sample from
+    #         end: Target global timestep
+    #         visualize: Update plot
+
+    #     Returns:
+    #         calc_id of new empirical calculation
+    #     """
+    #     if parent_id not in self.calculations:
+    #         print(f" No calculation with ID {parent_id}")
+    #         return None
+    #     parent_calc = self.calculations[parent_id]
+    #     start = parent_calc.global_timestep
+    #     #get parent bounds
+    #     init_bounds = parent_calc.bounds
+    #     num_states = init_bounds.shape[0]
+
 
 
     #=================== Below are for Printing/Visualization ===============#
