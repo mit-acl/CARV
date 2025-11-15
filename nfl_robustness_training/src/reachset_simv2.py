@@ -7,7 +7,6 @@ import torch
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 from matplotlib.animation import FuncAnimation, PillowWriter
-from matplotlib.gridspec import GridSpec
 from ast import literal_eval
 from itertools import product
 from copy import deepcopy
@@ -33,18 +32,18 @@ class CalculationType(Enum):
 
 class ReachableSetHorizon:
     """
-    Reachable set calculations at a specific timestep.
+    Manages all reachable set calculations at a specific timestep.
     """
     def __init__(self, global_timestep: int, device='cpu'):
         self.global_timestep = global_timestep
         self.device = device
 
-        # Main reachable set that gets updated with tightest bound
+        # Main reachable set that gets updated with tightest bounds
         self.reachable_set = ReachableSet(t=global_timestep, device=device)
         self.reachable_set.recalculate = True
 
         # Record all individual calculation informaiton for this timestep
-        self.calculations = {}  # maps calc_id -> dict
+        self.calculations = {}  # maps calc_id -> dict with metadata
         self.calc_counter = 0
 
         # Track tightest bounds separately
@@ -61,11 +60,15 @@ class ReachableSetHorizon:
                        computation_time: float = 0.0, step_size: int = 1,
                        num_samples: Optional[int] = None, notes: str = ""):
 
+        # calc_id = self.calc_counter
+        # self.calc_counter += 1
 
         # Store calculation metadata
         self.calculations[self.calc_counter] = {
+            # 'calc_id': calc_id,
             'bounds': bounds.copy(),
             'calc_type': calc_type,
+            # 'parent_id': parent_id,
             'origin_timestep': origin_timestep,
             'computation_time': computation_time,
             'step_size': step_size,
@@ -75,21 +78,22 @@ class ReachableSetHorizon:
         }
         self.calc_counter += 1
 
-        # Update tight bounds
+        # Update tight bounds (intersection of all calculations)
         if self.tight_bound is None:
             self.tight_bound = bounds.copy()
         else:
-            # Tightest bound: max of lower bounds, min of upper bounds
+            # Intersection: max of lower bounds, min of upper bounds
             self.tight_bound[:, 0] = np.maximum(self.tight_bound[:, 0], bounds[:, 0])
             self.tight_bound[:, 1] = np.minimum(self.tight_bound[:, 1], bounds[:, 1])
 
-            # Check if no intersection
+            # Check if intersection is empty
             if np.any(self.tight_bound[:, 0] > self.tight_bound[:, 1]):
-                print(f"Error: Empty intersection at t={self.global_timestep}")
+                print(f"Warning: Empty intersection at t={self.global_timestep}")
 
-        # Update the ReachableSet with tightest bounds
+        # Update the core ReachableSet with tightest bounds
         self.reachable_set.set_range(torch.tensor(self.tight_bound, dtype=torch.float32, device=self.device))
 
+        # return calc_id
         return None
 
     def get_tight_bound(self):
@@ -103,10 +107,7 @@ class ReachableSetHorizon:
         return np.prod(self.tight_bound[:, 1] - self.tight_bound[:, 0])
 
     def get_calculation(self, calc_id: int):
-        """Get metadata for a calculation
-            keyed by the index of the calculation at that timestep
-        """
-
+        """Get metadata for a specific calculation"""
         return self.calculations.get(calc_id, None)
 
     def list_calculations(self):
@@ -121,18 +122,17 @@ class ReachableSetHorizon:
         print(f"Tightest Bound: {self.get_tight_volume()}\n")
 
 
+
 class ReachabilityTester:
     """
-    Reachability calculations using ReachableSetHorizon.
+    Manual testing framework for reachability calculations using ReachableSetHorizon.
     """
-    def __init__(self, analyzer, dynamic_plot=True):
+    def __init__(self, analyzer):
         self.analyzer = analyzer
-        self.dynamic_plot = dynamic_plot
 
         # Track horizons by timestep
         self.horizons: Dict[int, ReachableSetHorizon] = {}
 
-        # Active calculation ID for each timestep (for visualization)
         self.counter = 0
 
         # Initialize horizon at t=0
@@ -149,14 +149,10 @@ class ReachabilityTester:
             notes='Initial set'
         )
 
-        if self.dynamic_plot:
-            plt.ion()
-            self.fig, self.axes = self._setup_plot()
-
-    def concrete(self, start_timestep: int, end: Optional[int] = None, visualize=False):
+    def concrete(self, start_timestep: int, end: Optional[int] = None):
         """
-        Get concrete reachable set
-        Args: start timestep, end timestep
+        Compute concrete reachable set
+        Args: start timestep, end timeste[]
         """
 
         # Get parent horizon
@@ -177,7 +173,7 @@ class ReachabilityTester:
         total_time = 0.0
         current_parent_timestep = start_timestep
 
-        print(f"Starting concrete propagation: t={start_timestep} -> t={end} ({num_steps} steps)")
+        print(f"Starting concrete propagation: t={start_timestep} → t={end} ({num_steps} steps)")
 
         # Loop through each iteration/timestep
         for step in range(num_steps):
@@ -224,18 +220,18 @@ class ReachabilityTester:
             current_parent_timestep = current_timestep
 
         print(f"Concrete propagation of {num_steps} steps: "
-              f"total time={total_time:.4f}s"
+              f"total time={total_time:.4f}s | "
               f"final vol @t={current_timestep}: {np.prod(bounds[:, 1] - bounds[:, 0]):.6f}")
 
-        if visualize and self.dynamic_plot:
-            self.visualize()
 
         return t_elapsed
 
-    def empirical(self, start: int, end: int, num_samples: int = 10000, visualize=False):
+    def empirical(self, start: int, end: int, num_samples: int = 10000):
         """
         Use dynamics to calculate actual reachset
-        Args: start timestep, end timestep
+        Args:
+            parent_timestep: Timestep to sample from
+            end: Target timestep
             num_samples: Number of trajectories to sample
         """
 
@@ -260,7 +256,10 @@ class ReachabilityTester:
 
         t_start = time.time()
 
+        # Sample initial states uniformly from parent bounds
         np.random.seed(None)
+
+        # Run actual dynamics forward
         x0 = np.random.uniform(
             low=init_bounds[:, 0],
             high=init_bounds[:, 1],
@@ -274,7 +273,7 @@ class ReachabilityTester:
             xt1 = self.analyzer.cl_system.dynamics.dynamics_step(xt, u_nn)
             xt = xt1
 
-        # Compute bounds
+        # Compute empirical bounds
         empirical_bounds = np.stack([
             np.min(xt, axis=0),
             np.max(xt, axis=0)
@@ -294,7 +293,7 @@ class ReachabilityTester:
             notes=f'Empirical from t={start}, {num_samples} samples'
         )
 
-        # Print info
+        # Print detailed info
         print("=" * 20 + " Empirical " + "=" * 20)
         print(f"  From t={start} to t={end}")
         print(f"  Samples: {num_samples}")
@@ -302,12 +301,9 @@ class ReachabilityTester:
         print(f"  Volume: {np.prod(empirical_bounds[:, 1] - empirical_bounds[:, 0]):.6f}")
         print(f"  Tightest volume: {self.horizons[end].get_tight_volume():.6f}")
 
-        if visualize and self.dynamic_plot:
-            self.visualize()
-
         return t_elapsed
 
-    def symbolic(self, start: int, end: int, visualize=False):
+    def symbolic(self, start: int, end: int):
         """
         Compute symbolic reachable set
         Args: start timestep, end timestep
@@ -316,7 +312,7 @@ class ReachabilityTester:
 
         k = end - start
         if k > self.analyzer.max_diff:
-            print(f"Error: Symbolic propagation max is {self.analyzer.max_diff} steps")
+            print(f"Error: Symbolic propagation limited to {self.analyzer.max_diff} steps")
             return False
 
         # Get k-step bounded system
@@ -333,16 +329,17 @@ class ReachabilityTester:
 
         parent_horizon = self.horizons[start]
 
-        # Create horizon object at target timestep if it doesn't exist
+        # Create horizon at target timestep if it doesn't exist
         if end not in self.horizons:
             self.horizons[end] = ReachableSetHorizon(end, device=self.analyzer.device)
 
+        # Use analyzer's symbolic propagation
         t_start = time.time()
 
-        # Set parent's bounds as the starting point
+        # Set the parent's bounds as the starting point
         parent_reachset = parent_horizon.reachable_set
 
-        # Create temp reachable set for result
+        # Create temporary reachable set for result
         temp_reachset = ReachableSet(t=end, device=self.analyzer.device)
 
         # Propagate
@@ -379,137 +376,7 @@ class ReachabilityTester:
         print(f"  Volume: {np.prod(bounds[:, 1] - bounds[:, 0]):.6f}")
         print(f"  Tightest volume: {self.horizons[end].get_tight_volume():.6f}")
 
-        if visualize and self.dynamic_plot:
-            self.visualize()
-
         return t_elapsed
-
-    def _setup_plot(self):
-        """Setup the plot with GridSpec layout"""
-        fig = plt.figure(figsize=(15, 10))
-        gs = GridSpec(2, 2, figure=fig, height_ratios=[3, 1], width_ratios=[3, 1])
-
-        axes = {
-            'main': fig.add_subplot(gs[0, :]),
-            'info': fig.add_subplot(gs[1, :])
-        }
-
-        fig.suptitle('Reachability Analysis Visualization', fontsize=16, fontweight='bold')
-        plt.tight_layout()
-
-        return fig, axes
-
-    def visualize(self):
-        """Update visualization with current state"""
-        if not self.dynamic_plot:
-            return
-
-        # Clear axes
-        self.axes['main'].clear()
-        self.axes['info'].clear()
-
-        # Plot all horizons and their tightest bounds
-        all_bounds = []
-
-        for t in sorted(self.horizons.keys()):
-            horizon = self.horizons.get(t)
-            if horizon is None:
-                continue
-
-            # Get tightest bounds for this timestep
-            bounds = horizon.get_tight_bound()
-            if bounds is None:
-                continue
-
-            all_bounds.append(bounds)
-
-            # Color based on timestep (gradient from blue to red)
-            if t == 0:
-                color = 'black'
-                alpha = 0.5
-            else:
-                # Create gradient color
-                color_val = min(t / max(self.horizons.keys()), 1.0) if self.horizons.keys() else 0
-                color = (color_val, 0, 1 - color_val)  # Blue to red gradient
-                alpha = 0.3
-
-            self._plot_rectangle(self.axes['main'], bounds,
-                                edgecolor=color, facecolor=color, alpha=alpha,
-                                linewidth=2 if t == max(self.horizons.keys()) else 1)
-
-        # Set axis limits
-        if all_bounds:
-            all_bounds_array = np.array(all_bounds)
-            x_min = np.min(all_bounds_array[:, 0, 0])
-            x_max = np.max(all_bounds_array[:, 0, 1])
-            y_min = np.min(all_bounds_array[:, 1, 0])
-            y_max = np.max(all_bounds_array[:, 1, 1])
-
-            x_range = x_max - x_min
-            y_range = y_max - y_min
-            padding_x = x_range * 0.1 if x_range > 0 else 0.1
-            padding_y = y_range * 0.1 if y_range > 0 else 0.1
-
-            self.axes['main'].set_xlim(x_min - padding_x, x_max + padding_x)
-            self.axes['main'].set_ylim(y_min - padding_y, y_max + padding_y)
-
-        self.axes['main'].set_xlabel('State 1', fontsize=12)
-        self.axes['main'].set_ylabel('State 2', fontsize=12)
-        self.axes['main'].set_title('Active Reachable Sets', fontsize=14, fontweight='bold')
-        self.axes['main'].grid(True, alpha=0.3)
-        self.axes['main'].set_aspect('equal', adjustable='datalim')
-
-        self._plot_info_panel()
-
-        plt.draw()
-        plt.pause(0.01)
-
-    def _plot_rectangle(self, ax, bounds, **kwargs):
-        """Helper to plot rectangle"""
-        xy = bounds[:2, 0]
-        width = bounds[0, 1] - bounds[0, 0]
-        height = bounds[1, 1] - bounds[1, 0]
-        rect = Rectangle(xy, width, height, **kwargs)
-        ax.add_patch(rect)
-
-    def _plot_info_panel(self):
-        """Plot info panel"""
-        ax = self.axes['info']
-        ax.axis('off')
-
-        ax.text(0.5, 0.95, 'Calculation Summary',
-                ha='center', va='top', fontsize=14, fontweight='bold',
-                transform=ax.transAxes)
-
-        y = 0.85
-        total_horizons = len(self.horizons)
-        total_calcs = sum(len(h.calculations) for h in self.horizons.values())
-        stats_text = f"Total Horizons: {total_horizons}\n"
-        stats_text += f"Total Calculations: {total_calcs}\n"
-        stats_text += f"Timesteps: 0-{max(self.horizons.keys())}\n"
-
-        ax.text(0.1, y, stats_text, va='top', fontsize=10,
-                transform=ax.transAxes, family='monospace')
-
-        y = 0.65
-        ax.text(0.1, y, 'Recent Horizons:', va='top', fontsize=11,
-                fontweight='bold', transform=ax.transAxes)
-
-        y = 0.60
-        recent_timesteps = sorted(self.horizons.keys(), reverse=True)[:8]
-        for t in recent_timesteps:
-            horizon = self.horizons[t]
-            text = f"t={t:2d} | {len(horizon.calculations)} calc(s) | vol={horizon.get_tight_volume():.4f}"
-            ax.text(0.1, y, text, va='top', fontsize=9,
-                   transform=ax.transAxes, family='monospace')
-            y -= 0.04
-
-        y = 0.15
-        ax.text(0.1, y, 'Legend:', va='top', fontsize=11, fontweight='bold',
-                transform=ax.transAxes)
-        y -= 0.05
-        ax.text(0.1, y, '🔵 Concrete  🟢 Symbolic  🟣 Empirical',
-                va='top', fontsize=9, transform=ax.transAxes)
 
 
 # =================== Setup and Testing Functions ===================#
@@ -565,7 +432,7 @@ def test():
     analyzer = setup_analyzer('DoubleIntegrator', 'constraint_default_more_data_5hz')
 
     print("\nCreating interactive tester...")
-    tester = ReachabilityTester(analyzer, dynamic_plot=True)
+    tester = ReachabilityTester(analyzer)
 
     print("\n" + "=" * 20 + " Initial State " + "=" * 20)
     print(tester.horizons[0])
@@ -577,6 +444,53 @@ def test():
         tester.empirical(t,t+1)
         t+=1
 
+
+
+# def animate():
+#     """Create animations of reachability propagation"""
+#     print("=" * 80)
+#     print("CREATING ANIMATIONS")
+#     print("=" * 80)
+
+#     analyzer = setup_analyzer('DoubleIntegrator', 'constraint_default_more_data_5hz')
+#     tester = ReachabilityTester(analyzer, dynamic_plot=False)
+
+#     print("\nGenerating empirical propagation with concrete lookahead...")
+
+#     # For animation, we'll compute empirical at each step and show concrete lookahead
+#     max_timesteps = 15
+#     lookahead_steps = 3
+
+#     frames_data = []
+
+#     for t in range(max_timesteps):
+#         print(f"Frame {t + 1}/{max_timesteps}")
+
+#         # Compute empirical using actual dynamics
+#         tester.empirical(t, t + 1, num_samples=10000, visualize=False)
+
+#         # Compute concrete lookahead
+#         lookahead_timesteps = []
+#         for step in range(lookahead_steps):
+#             target_t = t + 1 + step
+#             if target_t <= max_timesteps + lookahead_steps:
+#                 success = tester.concrete(t + step, end=target_t, visualize=False)
+#                 if success:
+#                     lookahead_timesteps.append(target_t)
+
+#         # Store frame data
+#         frame_data = {
+#             'timestep': t + 1,
+#             'computed_timesteps': list(range(t + 2)),  # All timesteps computed so far
+#             'lookahead_timesteps': lookahead_timesteps
+#         }
+#         frames_data.append(frame_data)
+
+#     print(f"\n✓ Animation data prepared: {len(frames_data)} frames")
+#     print("Note: Full animation rendering not implemented in this version")
+#     print("Use the test() function to see interactive visualization")
+
+
 def animate():
     """Create animation of reachability propagation following test pattern"""
     print("=" * 80)
@@ -585,8 +499,8 @@ def animate():
 
     analyzer = setup_analyzer('DoubleIntegrator', 'constraint_default_more_data_5hz')
 
-    # Create tester without dynamic plot (we'll save frames instead)
-    tester = ReachabilityTester(analyzer, dynamic_plot=False)
+    # Create tester
+    tester = ReachabilityTester(analyzer)
 
     print("\nGenerating animation frames...")
 
@@ -848,7 +762,7 @@ def animate():
 
         # Check file size
         file_size = os.path.getsize(output_file)
-        print(f" Animation saved to: {output_file}")
+        print(f"✓ Animation saved to: {output_file}")
         print(f"  File size: {file_size/1024:.1f} KB ({file_size/1024/1024:.2f} MB)")
 
         # Also save as MP4 for better quality/compression
@@ -857,7 +771,7 @@ def animate():
         try:
             imageio.mimsave(mp4_file, frames, fps=2, codec='libx264', quality=8)
             mp4_size = os.path.getsize(mp4_file)
-            print(f" MP4 saved to: {mp4_file}")
+            print(f"✓ MP4 saved to: {mp4_file}")
             print(f"  File size: {mp4_size/1024:.1f} KB ({mp4_size/1024/1024:.2f} MB)")
         except Exception as e:
             print(f"  Could not create MP4: {e}")
@@ -878,7 +792,7 @@ def animate():
 
         writer = PillowWriter(fps=2)
         anim.save(output_file, writer=writer)
-        print(f" Animation saved to: {output_file}")
+        print(f"✓ Animation saved to: {output_file}")
         plt.close(fig)
 
     # Also save key frames as separate images
@@ -886,12 +800,11 @@ def animate():
         if i < len(frames):
             frame_file = os.path.join(output_dir, f'frame_{i:03d}.png')
             plt.imsave(frame_file, frames[i])
-            print(f" Frame {i} saved to: {frame_file}")
+            print(f"✓ Frame {i} saved to: {frame_file}")
 
-    print("\n Animation complete!")
+    print("\n✓ Animation complete!")
     print(f"  Total frames: {len(frames)}")
     print(f"  Output: {output_file}")
-
 
 if __name__ == "__main__":
     import sys
