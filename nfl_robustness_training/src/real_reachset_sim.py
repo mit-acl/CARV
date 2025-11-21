@@ -149,31 +149,32 @@ class ReachabilityTester:
             notes='Initial set'
         )
 
-    def concrete(self, start_timestep: int, end: Optional[int] = None):
+    def concrete(self, start_t: int, end: Optional[int] = None):
         """
         Compute concrete reachable set
         Args: start timestep, end timeste[]
         """
 
         # Get parent horizon
-        if start_timestep not in self.horizons:
-            print(f"Error: No horizon exists at timestep {start_timestep}")
+        if start_t not in self.horizons:
+            print(f"Error: No horizon exists at timestep {start_t}")
             return False
 
         # Set end timestep
         if end is None:
-            end = start_timestep + 1
+            end = start_t + 1
 
-        num_steps = end - start_timestep
+        num_steps = end - start_t
         if num_steps <= 0:
-            print(f"Error: Invalid step count (start={start_timestep}, end={end})")
+            print(f"Error: Invalid step count (start={start_t}, end={end})")
             return False
 
         # Track total computation time
         total_time = 0.0
-        current_parent_timestep = start_timestep
+        current_parent_timestep = start_t
 
-        print(f"Starting concrete propagation: t={start_timestep} → t={end} ({num_steps} steps)")
+        print("=" * 20 + " Concrete " + "=" * 20)
+        print(f"Starting concrete propagation: t={start_t} → t={end} ({num_steps} steps)")
 
         # Loop through each iteration/timestep
         for step in range(num_steps):
@@ -210,10 +211,10 @@ class ReachabilityTester:
             self.horizons[current_timestep].add_calculation(
                 bounds=bounds,
                 calc_type=CalculationType.CONCRETE,
-                origin_timestep=start_timestep,
+                origin_timestep=start_t,
                 computation_time=t_elapsed,
                 step_size=1,  # Each iteration is a single step
-                notes=f'Concrete step {step+1}/{num_steps} from t={start_timestep}'
+                notes=f'Concrete step {step+1}/{num_steps} from t={start_t}'
             )
 
             # Update parent reference for next iteration
@@ -221,7 +222,7 @@ class ReachabilityTester:
 
         print(f"Concrete propagation of {num_steps} steps: "
               f"total time={total_time:.4f}s | "
-              f"final vol @t={current_timestep}: {np.prod(bounds[:, 1] - bounds[:, 0]):.6f}")
+              f"final vol @t={current_timestep}: {np.prod(bounds[:, 1] - bounds[:, 0]):.6f}\n")
 
 
         return t_elapsed
@@ -370,11 +371,11 @@ class ReachabilityTester:
 
         # Print info
         print("=" * 20 + " Symbolic " + "=" * 20)
-        print(f"  Parent Volume: {parent_horizon.get_tight_volume()}")
+        print(f"  Parent Volume: {parent_horizon.get_tight_volume():.6f}")
         print(f"  From t={start} to t={end} (k={k} steps)")
         print(f"  Computed in {t_elapsed:.4f}s")
         print(f"  Volume: {np.prod(bounds[:, 1] - bounds[:, 0]):.6f}")
-        print(f"  Tightest volume: {self.horizons[end].get_tight_volume():.6f}")
+        print(f"  Tightest volume: {self.horizons[end].get_tight_volume():.6f}\n")
 
         return t_elapsed
 
