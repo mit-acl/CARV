@@ -161,6 +161,7 @@ class ReachabilityPruning(ReachabilityAlgorithm):
             
             partition_bounds = partition_horizon.get_tight_bound()
             
+            # pruning
             if self.bounds_intersect(partition_bounds, state_estimate_bounds):
                 # Keep active
                 self.partition_status[i][timestep] = 'active'
@@ -168,6 +169,10 @@ class ReachabilityPruning(ReachabilityAlgorithm):
                 # Prune this partition
                 self.partition_status[i][timestep] = 'pruned'
                 print(f"  Pruned partition {i}")
+
+            # # ignore pruning for now
+            # self.partition_status[i][timestep] = 'active'
+            
 
     def propagate_partitions(self, timestep: int):
         """Propagate active partitions one step forward."""
