@@ -1,29 +1,7 @@
 """Implementation of TTT algorithm"""
 
 import numpy as np
-import torch
-import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
-from matplotlib.animation import FuncAnimation, PillowWriter
-from ast import literal_eval
-from itertools import product
-from copy import deepcopy
-import time
-from typing import Dict, List, Tuple, Optional
-from enum import Enum
-import nfl_veripy.dynamics as dynamics
-
-from auto_LiRPA import BoundedModule, BoundedTensor
-from auto_LiRPA.perturbations import *
-import cl_systems
-
-from utils.nn import load_controller
-from utils.robust_training_utils import ReachableSet
-from utils.robust_training_utils import Analyzer
-
-from real_reachset_sim import CalculationType
 from real_reachset_sim import ReachabilityTester
-from real_reachset_sim import ReachableSetHorizon
 from real_reachset_sim import setup_analyzer
 
 def simulation():
@@ -35,7 +13,10 @@ def simulation():
     print("\n" + "=" * 20 + " Initial State " + "=" * 20)
     print(simulator.horizons[0])
 
-    def refined_search(budget, n):
+    refined_search(budget=2.5, n=50, simulator = simulator)
+
+
+def refined_search(budget, n, simulator):
         total_time = 0
         phase = "search"
         t_start = 0
@@ -52,7 +33,10 @@ def simulation():
 
             t_curr = t_start + b_steps
 
+            #subtract from time budget
             budget -= t_elapsed
+
+            #update stepsize,
             b_steps_n, phase = calc_steps(t_start, b_steps, budget, t_est, t_elapsed, n, phase)
 
             if phase == "jump":
@@ -63,9 +47,6 @@ def simulation():
             total_time +=t_elapsed
 
         print(f"total time taken: {total_time}")
-
-    refined_search(budget=2.5, n=50)
-
 
 def calc_steps(t_start, b_steps, rem_budget, t_est, new_calc_time, total_horizon, phase):
     """
