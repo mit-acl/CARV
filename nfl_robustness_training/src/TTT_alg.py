@@ -17,36 +17,43 @@ def simulation():
 
 
 def refined_search(budget, n, simulator):
-        total_time = 0
-        phase = "search"
-        t_start = 0
-        b_steps = 1
-        t_curr = 0
-        t_est = 0
-        while t_curr<n:
-            if phase == "search":
-                t_elapsed = simulator.symbolic(t_start, t_start + b_steps)
-            elif phase == "jump":
-                # jump phase ==> fill in timesteps in between jumps with concrete queries
-                t_elapsed = simulator.symbolic(t_start, t_start + b_steps)
-                t_elapsed+= simulator.concrete(t_start, t_start + b_steps)
+    """
+    Core TTT algorithm
+    Args:
+        budget: time budget
+        n: total desired horizons
+        simulator: ReachabilityTester class object
+    """
+    total_time = 0
+    phase = "search"
+    t_start = 0
+    b_steps = 1
+    t_curr = 0
+    t_est = 0
+    while t_curr<n:
+        if phase == "search":
+            t_elapsed = simulator.symbolic(t_start, t_start + b_steps)
+        elif phase == "jump":
+            # jump phase ==> fill in timesteps in between jumps with concrete queries
+            t_elapsed = simulator.symbolic(t_start, t_start + b_steps)
+            t_elapsed+= simulator.concrete(t_start, t_start + b_steps)
 
-            t_curr = t_start + b_steps
+        t_curr = t_start + b_steps
 
-            #subtract from time budget
-            budget -= t_elapsed
+        #subtract from time budget
+        budget -= t_elapsed
 
-            #update stepsize,
-            b_steps_n, phase = calc_steps(t_start, b_steps, budget, t_est, t_elapsed, n, phase)
+        #update stepsize,
+        b_steps_n, phase = calc_steps(t_start, b_steps, budget, t_est, t_elapsed, n, phase)
 
-            if phase == "jump":
-                t_start = t_curr
+        if phase == "jump":
+            t_start = t_curr
 
-            b_steps = min(b_steps_n, n - t_start)
+        b_steps = min(b_steps_n, n - t_start)
 
-            total_time +=t_elapsed
+        total_time +=t_elapsed
 
-        print(f"total time taken: {total_time}")
+    print(f"total time taken: {total_time}")
 
 def calc_steps(t_start, b_steps, rem_budget, t_est, new_calc_time, total_horizon, phase):
     """
