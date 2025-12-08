@@ -1,3 +1,4 @@
+
 """
 Reachable Set Simulator - Corrected Version
 """
@@ -7,7 +8,6 @@ import torch
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 from matplotlib.animation import FuncAnimation, PillowWriter
-from matplotlib.gridspec import GridSpec
 from ast import literal_eval
 from itertools import product
 from copy import deepcopy
@@ -23,7 +23,7 @@ import cl_systems
 from utils.nn import load_controller
 from utils.robust_training_utils import ReachableSet
 from utils.robust_training_utils import Analyzer
-from state_estimator import LinearKalmanEstimator
+from state_estimator import LinearKalmanEstimator, ExtendedKalmanEstimator
 
 
 class CalculationType(Enum):
@@ -75,11 +75,11 @@ class ReachableSetHorizon:
             'volume': np.prod(bounds[:, 1] - bounds[:, 0]),
             'notes': notes
         }
-        
+
         # ADD THIS BLOCK - Store real_state if provided (for empirical with state tracking)
         if real_state is not None:
             self.calculations[self.calc_counter]['real_state'] = real_state.copy()
-        
+
         self.calc_counter += 1
 
         # Update tight bounds
@@ -92,7 +92,8 @@ class ReachableSetHorizon:
 
             # Check if no intersection
             if np.any(self.tight_bound[:, 0] > self.tight_bound[:, 1]):
-                print(f"Error: Empty intersection at t={self.global_timestep}")
+                print(f"Error: Empty intersection at t={self.global_timestep}\n")
+                print(f"added bounds: {bounds}")
 
         # Update the ReachableSet with tightest bounds
         self.reachable_set.set_range(torch.tensor(self.tight_bound, dtype=torch.float32, device=self.device))
@@ -132,20 +133,18 @@ class ReachabilityTester:
     """
     Reachability calculations using ReachableSetHorizon.
     """
-    def __init__(self, analyzer, dynamic_plot=True, process_noise_std=0.01, measurement_noise_std=0.05):
+    def __init__(self, analyzer, process_noise_std=0.01, measurement_noise_std=0.05):
         self.analyzer = analyzer
-        self.dynamic_plot = dynamic_plot
 
         # Track horizons by timestep
         self.horizons: Dict[int, ReachableSetHorizon] = {}
 
-        # Active calculation ID for each timestep (for visualization)
         self.counter = 0
 
         # Initialize horizon at t=0
         init_bounds = analyzer.reachable_sets[0].full_set.cpu().numpy()
         self.horizons[0] = ReachableSetHorizon(0, device=analyzer.device)
-        
+
         # Sample random initial state
         num_states = init_bounds.shape[0]
         np.random.seed(None)
@@ -154,7 +153,7 @@ class ReachabilityTester:
             high=init_bounds[:, 1],
             size=num_states
         )
-        
+
         self.horizons[0].add_calculation(
             bounds=init_bounds,
             calc_type=CalculationType.EMPIRICAL,
@@ -166,31 +165,46 @@ class ReachabilityTester:
             real_state=initial_state  # Add real state tracking
         )
 
-        # Initialize Kalman Filter
-        if isinstance(analyzer.cl_system.dynamics.At, torch.Tensor):
-            A = analyzer.cl_system.dynamics.At.cpu().numpy()
-            B = analyzer.cl_system.dynamics.bt.cpu().numpy()
-        else:
-            A = analyzer.cl_system.dynamics.At
-            B = analyzer.cl_system.dynamics.bt
-
-        self.measurement_noise_std = measurement_noise_std
         self.process_noise_std = process_noise_std
+        self.measurement_noise_std = measurement_noise_std
 
-        self.estimator = LinearKalmanEstimator(
-            initial_state, 
-            init_bounds,
-            A=A,
-            B=B,
-            process_noise_std=process_noise_std,
-            measurement_noise_std=measurement_noise_std
-        )
-        
-        if self.dynamic_plot:
-            plt.ion()
-            self.fig, self.axes = self._setup_plot()
+        self.estimator = self.create_estimator(analyzer, initial_state, init_bounds, process_noise_std, measurement_noise_std)
 
-    def concrete(self, start_timestep: int, end: Optional[int] = None, visualize=False):
+    def create_estimator(self, analyzer, initial_state, initial_bounds, process_noise_std, measurement_noise_std):
+        """Create appropriate filter based on dynamics type"""
+        dynamics_obj = analyzer.cl_system.dynamics
+
+        if hasattr(dynamics_obj, "vt"):
+            print("Using EKF filter")
+            return ExtendedKalmanEstimator(
+                initial_state,
+                initial_bounds,
+                dynamics=dynamics_obj,
+                process_noise_std=process_noise_std,
+                measurement_noise_std=measurement_noise_std
+            )
+        else:
+            print("Using Linear Kalman Filter")
+            # Initialize Kalman Filter
+            if isinstance(analyzer.cl_system.dynamics.At, torch.Tensor):
+                A = analyzer.cl_system.dynamics.At.cpu().numpy()
+                B = analyzer.cl_system.dynamics.bt.cpu().numpy()
+            else:
+                A = analyzer.cl_system.dynamics.At
+                B = analyzer.cl_system.dynamics.bt
+
+            return LinearKalmanEstimator(
+                initial_state,
+                initial_bounds,
+                A=A,
+                B=B,
+                process_noise_std=process_noise_std,
+                measurement_noise_std=measurement_noise_std
+            )
+
+
+
+    def concrete(self, start_timestep: int, end: Optional[int] = None):
         """
         Get concrete reachable set
         Args: start timestep, end timestep
@@ -214,6 +228,7 @@ class ReachabilityTester:
         total_time = 0.0
         current_parent_timestep = start_timestep
 
+        print("="*20 + " Concrete " + "="*20)
         print(f"Starting concrete propagation: t={start_timestep} -> t={end} ({num_steps} steps)")
 
         # Loop through each iteration/timestep
@@ -256,137 +271,134 @@ class ReachabilityTester:
                 step_size=1,  # Each iteration is a single step
                 notes=f'Concrete step {step+1}/{num_steps} from t={start_timestep}'
             )
+            print("right after add calc")
 
             # Update parent reference for next iteration
             current_parent_timestep = current_timestep
 
-        print(f"Concrete propagation of {num_steps} steps: "
-              f"total time={total_time:.4f}s"
-              f"final vol @t={current_timestep}: {np.prod(bounds[:, 1] - bounds[:, 0]):.6f}")
-
-        if visualize and self.dynamic_plot:
-            self.visualize()
+        print(f"Concrete propagation of {num_steps} steps: \n"
+              f"total time={total_time:.4f}s\n"
+              f"bounds= {bounds}\n"
+              f"final vol @t={current_timestep}: {np.prod(bounds[:, 1] - bounds[:, 0]):.6f}\n")
 
         return t_elapsed
 
-    def empirical(self, start: int, end: int, num_samples: int = 10000, visualize=False):
-        """
-        Use dynamics to calculate actual reachset
-        Args: start timestep, end timestep
-            num_samples: Number of trajectories to sample
-        """
+    # def empirical(self, start: int, end: int, num_samples: int = 10000):
+    #     """
+    #     Use dynamics to calculate actual reachset
+    #     Args: start timestep, end timestep
+    #         num_samples: Number of trajectories to sample
+    #     """
 
-        # Get parent horizon
-        if start not in self.horizons:
-            print(f"Error: No horizon exists at timestep {start}")
-            return False
+    #     # Get parent horizon
+    #     if start not in self.horizons:
+    #         print(f"Error: No horizon exists at timestep {start}")
+    #         return False
 
-        parent_horizon = self.horizons[start]
+    #     parent_horizon = self.horizons[start]
 
-        # Get tightest bounds from parent horizon
-        init_bounds = parent_horizon.get_tight_bound()
-        if init_bounds is None:
-            print(f"Error: No bounds available at timestep {start}")
-            return False
+    #     # Get tightest bounds from parent horizon
+    #     init_bounds = parent_horizon.get_tight_bound()
+    #     if init_bounds is None:
+    #         print(f"Error: No bounds available at timestep {start}")
+    #         return False
 
-        # Create horizon at target timestep if it doesn't exist
-        if end not in self.horizons:
-            self.horizons[end] = ReachableSetHorizon(end, device=self.analyzer.device)
+    #     # Create horizon at target timestep if it doesn't exist
+    #     if end not in self.horizons:
+    #         self.horizons[end] = ReachableSetHorizon(end, device=self.analyzer.device)
 
-        num_states = init_bounds.shape[0]
+    #     num_states = init_bounds.shape[0]
 
-        t_start = time.time()
+    #     t_start = time.time()
 
-        np.random.seed(None)
-        x0 = np.random.uniform(
-            low=init_bounds[:, 0],
-            high=init_bounds[:, 1],
-            size=(num_samples, num_states)
-        )
-        xt = x0
-        for step in range(start, end):
-            u_nn = self.analyzer.cl_system.dynamics.control_nn(
-                xt, self.analyzer.cl_system.controller.cpu()
-            )
-            xt1 = self.analyzer.cl_system.dynamics.dynamics_step(xt, u_nn)
-            xt = xt1
+    #     np.random.seed(None)
+    #     x0 = np.random.uniform(
+    #         low=init_bounds[:, 0],
+    #         high=init_bounds[:, 1],
+    #         size=(num_samples, num_states)
+    #     )
+    #     xt = x0
+    #     for step in range(start, end):
+    #         u_nn = self.analyzer.cl_system.dynamics.control_nn(
+    #             xt, self.analyzer.cl_system.controller.cpu()
+    #         )
+    #         xt1 = self.analyzer.cl_system.dynamics.dynamics_step(xt, u_nn)
+    #         xt = xt1
 
-        # Compute bounds
-        empirical_bounds = np.stack([
-            np.min(xt, axis=0),
-            np.max(xt, axis=0)
-        ], axis = 1)
+    #     # Compute bounds
+    #     empirical_bounds = np.stack([
+    #         np.min(xt, axis=0),
+    #         np.max(xt, axis=0)
+    #     ], axis = 1)
 
-        t_elapsed = time.time() - t_start
+    #     t_elapsed = time.time() - t_start
 
 
-        # Add calculation to new horizon
-        self.horizons[end].add_calculation(
-            bounds=empirical_bounds,
-            calc_type=CalculationType.EMPIRICAL,
-            origin_timestep=end,  # Empirical starts new origin
-            computation_time=t_elapsed,
-            step_size=end - start,
-            num_samples=num_samples,
-            notes=f'Empirical from t={start}, {num_samples} samples'
-        )
+    #     # Add calculation to new horizon
+    #     self.horizons[end].add_calculation(
+    #         bounds=empirical_bounds,
+    #         calc_type=CalculationType.EMPIRICAL,
+    #         origin_timestep=end,  # Empirical starts new origin
+    #         computation_time=t_elapsed,
+    #         step_size=end - start,
+    #         num_samples=num_samples,
+    #         notes=f'Empirical from t={start}, {num_samples} samples'
+    #     )
 
-        # Print info
-        print("=" * 20 + " Empirical " + "=" * 20)
-        print(f"  From t={start} to t={end}")
-        print(f"  Samples: {num_samples}")
-        print(f"  Computed in {t_elapsed:.4f}s")
-        print(f"  Volume: {np.prod(empirical_bounds[:, 1] - empirical_bounds[:, 0]):.6f}")
-        print(f"  Tightest volume: {self.horizons[end].get_tight_volume():.6f}")
+    #     # Print info
+    #     print("=" * 20 + " Empirical " + "=" * 20)
+    #     print(f"  From t={start} to t={end}")
+    #     print(f"  Samples: {num_samples}")
+    #     print(f"  Computed in {t_elapsed:.4f}s")
+    #     print(f"  Volume: {np.prod(empirical_bounds[:, 1] - empirical_bounds[:, 0]):.6f}")
+    #     print(f"  Tightest volume: {self.horizons[end].get_tight_volume():.6f}")
 
-        if visualize and self.dynamic_plot:
-            self.visualize()
 
-        return t_elapsed
+    #     return t_elapsed
 
-    def real_state_empirical(self, start: int, end: int, visualize=False):
+    def real_state_empirical(self, start: int, end: int):
         """
         Propagate actual state using dynamics with Kalman filtering.
         Tracks true hidden state while estimating with noisy measurements.
-        
+
         Args:
             start: Starting timestep
             end: Target timestep
-            visualize: Update plot
-        
+
         Returns:
             Computation time
         """
+        print("=" * 20 + " Empirical (Kalman) " + "=" * 20)
         if start not in self.horizons:
             print(f"Error: No horizon exists at timestep {start}")
             return False
 
         parent_horizon = self.horizons[start]
-        
+
         # Find the empirical calculation with real_state at parent timestep
         parent_real_state = None
         parent_bounds = None
         for calc_data in parent_horizon.calculations.values():
-            if (calc_data['calc_type'] == CalculationType.EMPIRICAL and 
+            if (calc_data['calc_type'] == CalculationType.EMPIRICAL and
                 'real_state' in calc_data):
                 parent_real_state = calc_data['real_state']
                 parent_bounds = calc_data['bounds']
                 break
-        
+
         if parent_real_state is None:
             print(f"Error: No empirical calculation with real_state at timestep {start}")
             return False
-        
+
         num_states = parent_real_state.shape[0]
 
         # Reset Kalman filter to parent's state and bounds
         self.estimator.reset(parent_real_state, parent_bounds)
 
         t_start = time.time()
-        
+
         # Run actual dynamics forward (TRUE hidden state)
         xt_true = parent_real_state.reshape(1, -1)
-        
+
         for step in range(start, end):
             # === Propagate TRUE state ===
             u_nn_true = self.analyzer.cl_system.dynamics.control_nn(
@@ -394,30 +406,38 @@ class ReachabilityTester:
             )
             xt1_true = self.analyzer.cl_system.dynamics.dynamics_step(xt_true, u_nn_true)
             xt_true = xt1_true
-            
+
             # === Kalman Filter Predict Step ===
-            xt_est = torch.tensor(self.estimator.state.reshape(1, -1), dtype=torch.float32)
-            u_nn_est = self.analyzer.cl_system.dynamics.control_nn(
-                xt_est, self.analyzer.cl_system.controller.cpu()
-            )
-            
+            xt_est = self.estimator.state.reshape(1, -1)
+
+            if isinstance(self.estimator, ExtendedKalmanEstimator):
+                #Extended kalman filter
+                u_nn_est = self.analyzer.cl_system.dynamics.control_nn(
+                    xt_est, self.analyzer.cl_system.controller.cpu()
+                )
+            else:
+                # Linear Kalman filter
+                xt_est = torch.tensor(self.estimator.state.reshape(1, -1), dtype=torch.float32)
+                u_nn_est = self.analyzer.cl_system.dynamics.control_nn(
+                    xt_est, self.analyzer.cl_system.controller.cpu()
+                )
+
             # KF prediction (uses linear A, B matrices)
             predicted_state, predicted_bounds = self.estimator.predict(
-                dynamics_fn=None,
                 control_input=u_nn_est
             )
-            
+
             # === Kalman Filter Update Step ===
             # Convert true state to numpy
             if isinstance(xt_true, torch.Tensor):
                 true_state_np = xt_true.squeeze().cpu().numpy()
             else:
                 true_state_np = xt_true.squeeze() if isinstance(xt_true, np.ndarray) else xt_true
-            
+
             # Simulate noisy measurement of TRUE state
             measurement_noise = np.random.normal(0, self.measurement_noise_std, size=num_states)
             noisy_measurement = true_state_np + measurement_noise
-            
+
             # Update KF estimate with noisy measurement
             self.estimator.update(noisy_measurement)
 
@@ -426,10 +446,10 @@ class ReachabilityTester:
             real_state = xt_true.squeeze().cpu().numpy()
         else:
             real_state = xt_true.squeeze() if isinstance(xt_true, np.ndarray) else xt_true
-        
+
         estimated_state = self.estimator.state.copy()
         kf_bounds = self.estimator.bounds.copy()
-        
+
         t_elapsed = time.time() - t_start
 
         # Create horizon at target timestep if it doesn't exist
@@ -447,21 +467,18 @@ class ReachabilityTester:
             notes=f'KF estimate from t={start}',
             real_state=real_state  # Store the true state
         )
-        
-        print("=" * 20 + " Empirical (Kalman) " + "=" * 20)
+
+
         print(f"  From t={start} to t={end}")
         print(f"  True State: {real_state}")
         print(f"  KF Estimate: {estimated_state}")
         print(f"  Estimation Error: {np.linalg.norm(real_state - estimated_state):.6f}")
         print(f"  Bounds Volume: {np.prod(kf_bounds[:, 1] - kf_bounds[:, 0]):.6f}")
-        print(f"  Tightest volume: {self.horizons[end].get_tight_volume():.6f}")
-
-        if visualize and self.dynamic_plot:
-            self.visualize()
+        print(f"  Tightest overlapped volume at t = {end}: {self.horizons[end].get_tight_volume():.6f}\n")
 
         return t_elapsed
 
-    def symbolic(self, start: int, end: int, visualize=False):
+    def symbolic(self, start: int, end: int):
         """
         Compute symbolic reachable set
         Args: start timestep, end timestep
@@ -528,158 +545,12 @@ class ReachabilityTester:
         # Print info
         print("=" * 20 + " Symbolic " + "=" * 20)
         print(f"  Parent Volume: {parent_horizon.get_tight_volume()}")
-        print(f"  From t={start} to t={end} (k={k} steps)")
-        print(f"  Computed in {t_elapsed:.4f}s")
+        # print(f"  From t={start} to t={end} (k={k} steps)")
+        # print(f"  Computed in {t_elapsed:.4f}s")
         print(f"  Volume: {np.prod(bounds[:, 1] - bounds[:, 0]):.6f}")
-        print(f"  Tightest volume: {self.horizons[end].get_tight_volume():.6f}")
-
-        if visualize and self.dynamic_plot:
-            self.visualize()
+        # print(f"  Tightest volume: {self.horizons[end].get_tight_volume():.6f}")
 
         return t_elapsed
-
-    def _setup_plot(self):
-        """Setup the plot with GridSpec layout"""
-        fig = plt.figure(figsize=(15, 10))
-        gs = GridSpec(2, 2, figure=fig, height_ratios=[3, 1], width_ratios=[3, 1])
-
-        axes = {
-            'main': fig.add_subplot(gs[0, :]),
-            'info': fig.add_subplot(gs[1, :])
-        }
-
-        fig.suptitle('Reachability Analysis Visualization', fontsize=16, fontweight='bold')
-        plt.tight_layout()
-
-        return fig, axes
-
-    def visualize(self):
-        """Update visualization with current state"""
-        if not self.dynamic_plot:
-            return
-
-        # Clear axes
-        self.axes['main'].clear()
-        self.axes['info'].clear()
-
-        # Plot all horizons and their tightest bounds
-        all_bounds = []
-
-        for t in sorted(self.horizons.keys()):
-            horizon = self.horizons.get(t)
-            if horizon is None:
-                continue
-
-            # Get tightest bounds for this timestep
-            bounds = horizon.get_tight_bound()
-            if bounds is None:
-                continue
-
-            all_bounds.append(bounds)
-
-            # Color based on timestep (gradient from blue to red)
-            if t == 0:
-                color = 'black'
-                alpha = 0.5
-            else:
-                # Create gradient color
-                color_val = min(t / max(self.horizons.keys()), 1.0) if self.horizons.keys() else 0
-                color = (color_val, 0, 1 - color_val)  # Blue to red gradient
-                alpha = 0.3
-
-            self._plot_rectangle(self.axes['main'], bounds,
-                                edgecolor=color, facecolor=color, alpha=alpha,
-                                linewidth=2 if t == max(self.horizons.keys()) else 1)
-
-        # Set axis limits
-        if all_bounds:
-            all_bounds_array = np.array(all_bounds)
-            x_min = np.min(all_bounds_array[:, 0, 0])
-            x_max = np.max(all_bounds_array[:, 0, 1])
-            y_min = np.min(all_bounds_array[:, 1, 0])
-            y_max = np.max(all_bounds_array[:, 1, 1])
-
-            x_range = x_max - x_min
-            y_range = y_max - y_min
-            padding_x = x_range * 0.1 if x_range > 0 else 0.1
-            padding_y = y_range * 0.1 if y_range > 0 else 0.1
-
-            self.axes['main'].set_xlim(x_min - padding_x, x_max + padding_x)
-            self.axes['main'].set_ylim(y_min - padding_y, y_max + padding_y)
-
-        self.axes['main'].set_xlabel('State 1', fontsize=12)
-        self.axes['main'].set_ylabel('State 2', fontsize=12)
-        self.axes['main'].set_title('Active Reachable Sets', fontsize=14, fontweight='bold')
-        self.axes['main'].grid(True, alpha=0.3)
-        self.axes['main'].set_aspect('equal', adjustable='datalim')
-
-        self._plot_info_panel()
-
-        plt.draw()
-        plt.pause(0.01)
-
-    def _plot_rectangle(self, ax, bounds, **kwargs):
-        """Helper to plot rectangle"""
-        xy = bounds[:2, 0]
-        width = bounds[0, 1] - bounds[0, 0]
-        height = bounds[1, 1] - bounds[1, 0]
-        rect = Rectangle(xy, width, height, **kwargs)
-        ax.add_patch(rect)
-
-    def _plot_info_panel(self):
-        """Plot info panel"""
-        ax = self.axes['info']
-        ax.axis('off')
-
-        ax.text(0.5, 0.95, 'Calculation Summary',
-                ha='center', va='top', fontsize=14, fontweight='bold',
-                transform=ax.transAxes)
-
-        y = 0.85
-        total_horizons = len(self.horizons)
-        total_calcs = sum(len(h.calculations) for h in self.horizons.values())
-        stats_text = f"Total Horizons: {total_horizons}\n"
-        stats_text += f"Total Calculations: {total_calcs}\n"
-        stats_text += f"Timesteps: 0-{max(self.horizons.keys())}\n"
-
-        ax.text(0.1, y, stats_text, va='top', fontsize=10,
-                transform=ax.transAxes, family='monospace')
-
-        y = 0.65
-        ax.text(0.1, y, 'Recent Horizons:', va='top', fontsize=11,
-                fontweight='bold', transform=ax.transAxes)
-
-        y = 0.60
-        recent_timesteps = sorted(self.horizons.keys(), reverse=True)[:8]
-        for t in recent_timesteps:
-            horizon = self.horizons[t]
-            text = f"t={t:2d} | {len(horizon.calculations)} calc(s) | vol={horizon.get_tight_volume():.4f}"
-            ax.text(0.1, y, text, va='top', fontsize=9,
-                   transform=ax.transAxes, family='monospace')
-            y -= 0.04
-
-        y = 0.15
-        ax.text(0.1, y, 'Legend:', va='top', fontsize=11, fontweight='bold',
-                transform=ax.transAxes)
-        y -= 0.05
-        ax.text(0.1, y, '🔵 Concrete  🟢 Symbolic  🟣 Empirical',
-                va='top', fontsize=9, transform=ax.transAxes)
-
-        latest_t = max(self.horizons.keys())
-        if latest_t in self.horizons:
-            for calc_data in self.horizons[latest_t].calculations.values():
-                if calc_data['calc_type'] == CalculationType.EMPIRICAL and 'real_state' in calc_data:
-                    y = 0.08
-                    ax.text(0.1, y, f'True State @t={latest_t}:', va='top', fontsize=10,
-                        fontweight='bold', transform=ax.transAxes)
-                    y -= 0.04
-                    state_str = ', '.join([f'{x:.3f}' for x in calc_data['real_state']])
-                    ax.text(0.1, y, f'  [{state_str}]', va='top', fontsize=9,
-                        transform=ax.transAxes, family='monospace')
-                    break
-
-
-# =================== Setup and Testing Functions ===================#
 
 def setup_analyzer(system_type='DoubleIntegrator', controller_name='constraint_default_more_data_5hz', init_range=None):
     """Setup analyzer for simulation testing"""
@@ -707,7 +578,7 @@ def setup_analyzer(system_type='DoubleIntegrator', controller_name='constraint_d
                 init_range = init_range.to(device)
             else:
                 init_range = torch.tensor(init_range, device=device)
-        
+
         time_horizon = 30
         max_diff = 10
 
@@ -734,7 +605,7 @@ def setup_analyzer(system_type='DoubleIntegrator', controller_name='constraint_d
                 init_range = init_range.to(device)
             else:
                 init_range = torch.tensor(init_range, device=device)
-        
+
         time_horizon = 52
         max_diff = 10
 
@@ -748,343 +619,3 @@ def setup_analyzer(system_type='DoubleIntegrator', controller_name='constraint_d
     print(f"  Time horizon: {time_horizon}, Max symbolic steps: {max_diff}")
 
     return analyzer
-
-
-def test():
-    analyzer = setup_analyzer('DoubleIntegrator', 'constraint_default_more_data_5hz')
-
-    print("\nCreating interactive tester...")
-    tester = ReachabilityTester(analyzer, dynamic_plot=True)
-
-    print("\n" + "=" * 20 + " Initial State " + "=" * 20)
-    print(tester.horizons[0])
-    t = 0
-    while t<15:
-        tester.concrete(t,t+3)
-        tester.symbolic(t, t+3)
-        tester.horizons[t+3].list_calculations()
-        tester.empirical(t,t+1)
-        t+=1
-
-def animate():
-    """Create animation of reachability propagation following test pattern"""
-    print("=" * 80)
-    print("CREATING ANIMATION")
-    print("=" * 80)
-
-    analyzer = setup_analyzer('DoubleIntegrator', 'constraint_default_more_data_5hz')
-
-    # Create tester without dynamic plot (we'll save frames instead)
-    tester = ReachabilityTester(analyzer, dynamic_plot=False)
-
-    print("\nGenerating animation frames...")
-
-    frames = []
-    colors_map = {
-        CalculationType.CONCRETE: 'blue',
-        CalculationType.SYMBOLIC: 'green',
-        CalculationType.EMPIRICAL: 'purple'
-    }
-
-    # Generate frames following the same pattern as test
-    t = 0
-    max_t = 12  # Stop at 12 to avoid going past 15 with t+3
-
-    while t <= max_t:
-        print(f"Generating frame for t={t}")
-
-        # Compute reachable sets - ONLY CONCRETE
-        if t + 3 <= 15:
-            tester.concrete(t, t+3)
-
-        tester.empirical(t, t+1)
-
-        # Create NEW figure for each frame
-        fig = plt.figure(figsize=(12, 8))
-        ax = plt.subplot(111)
-
-        ax.set_title(f'Reachability Analysis - Time t={t}', fontsize=14, fontweight='bold')
-        ax.set_xlabel('State 1', fontsize=12)
-        ax.set_ylabel('State 2', fontsize=12)
-        ax.grid(True, alpha=0.3)
-
-        # Plot all horizons
-        all_bounds = []
-
-        # For current timestep, show individual calculation bounds
-        if t + 3 in tester.horizons:
-            horizon_t3 = tester.horizons[t + 3]
-
-            # Draw individual concrete propagation steps (t+1, t+2, t+3)
-            for calc_id, calc_info in horizon_t3.calculations.items():
-                if calc_info['calc_type'] == CalculationType.CONCRETE:
-                    bounds = calc_info['bounds']
-                    all_bounds.append(bounds)
-                    step_num = calc_info['step_size']
-
-                    # Color based on step
-                    if step_num == 1:
-                        color = 'lightblue'
-                        label = f'Concrete t+1'
-                        alpha = 0.3
-                    elif step_num == 2:
-                        color = 'cornflowerblue'
-                        label = f'Concrete t+2'
-                        alpha = 0.4
-                    elif step_num == 3:
-                        color = 'blue'
-                        label = f'Concrete t+3'
-                        alpha = 0.5
-                    else:
-                        continue
-
-                    rect = Rectangle(
-                        bounds[:2, 0],
-                        bounds[0, 1] - bounds[0, 0],
-                        bounds[1, 1] - bounds[1, 0],
-                        edgecolor=color,
-                        facecolor='none',
-                        alpha=alpha,
-                        linewidth=2,
-                        linestyle='--',
-                        label=label
-                    )
-                    ax.add_patch(rect)
-
-        # Draw empirical bound at t+1
-        if t + 1 in tester.horizons:
-            horizon_t1 = tester.horizons[t + 1]
-            for calc_id, calc_info in horizon_t1.calculations.items():
-                if calc_info['calc_type'] == CalculationType.EMPIRICAL:
-                    bounds = calc_info['bounds']
-                    all_bounds.append(bounds)
-
-                    rect = Rectangle(
-                        bounds[:2, 0],
-                        bounds[0, 1] - bounds[0, 0],
-                        bounds[1, 1] - bounds[1, 0],
-                        edgecolor='purple',
-                        facecolor='none',
-                        alpha=0.6,
-                        linewidth=2,
-                        linestyle=':',
-                        label='Empirical t+1'
-                    )
-                    ax.add_patch(rect)
-
-        # Draw tightest bounds for all timesteps (past, current, and lookahead)
-        for timestep in sorted(tester.horizons.keys()):
-            horizon = tester.horizons[timestep]
-            bounds = horizon.get_tight_bound()
-
-            if bounds is None:
-                continue
-
-            all_bounds.append(bounds)
-
-            # Color based on timestep relative to current
-            if timestep == 0:
-                color = 'black'
-                alpha = 0.7
-                label = 'Initial (tightest)'
-                linewidth = 3
-            elif timestep < t:
-                # Past timesteps - show tightest
-                color = 'gray'
-                alpha = 0.4
-                label = f'Tightest t={timestep}' if timestep == t-1 else None
-                linewidth = 2
-            elif timestep == t:
-                # Current timestep - use distinctive cyan/teal color
-                color = 'cyan'
-                alpha = 0.9
-                label = f'Current t={t}'
-                linewidth = 4
-            elif timestep == t + 3:
-                # Lookahead tightest
-                color = 'red'
-                alpha = 0.9
-                label = f'Tightest t+3'
-                linewidth = 3
-            else:
-                # Other future timesteps
-                color = 'orange'
-                alpha = 0.3
-                label = None
-                linewidth = 1.5
-
-            # Draw filled rectangle for tightest bounds
-            rect = Rectangle(
-                bounds[:2, 0],
-                bounds[0, 1] - bounds[0, 0],
-                bounds[1, 1] - bounds[1, 0],
-                edgecolor=color,
-                facecolor=color,
-                alpha=alpha * 0.3,
-                linewidth=linewidth,
-                label=label
-            )
-            ax.add_patch(rect)
-
-        # Set axis limits
-        if all_bounds:
-            all_bounds_array = np.array(all_bounds)
-            x_min = np.min(all_bounds_array[:, 0, 0])
-            x_max = np.max(all_bounds_array[:, 0, 1])
-            y_min = np.min(all_bounds_array[:, 1, 0])
-            y_max = np.max(all_bounds_array[:, 1, 1])
-
-            x_range = x_max - x_min
-            y_range = y_max - y_min
-            padding_x = x_range * 0.15
-            padding_y = y_range * 0.15
-
-            ax.set_xlim(x_min - padding_x, x_max + padding_x)
-            ax.set_ylim(y_min - padding_y, y_max + padding_y)
-
-        # Add legend
-        handles, labels = ax.get_legend_handles_labels()
-        by_label = dict(zip(labels, handles))
-        ax.legend(by_label.values(), by_label.keys(), loc='upper right')
-
-        # Add text info
-        info_text = f"Current t: {t}\n"
-        info_text += f"Showing:\n"
-
-        # Count calculation types at t+3
-        if t + 3 in tester.horizons:
-            h = tester.horizons[t + 3]
-            concrete_count = sum(1 for c in h.calculations.values() if c['calc_type'] == CalculationType.CONCRETE)
-            info_text += f"  • {concrete_count} Concrete steps (t→t+3)\n"
-            info_text += f"  • Tightest vol @t+3: {h.get_tight_volume():.4f}\n"
-
-        # Count empirical at t+1
-        if t + 1 in tester.horizons:
-            h = tester.horizons[t + 1]
-            empirical_count = sum(1 for c in h.calculations.values() if c['calc_type'] == CalculationType.EMPIRICAL)
-            if empirical_count > 0:
-                info_text += f"  • {empirical_count} Empirical (t→t+1)\n"
-                info_text += f"  • Tightest vol @t+1: {h.get_tight_volume():.4f}\n"
-
-        info_text += f"\nTotal timesteps: {len(tester.horizons)}"
-
-        ax.text(0.02, 0.98, info_text,
-                transform=ax.transAxes,
-                fontsize=9,
-                verticalalignment='top',
-                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.7))
-
-        # Save frame
-        fig.canvas.draw()
-        image = np.frombuffer(fig.canvas.buffer_rgba(), dtype='uint8')
-        image = image.reshape(fig.canvas.get_width_height()[::-1] + (4,))
-        image = image[:, :, :3]  # Drop alpha channel to get RGB
-
-        # Debug: print frame info
-        print(f"  Frame {len(frames)}: shape={image.shape}, size={image.nbytes} bytes")
-
-        frames.append(image)
-
-        # Close this figure before moving to next
-        plt.close(fig)
-
-        # Move to next timestep
-        t += 1
-
-    # Save animation
-    print("\n" + "="*80)
-    print("SAVING ANIMATION")
-    print("="*80)
-    print(f"Total frames collected: {len(frames)}")
-
-    if len(frames) == 0:
-        print("ERROR: No frames were generated!")
-        return
-
-    # Print frame statistics
-    frame_sizes = [f.nbytes for f in frames]
-    print(f"Frame shape: {frames[0].shape}")
-    print(f"Frame dtype: {frames[0].dtype}")
-    print(f"Average frame size: {np.mean(frame_sizes)/1024:.1f} KB")
-    print(f"Total data size: {sum(frame_sizes)/1024:.1f} KB")
-
-    # Save as GIF using imageio (more reliable than matplotlib animation)
-    import os
-    try:
-        import imageio
-        use_imageio = True
-        print("Using imageio for GIF creation")
-    except ImportError:
-        print("imageio not available, falling back to matplotlib animation")
-        use_imageio = False
-
-    output_dir = './animation_output'
-    os.makedirs(output_dir, exist_ok=True)
-    output_file = os.path.join(output_dir, 'reachability_animation.gif')
-
-    if use_imageio:
-        # Use imageio for better GIF support with higher quality settings
-        print(f"Saving {len(frames)} frames to GIF...")
-
-        # Try with higher quality settings
-        try:
-            # quantizer=0 means no color quantization, subrectangles=False prevents optimization
-            imageio.mimsave(output_file, frames, duration=500, loop=0, quantizer=0, subrectangles=False)
-        except TypeError:
-            # Fallback if quantizer parameter not supported
-            print("  (using default quality settings)")
-            imageio.mimsave(output_file, frames, duration=500, loop=0)
-
-        # Check file size
-        file_size = os.path.getsize(output_file)
-        print(f" Animation saved to: {output_file}")
-        print(f"  File size: {file_size/1024:.1f} KB ({file_size/1024/1024:.2f} MB)")
-
-        # Also save as MP4 for better quality/compression
-        mp4_file = os.path.join(output_dir, 'reachability_animation.mp4')
-        print(f"\nAlso saving as MP4 for better quality...")
-        try:
-            imageio.mimsave(mp4_file, frames, fps=2, codec='libx264', quality=8)
-            mp4_size = os.path.getsize(mp4_file)
-            print(f" MP4 saved to: {mp4_file}")
-            print(f"  File size: {mp4_size/1024:.1f} KB ({mp4_size/1024/1024:.2f} MB)")
-        except Exception as e:
-            print(f"  Could not create MP4: {e}")
-            print(f"  (Try: pip install imageio-ffmpeg)")
-    else:
-        # Fallback to matplotlib
-        fig, ax = plt.subplots(figsize=(12, 8))
-        ax.set_aspect('equal')
-
-        im = ax.imshow(frames[0])
-        ax.axis('off')
-
-        def update(frame_num):
-            im.set_data(frames[frame_num])
-            return [im]
-
-        anim = FuncAnimation(fig, update, frames=len(frames), interval=500, blit=False)
-
-        writer = PillowWriter(fps=2)
-        anim.save(output_file, writer=writer)
-        print(f" Animation saved to: {output_file}")
-        plt.close(fig)
-
-    # Also save key frames as separate images
-    for i in [0, len(frames)//3, 2*len(frames)//3, len(frames)-1]:
-        if i < len(frames):
-            frame_file = os.path.join(output_dir, f'frame_{i:03d}.png')
-            plt.imsave(frame_file, frames[i])
-            print(f" Frame {i} saved to: {frame_file}")
-
-    print("\n Animation complete!")
-    print(f"  Total frames: {len(frames)}")
-    print(f"  Output: {output_file}")
-
-
-if __name__ == "__main__":
-    import sys
-    if len(sys.argv) > 1 and sys.argv[1] == '--animate':
-        animate()
-    else:
-        test()

@@ -140,3 +140,12 @@ class Unicycle_NL(DiscreteTimeDynamics):
     #     # print("x-direction: {}".format(R[0][:,0]))
     #     self.theta = self.theta + self.dt * us[:, 1]
     #     return us_transformed
+
+    def control_nn(self, x, model):
+        """For controller that outputs [omega] only."""
+        if x.ndim == 1:
+            batch_x = np.expand_dims(x, axis=0)
+        else:
+            batch_x = x
+        us = model.forward(torch.Tensor(batch_x)).data.numpy()
+        return us  # Shape: (batch, 1)
