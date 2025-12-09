@@ -104,7 +104,7 @@ class LinearKalmanEstimator(StateEstimator):
             process_noise_std: Process noise standard deviation
             measurement_noise_std: Measurement noise standard deviation
         """
-        super.__init__(initial_state, initial_bounds, process_noise_std, measurement_noise_std)
+        super().__init__(initial_state, initial_bounds, process_noise_std, measurement_noise_std)
 
         n_controls = B.shape[1]
 

@@ -1,6 +1,7 @@
 
 """
-Reachable Set Simulator - Corrected Version
+Reachable Set Simulator - Includes EKF, Linear Kalman filtering
+Use with Double Integrator or Unicycle
 """
 
 import numpy as np
@@ -424,6 +425,7 @@ class ReachabilityTester:
 
             # KF prediction (uses linear A, B matrices)
             predicted_state, predicted_bounds = self.estimator.predict(
+                dynamics_fn= None,
                 control_input=u_nn_est
             )
 

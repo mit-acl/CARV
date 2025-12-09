@@ -1,6 +1,6 @@
 # reachability_algorithms.py
 
-import integrated_reachable_sim as rss
+import nfl_robustness_training.src.clean_integrated_sim as rss
 from abc import ABC, abstractmethod
 import numpy as np
 import matplotlib.pyplot as plt

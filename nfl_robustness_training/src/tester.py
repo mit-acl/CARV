@@ -1,7 +1,5 @@
 
-from integrated_reachable_sim import setup_analyzer
-from integrated_reachable_sim import ReachabilityTester
-from integrated_reachable_sim import CalculationType
+from clean_integrated_sim import setup_analyzer, ReachabilityTester, CalculationType
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation, PillowWriter
 from matplotlib.patches import Rectangle
@@ -25,24 +23,27 @@ def test():
 
 def test1():
     analyzer = setup_analyzer('Unicycle_NL', 'natural_none_default')
+    # analyzer = setup_analyzer('DoubleIntegrator', 'constraint_default_more_data_5hz')
 
     print("\nCreating interactive tester...")
     tester = ReachabilityTester(analyzer)
-    
+
     print("\n" + "=" * 20 + " Initial State " + "=" * 20)
     print(tester.horizons[0])
     t = 0
     while t<10:
-
-        tester.concrete(t,t+1)
-        # tester.concrete(t,t+3)
-        # tester.concrete(t,t+4)
-        # tester.concrete(t,t+5)
-        # tester.concrete(t,t+6)
-        # tester.concrete(t,t+7)
-        # tester.concrete(t,t+8)
-        # tester.concrete(t,t+9)
-        tester.real_state_empirical(t,t+1)
+        print(f"At t={t} starting the calculations")
+        print(tester.symbolic(t,t+1))
+        print(tester.symbolic(t,t+2))
+        print(tester.symbolic(t,t+3))
+        print(tester.symbolic(t,t+4))
+        print(tester.symbolic(t,t+5))
+        print(tester.symbolic(t,t+6))
+        print(tester.symbolic(t,t+7))
+        print(tester.symbolic(t,t+8))
+        print(tester.symbolic(t,t+9))
+        print(tester.symbolic(t,t+10))
+        # tester.real_state_empirical(t,t+1)
         # tester.horizons[t].list_calculations()
 
         t+=1
