@@ -17,13 +17,13 @@ class StateEstimator:
         initial_std = (initial_bounds[:, 1] - initial_bounds[:, 0]) / 6.0
         self.P = np.diag(initial_std ** 2)
 
-        # Process noise covariance: Q
+        # Process noise covariance
         self.Q = np.eye(n_states) * (process_noise_std ** 2)
 
-        # Measurement noise covariance: R
+        # Measurement noise covariance
         self.R = np.eye(n_states) * (measurement_noise_std ** 2)
 
-        # Measurement matrix (observe full state)
+        # Measurement matrix
         self.H = np.eye(n_states)
 
 
@@ -44,23 +44,19 @@ class StateEstimator:
     def update(self, measurement: np.ndarray):
         """
         Kalman Filter update step.
-        Fuses noisy measurement with prediction.
         """
         z = measurement.flatten()
 
-        # Innovation (residual): y = z - H*x
         y = z - self.H @ self.x
 
-        # Innovation covariance: S = H*P*H' + R
         S = self.H @ self.P @ self.H.T + self.R
 
-        # Kalman gain: K = P*H' * inv(S)
+        # Kalman gain
         K = self.P @ self.H.T @ np.linalg.inv(S)
 
-        # Update state: x = x + K*y
+        # Update state
         self.x = self.x + K @ y
-
-        # Update covariance: P = (I - K*H)*P
+        # Update covariance
         I = np.eye(len(self.x))
         self.P = (I - K @ self.H) @ self.P
 
@@ -69,7 +65,7 @@ class StateEstimator:
         self.bounds = self._covariance_to_bounds()
 
     def _covariance_to_bounds(self, n_sigma: float = 3.0):
-        """Convert covariance to bounds (3-sigma)."""
+        """Convert covariance to bounds (3 sigma)."""
         std_devs = np.sqrt(np.diag(self.P))
         lower = self.x - n_sigma * std_devs
         upper = self.x + n_sigma * std_devs
@@ -109,15 +105,13 @@ class LinearKalmanEstimator(StateEstimator):
         n_controls = B.shape[1]
 
         # Store system matrices
-        self.A = A  # (n_states x n_states)
-        self.B = B  # (n_states x n_controls)
+        self.A = A
+        self.B = B
 
 
     def predict(self, dynamics_fn: Callable, control_input: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
         Kalman Filter prediction step.
-
-        Note: We ignore dynamics_fn and use the linear model directly!
         """
         # Convert control to numpy if needed
         if isinstance(control_input, torch.Tensor):
@@ -129,11 +123,9 @@ class LinearKalmanEstimator(StateEstimator):
 
         print(f'DEBUG: u is {u.shape} \n B is {self.B.shape}')
 
-        # Ensure u is a column vector for matrix multiplication
-        u = u.reshape(-1, 1)  # Shape: (n_controls, 1)
+        u = u.reshape(-1, 1)
 
-        # Ensure x is a column vector
-        x = self.x.reshape(-1, 1)  # Shape: (n_states, 1)
+        x = self.x.reshape(-1, 1)  #
 
         # Predict state: x = A*x + B*u
         x_pred = self.A @ x + self.B @ u
@@ -175,7 +167,7 @@ class ExtendedKalmanEstimator(StateEstimator):
         return np.array([x_next, y_next, theta_next])
 
     def jacobian_F(self, x: np.ndarray, u: np.ndarray) -> np.ndarray:
-        """Jacobian of dynamics "f" with respect to state "x" """
+        """Jacobian of dynamics "f" wrt state "x" """
         theta = x[2]
         return np.array([
             [1, 0, -self.dt * self.v * np.sin(theta)],

@@ -6,9 +6,6 @@ Use with Double Integrator or Unicycle
 
 import numpy as np
 import torch
-import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
-from matplotlib.animation import FuncAnimation, PillowWriter
 from ast import literal_eval
 from itertools import product
 from copy import deepcopy
@@ -62,7 +59,7 @@ class ReachableSetHorizon:
                     parent_id: Optional[int] = None, origin_timestep: int = 0,
                     computation_time: float = 0.0, step_size: int = 1,
                     num_samples: Optional[int] = None, notes: str = "",
-                    real_state: Optional[np.ndarray] = None):  # ADD THIS PARAMETER
+                    real_state: Optional[np.ndarray] = None):
 
 
         # Store calculation metadata
@@ -77,7 +74,7 @@ class ReachableSetHorizon:
             'notes': notes
         }
 
-        # ADD THIS BLOCK - Store real_state if provided (for empirical with state tracking)
+        # Store real_state if provided (for empirical with state tracking)
         if real_state is not None:
             self.calculations[self.calc_counter]['real_state'] = real_state.copy()
 
