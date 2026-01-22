@@ -17,7 +17,7 @@ import nfl_veripy.dynamics as dynamics
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import *
 import cl_systems
-
+# from nfl_robustness_training.src import cl_systems
 from utils.nn import load_controller
 from utils.robust_training_utils import ReachableSet
 from utils.robust_training_utils import Analyzer
@@ -27,6 +27,7 @@ from state_estimator import LinearKalmanEstimator, ExtendedKalmanEstimator
 class CalculationType(Enum):
     CONCRETE = "concrete"
     SYMBOLIC = "symbolic"
+    SAMPLED = "sampled"
     EMPIRICAL = "empirical"
 
 
@@ -269,7 +270,8 @@ class ReachabilityTester:
                 step_size=1,  # Each iteration is a single step
                 notes=f'Concrete step {step+1}/{num_steps} from t={start_timestep}'
             )
-            print("right after add calc")
+            print(f"  Step {step+1}/{num_steps} to t={current_timestep} done in {t_elapsed:.4f}s, vol={np.prod(bounds[:, 1] - bounds[:, 0]):.6f}")
+
 
             # Update parent reference for next iteration
             current_parent_timestep = current_timestep
@@ -281,78 +283,168 @@ class ReachabilityTester:
 
         return t_elapsed
 
-    # def empirical(self, start: int, end: int, num_samples: int = 10000):
-    #     """
-    #     Use dynamics to calculate actual reachset
-    #     Args: start timestep, end timestep
-    #         num_samples: Number of trajectories to sample
-    #     """
+    def sampled_bounds(self, start_timestep: int, end: Optional[int] = None, num_samples: int = 10000):
+        """
+        Use dynamics to calculate actual reachset with step-by-step propagation.
+        Args:
+            start_timestep: Starting timestep
+            end: Target timestep (if None, defaults to start_timestep + 1)
+            num_samples: Number of trajectories to sample
+        """
+        # Get parent horizon
+        if start_timestep not in self.horizons:
+            print(f"Error: No horizon exists at timestep {start_timestep}")
+            return False
 
-    #     # Get parent horizon
-    #     if start not in self.horizons:
-    #         print(f"Error: No horizon exists at timestep {start}")
-    #         return False
+        # Set end timestep
+        if end is None:
+            end = start_timestep + 1
 
-    #     parent_horizon = self.horizons[start]
+        num_steps = end - start_timestep
+        if num_steps <= 0:
+            print(f"Error: Invalid step count (start={start_timestep}, end={end})")
+            return False
 
-    #     # Get tightest bounds from parent horizon
-    #     init_bounds = parent_horizon.get_tight_bound()
-    #     if init_bounds is None:
-    #         print(f"Error: No bounds available at timestep {start}")
-    #         return False
+        # Get tightest bounds from parent horizon
+        parent_horizon = self.horizons[start_timestep]
+        init_bounds = parent_horizon.get_tight_bound()
+        if init_bounds is None:
+            print(f"Error: No bounds available at timestep {start_timestep}")
+            return False
 
-    #     # Create horizon at target timestep if it doesn't exist
-    #     if end not in self.horizons:
-    #         self.horizons[end] = ReachableSetHorizon(end, device=self.analyzer.device)
+        num_states = init_bounds.shape[0]
 
-    #     num_states = init_bounds.shape[0]
+        # Track total computation time
+        total_time = 0.0
 
-    #     t_start = time.time()
+        print("=" * 20 + " Sampled Bounds " + "=" * 20)
+        print(f"Starting sampled propagation: t={start_timestep} -> t={end} ({num_steps} steps)")
+        print(f"Using {num_samples} samples")
 
-    #     np.random.seed(None)
-    #     x0 = np.random.uniform(
-    #         low=init_bounds[:, 0],
-    #         high=init_bounds[:, 1],
-    #         size=(num_samples, num_states)
-    #     )
-    #     xt = x0
-    #     for step in range(start, end):
-    #         u_nn = self.analyzer.cl_system.dynamics.control_nn(
-    #             xt, self.analyzer.cl_system.controller.cpu()
-    #         )
-    #         xt1 = self.analyzer.cl_system.dynamics.dynamics_step(xt, u_nn)
-    #         xt = xt1
+        # Initialize samples from parent bounds
+        np.random.seed(None)
+        xt = np.random.uniform(
+            low=init_bounds[:, 0],
+            high=init_bounds[:, 1],
+            size=(num_samples, num_states)
+        )
 
-    #     # Compute bounds
-    #     empirical_bounds = np.stack([
-    #         np.min(xt, axis=0),
-    #         np.max(xt, axis=0)
-    #     ], axis = 1)
+        # Loop through each timestep
+        for step in range(num_steps):
+            current_timestep = start_timestep + step + 1
 
-    #     t_elapsed = time.time() - t_start
+            # Create horizon at current timestep if it doesn't exist
+            if current_timestep not in self.horizons:
+                self.horizons[current_timestep] = ReachableSetHorizon(current_timestep, device=self.analyzer.device)
 
+            # Propagate samples one step
+            t_start = time.time()
 
-    #     # Add calculation to new horizon
-    #     self.horizons[end].add_calculation(
-    #         bounds=empirical_bounds,
-    #         calc_type=CalculationType.EMPIRICAL,
-    #         origin_timestep=end,  # Empirical starts new origin
-    #         computation_time=t_elapsed,
-    #         step_size=end - start,
-    #         num_samples=num_samples,
-    #         notes=f'Empirical from t={start}, {num_samples} samples'
-    #     )
+            u_nn = self.analyzer.cl_system.dynamics.control_nn(
+                xt, self.analyzer.cl_system.controller.cpu()
+            )
+            xt1 = self.analyzer.cl_system.dynamics.dynamics_step(xt, u_nn)
+            xt = xt1
 
-    #     # Print info
-    #     print("=" * 20 + " Empirical " + "=" * 20)
-    #     print(f"  From t={start} to t={end}")
-    #     print(f"  Samples: {num_samples}")
-    #     print(f"  Computed in {t_elapsed:.4f}s")
-    #     print(f"  Volume: {np.prod(empirical_bounds[:, 1] - empirical_bounds[:, 0]):.6f}")
-    #     print(f"  Tightest volume: {self.horizons[end].get_tight_volume():.6f}")
+            t_elapsed = time.time() - t_start
 
 
-    #     return t_elapsed
+            # Compute bounds from current samples
+            sampled_bounds = np.stack([
+                np.min(xt, axis=0),
+                np.max(xt, axis=0)
+            ], axis=1)
+
+            # Add calculation to current horizon
+            self.horizons[current_timestep].add_calculation(
+                bounds=sampled_bounds,
+                calc_type=CalculationType.SAMPLED,
+                origin_timestep=start_timestep,
+                computation_time=t_elapsed,
+                step_size=step + 1,  # Cumulative steps from start
+                num_samples=num_samples,
+                notes=f'Sampled step {step+1}/{num_steps} from t={start_timestep}'
+            )
+
+        print(f"Sampled propagation of {num_steps} steps: \n"
+            f"total time={total_time:.4f}s\n"
+            f"bounds= {sampled_bounds}\n"
+            f"final vol @t={current_timestep}: {np.prod(sampled_bounds[:, 1] - sampled_bounds[:, 0]):.6f}\n")
+
+        return total_time
+
+    def sampled_bounds2(self, start: int, end: int, num_samples: int = 10000):
+        """
+        Use dynamics to calculate actual reachset
+        Args: start timestep, end timestep
+            num_samples: Number of trajectories to sample
+        """
+
+        # Get parent horizon
+        if start not in self.horizons:
+            print(f"Error: No horizon exists at timestep {start}")
+            return False
+
+        parent_horizon = self.horizons[start]
+
+        # Get tightest bounds from parent horizon
+        init_bounds = parent_horizon.get_tight_bound()
+        if init_bounds is None:
+            print(f"Error: No bounds available at timestep {start}")
+            return False
+
+        # Create horizon at target timestep if it doesn't exist
+        if end not in self.horizons:
+            self.horizons[end] = ReachableSetHorizon(end, device=self.analyzer.device)
+
+        num_states = init_bounds.shape[0]
+
+        t_start = time.time()
+
+        np.random.seed(None)
+        x0 = np.random.uniform(
+            low=init_bounds[:, 0],
+            high=init_bounds[:, 1],
+            size=(num_samples, num_states)
+        )
+        xt = x0
+        for step in range(start, end):
+            u_nn = self.analyzer.cl_system.dynamics.control_nn(
+                xt, self.analyzer.cl_system.controller.cpu()
+            )
+            xt1 = self.analyzer.cl_system.dynamics.dynamics_step(xt, u_nn)
+            xt = xt1
+
+        # Compute bounds
+        empirical_bounds = np.stack([
+            np.min(xt, axis=0),
+            np.max(xt, axis=0)
+        ], axis = 1)
+
+        t_elapsed = time.time() - t_start
+
+
+        # Add calculation to new horizon
+        self.horizons[end].add_calculation(
+            bounds=empirical_bounds,
+            calc_type=CalculationType.EMPIRICAL,
+            origin_timestep=end,  # Empirical starts new origin
+            computation_time=t_elapsed,
+            step_size=end - start,
+            num_samples=num_samples,
+            notes=f'Empirical from t={start}, {num_samples} samples'
+        )
+
+        # Print info
+        print("=" * 20 + " Sampled Bounds " + "=" * 20)
+        print(f"  From t={start} to t={end}")
+        print(f"  Samples: {num_samples}")
+        print(f"  Computed in {t_elapsed:.4f}s")
+        print(f"  Volume: {np.prod(empirical_bounds[:, 1] - empirical_bounds[:, 0]):.6f}")
+        print(f"  Tightest volume: {self.horizons[end].get_tight_volume():.6f}\n")
+
+
+        return t_elapsed
 
     def real_state_empirical(self, start: int, end: int):
         """
@@ -422,7 +514,6 @@ class ReachabilityTester:
 
             # KF prediction (uses linear A, B matrices)
             predicted_state, predicted_bounds = self.estimator.predict(
-                dynamics_fn= None,
                 control_input=u_nn_est
             )
 

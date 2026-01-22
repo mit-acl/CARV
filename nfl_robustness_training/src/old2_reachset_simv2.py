@@ -1,6 +1,3 @@
-"""
-Reachable Set Simulator - Corrected Version
-"""
 
 import numpy as np
 import torch

@@ -1,5 +1,5 @@
 
-from clean_integrated_sim import setup_analyzer, ReachabilityTester, CalculationType
+from REAL_integrated_sim import setup_analyzer, ReachabilityTester, CalculationType
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation, PillowWriter
 from matplotlib.patches import Rectangle
@@ -54,7 +54,9 @@ def animate():
     print("CREATING ANIMATION")
     print("=" * 80)
 
-    analyzer = setup_analyzer('Unicycle_NL', 'natural_none_default')
+    # analyzer = setup_analyzer('Unicycle_NL', 'natural_none_default')
+    analyzer = setup_analyzer('DoubleIntegrator', 'constraint_default_more_data_5hz')
+
 
     # Create tester without dynamic plot (we'll save frames instead)
     tester = ReachabilityTester(analyzer)
