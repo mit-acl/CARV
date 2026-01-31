@@ -6,18 +6,16 @@ Use with Double Integrator or Unicycle
 
 import numpy as np
 import torch
-from ast import literal_eval
 from itertools import product
-from copy import deepcopy
 import time
-from typing import Dict, List, Tuple, Optional
+
 from enum import Enum
 import nfl_veripy.dynamics as dynamics
 
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import *
 import cl_systems
-# from nfl_robustness_training.src import cl_systems
+
 from utils.nn import load_controller
 from utils.robust_training_utils import ReachableSet
 from utils.robust_training_utils import Analyzer
@@ -30,6 +28,29 @@ class CalculationType(Enum):
     SAMPLED = "sampled"
     EMPIRICAL = "empirical"
 
+class Obstacles:
+    """
+    State obstacles
+    """
+    def __init__(self, obstacle_list: List[np.ndarray]):
+        self.obstacle_list = obstacle_list
+
+    def check_collision(self, state: np.ndarray):
+        """ Check if state collides with any obstacle"""
+        if self.obstacle_list is None:
+            return None
+
+        collisions = []
+
+        for obs in self.obstacle_list:
+            # Check for overlap in all dimensions
+            if np.all(state[:, 0] <= obs[:, 1]) and np.all(state[:, 1] >= obs[:, 0]):
+                collisions.append(obs)
+
+        if len(collisions) > 0:
+            return collisions
+        else:
+            return None
 
 class ReachableSetHorizon:
     """
@@ -132,13 +153,16 @@ class ReachabilityTester:
     """
     Reachability calculations using ReachableSetHorizon.
     """
-    def __init__(self, analyzer, process_noise_std=0.01, measurement_noise_std=0.05):
+    def __init__(self, analyzer, obstacles: Obstacles | None = None, process_noise_std=0.01, measurement_noise_std=0.05):
         self.analyzer = analyzer
+
+        if obstacles is None:
+            self.obstacles = Obstacles(None)
+        else:
+            self.obstacles = obstacles
 
         # Track horizons by timestep
         self.horizons: Dict[int, ReachableSetHorizon] = {}
-
-        self.counter = 0
 
         # Initialize horizon at t=0
         init_bounds = analyzer.reachable_sets[0].full_set.cpu().numpy()
@@ -273,15 +297,27 @@ class ReachabilityTester:
             print(f"  Step {step+1}/{num_steps} to t={current_timestep} done in {t_elapsed:.4f}s, vol={np.prod(bounds[:, 1] - bounds[:, 0]):.6f}")
 
 
+            # Check for collisions with obstacles
+            collisions = self.obstacles.check_collision(bounds)
+            if collisions is not None:
+                # Collision detected, stop propagation
+                print(f" Warning: Collision detected at t={current_timestep} with obstacles!\n"
+                    f" Stopping concrete propagation.\n"
+                    f" Bounds: {bounds}\n"
+                    f" Obstacles: {collisions}\n")
+                return total_time # Return time up to collisionq
+
             # Update parent reference for next iteration
             current_parent_timestep = current_timestep
+
+
 
         print(f"Concrete propagation of {num_steps} steps: \n"
               f"total time={total_time:.4f}s\n"
               f"bounds= {bounds}\n"
               f"final vol @t={current_timestep}: {np.prod(bounds[:, 1] - bounds[:, 0]):.6f}\n")
 
-        return t_elapsed
+        return total_time
 
     def sampled_bounds(self, start_timestep: int, end: Optional[int] = None, num_samples: int = 10000):
         """
@@ -329,7 +365,7 @@ class ReachabilityTester:
             size=(num_samples, num_states)
         )
 
-        # Loop through each timestep
+        # Loop through each timestep of the calculation duration
         for step in range(num_steps):
             current_timestep = start_timestep + step + 1
 
@@ -372,79 +408,6 @@ class ReachabilityTester:
             f"final vol @t={current_timestep}: {np.prod(sampled_bounds[:, 1] - sampled_bounds[:, 0]):.6f}\n")
 
         return total_time
-
-    def sampled_bounds2(self, start: int, end: int, num_samples: int = 10000):
-        """
-        Use dynamics to calculate actual reachset
-        Args: start timestep, end timestep
-            num_samples: Number of trajectories to sample
-        """
-
-        # Get parent horizon
-        if start not in self.horizons:
-            print(f"Error: No horizon exists at timestep {start}")
-            return False
-
-        parent_horizon = self.horizons[start]
-
-        # Get tightest bounds from parent horizon
-        init_bounds = parent_horizon.get_tight_bound()
-        if init_bounds is None:
-            print(f"Error: No bounds available at timestep {start}")
-            return False
-
-        # Create horizon at target timestep if it doesn't exist
-        if end not in self.horizons:
-            self.horizons[end] = ReachableSetHorizon(end, device=self.analyzer.device)
-
-        num_states = init_bounds.shape[0]
-
-        t_start = time.time()
-
-        np.random.seed(None)
-        x0 = np.random.uniform(
-            low=init_bounds[:, 0],
-            high=init_bounds[:, 1],
-            size=(num_samples, num_states)
-        )
-        xt = x0
-        for step in range(start, end):
-            u_nn = self.analyzer.cl_system.dynamics.control_nn(
-                xt, self.analyzer.cl_system.controller.cpu()
-            )
-            xt1 = self.analyzer.cl_system.dynamics.dynamics_step(xt, u_nn)
-            xt = xt1
-
-        # Compute bounds
-        empirical_bounds = np.stack([
-            np.min(xt, axis=0),
-            np.max(xt, axis=0)
-        ], axis = 1)
-
-        t_elapsed = time.time() - t_start
-
-
-        # Add calculation to new horizon
-        self.horizons[end].add_calculation(
-            bounds=empirical_bounds,
-            calc_type=CalculationType.EMPIRICAL,
-            origin_timestep=end,  # Empirical starts new origin
-            computation_time=t_elapsed,
-            step_size=end - start,
-            num_samples=num_samples,
-            notes=f'Empirical from t={start}, {num_samples} samples'
-        )
-
-        # Print info
-        print("=" * 20 + " Sampled Bounds " + "=" * 20)
-        print(f"  From t={start} to t={end}")
-        print(f"  Samples: {num_samples}")
-        print(f"  Computed in {t_elapsed:.4f}s")
-        print(f"  Volume: {np.prod(empirical_bounds[:, 1] - empirical_bounds[:, 0]):.6f}")
-        print(f"  Tightest volume: {self.horizons[end].get_tight_volume():.6f}\n")
-
-
-        return t_elapsed
 
     def real_state_empirical(self, start: int, end: int):
         """
@@ -558,13 +521,20 @@ class ReachabilityTester:
             real_state=real_state  # Store the true state
         )
 
+        collisions = self.obstacles.check_collision(kf_bounds)
+        if collisions is not None:
+            # Collision detected, stop propagation
+            print(f" Warning: Collision with Robot detected at t={end} with obstacles!\n"
+                f" Bounds: {kf_bounds}\n"
+                f" Obstacles: {collisions}\n")
 
-        print(f"  From t={start} to t={end}")
-        print(f"  True State: {real_state}")
-        print(f"  KF Estimate: {estimated_state}")
-        print(f"  Estimation Error: {np.linalg.norm(real_state - estimated_state):.6f}")
-        print(f"  Bounds Volume: {np.prod(kf_bounds[:, 1] - kf_bounds[:, 0]):.6f}")
-        print(f"  Tightest overlapped volume at t = {end}: {self.horizons[end].get_tight_volume():.6f}\n")
+        else:
+            print(f"  From t={start} to t={end}")
+            print(f"  True State: {real_state}")
+            print(f"  KF Estimate: {estimated_state}")
+            print(f"  Estimation Error: {np.linalg.norm(real_state - estimated_state):.6f}")
+            print(f"  Bounds Volume: {np.prod(kf_bounds[:, 1] - kf_bounds[:, 0]):.6f}")
+            print(f"  Tightest overlapped volume at t = {end}: {self.horizons[end].get_tight_volume():.6f}\n")
 
         return t_elapsed
 
@@ -632,15 +602,23 @@ class ReachabilityTester:
             notes=f"Symbolic {k}-step from t={start}"
         )
 
+        # Check for collisions with obstacles
+        collisions = self.obstacles.check_collision(bounds)
+        if collisions is not None:
+            # Collision detected
+            print(f" Warning: Collision detected at t={end} with obstacles!\n"
+                f" Bounds: {bounds}\n"
+                f" Obstacles: {collisions}\n")
+
         # Print info
         print("=" * 20 + " Symbolic " + "=" * 20)
         print(f"  Parent Volume: {parent_horizon.get_tight_volume()}")
-        # print(f"  From t={start} to t={end} (k={k} steps)")
-        # print(f"  Computed in {t_elapsed:.4f}s")
+        print(f"  From t={start} to t={end} (k={k} steps)")
+        print(f"  Computed in {t_elapsed:.4f}s")
         print(f"  Volume: {np.prod(bounds[:, 1] - bounds[:, 0]):.6f}")
-        # print(f"  Tightest volume: {self.horizons[end].get_tight_volume():.6f}")
+        print(f"  Tightest volume: {self.horizons[end].get_tight_volume():.6f}")
 
-        return t_elapsed
+        return t_elapsed, bounds
 
 def setup_analyzer(system_type='DoubleIntegrator', controller_name='constraint_default_more_data_5hz', init_range=None):
     """Setup analyzer for simulation testing"""
