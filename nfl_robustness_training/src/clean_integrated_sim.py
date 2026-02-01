@@ -12,13 +12,18 @@ from copy import deepcopy
 import time
 from typing import Dict, List, Tuple, Optional
 from enum import Enum
+import nfl_veripy.analyzers as analyzers
+import nfl_veripy.constraints as constraints
 import nfl_veripy.dynamics as dynamics
+import nfl_veripy.partitioners as partitioners
+import nfl_veripy.propagators as propagators
+from nfl_veripy.utils.nn import load_controller as nfl_load_controller
 
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import *
 import cl_systems
 
-from utils.nn import load_controller
+from utils.nn import load_controller, controller2sequential
 from utils.robust_training_utils import ReachableSet
 from utils.robust_training_utils import Analyzer
 from state_estimator import LinearKalmanEstimator, ExtendedKalmanEstimator
@@ -28,6 +33,7 @@ class CalculationType(Enum):
     CONCRETE = "concrete"
     SYMBOLIC = "symbolic"
     EMPIRICAL = "empirical"
+    BACKWARD = "backward"
 
 
 class ReachableSetHorizon:
@@ -422,7 +428,7 @@ class ReachabilityTester:
 
             # KF prediction (uses linear A, B matrices)
             predicted_state, predicted_bounds = self.estimator.predict(
-                dynamics_fn= None,
+                dynamics_fn= None, # no longer an argument?
                 control_input=u_nn_est
             )
 
@@ -551,6 +557,145 @@ class ReachabilityTester:
 
         return t_elapsed
 
+    def backward(self, target_timestep: int, start_timestep: int, 
+             num_partitions: Optional[List[int]] = None, 
+             overapprox: bool = True):
+        """
+        Compute backward reachable set (backprojection set)
+        
+        Args:
+            target_timestep: The timestep with the target set (higher number)
+            start_timestep: The timestep to backproject to (lower number)
+            num_partitions: Number of partitions for each dimension (e.g., [4, 4])
+            overapprox: Whether to use overapproximation
+        
+        Returns: computation time
+        """
+        
+        # Validate inputs
+        if target_timestep <= start_timestep:
+            print(f"Error: target_timestep ({target_timestep}) must be > start_timestep ({start_timestep})")
+            return False
+            
+        if target_timestep not in self.horizons:
+            print(f"Error: No horizon exists at target timestep {target_timestep}")
+            return False
+        
+        # Get target horizon and its bounds
+        target_horizon = self.horizons[target_timestep]
+        target_bounds = target_horizon.get_tight_bound()
+        
+        if target_bounds is None:
+            print(f"Error: No bounds available at timestep {target_timestep}")
+            return False
+        
+        # Create horizon at start timestep if it doesn't exist
+        if start_timestep not in self.horizons:
+            self.horizons[start_timestep] = ReachableSetHorizon(start_timestep, device=self.analyzer.device)
+        
+        num_steps = target_timestep - start_timestep
+        
+        print("=" * 20 + " Backward " + "=" * 20)
+        print(f"Starting backward propagation: t={target_timestep} -> t={start_timestep} ({num_steps} steps back)")
+        
+        # Set default partitions if not provided
+        if num_partitions is None:
+            num_states = target_bounds.shape[0]
+            num_partitions = [4] * num_states
+        
+        t_start = time.time()
+        
+        # Perform backward reachability using empirical sampling
+        backprojection_bounds = self._compute_backprojection_empirical(
+            target_bounds, 
+            target_timestep, 
+            start_timestep,
+            num_samples=10000
+        )
+        
+        t_elapsed = time.time() - t_start
+        
+        # Add calculation to start horizon
+        self.horizons[start_timestep].add_calculation(
+            bounds=backprojection_bounds,
+            calc_type=CalculationType.BACKWARD,
+            origin_timestep=target_timestep,
+            computation_time=t_elapsed,
+            step_size=num_steps,
+            notes=f"Backward {num_steps}-step from t={target_timestep}"
+        )
+        
+        # Print info
+        print(f"  From t={target_timestep} to t={start_timestep} (k={num_steps} steps)")
+        print(f"  Target volume: {target_horizon.get_tight_volume():.6f}")
+        print(f"  Computed in {t_elapsed:.4f}s")
+        print(f"  Backprojection volume: {np.prod(backprojection_bounds[:, 1] - backprojection_bounds[:, 0]):.6f}")
+        print(f"  Tightest volume at t={start_timestep}: {self.horizons[start_timestep].get_tight_volume():.6f}\n")
+        
+        return t_elapsed
+
+    def _compute_backprojection_empirical(self, target_bounds: np.ndarray, 
+                                        target_t: int, start_t: int,
+                                        num_samples: int = 10000) -> np.ndarray:
+        """
+        Empirically compute backprojection set by sampling and checking which
+        initial states reach the target set.
+        
+        This is a Monte Carlo approach to approximate the backprojection set.
+        """
+        num_states = target_bounds.shape[0]
+        
+        # Sample broadly from state space (we need a reasonable initial search space)
+        # Use the initial set as a reference, but expand it
+        init_horizon = self.horizons[0]
+        init_bounds = init_horizon.get_tight_bound()
+        
+        # Expand search space by 50% in each direction
+        search_bounds = init_bounds.copy()
+        ranges = search_bounds[:, 1] - search_bounds[:, 0]
+        search_bounds[:, 0] -= ranges * 0.5
+        search_bounds[:, 1] += ranges * 0.5
+        
+        # Sample initial states
+        np.random.seed(42)
+        x0_samples = np.random.uniform(
+            low=search_bounds[:, 0],
+            high=search_bounds[:, 1],
+            size=(num_samples, num_states)
+        )
+        
+        # Propagate forward to target timestep
+        xt = x0_samples.copy()
+        for step in range(start_t, target_t):
+            u_nn = self.analyzer.cl_system.dynamics.control_nn(
+                xt, self.analyzer.cl_system.controller.cpu()
+            )
+            xt1 = self.analyzer.cl_system.dynamics.dynamics_step(xt, u_nn)
+            xt = xt1
+        
+        # Check which samples ended up in the target set
+        in_target = np.all(
+            (xt >= target_bounds[:, 0]) & (xt <= target_bounds[:, 1]),
+            axis=1
+        )
+        
+        if np.sum(in_target) == 0:
+            print(f"  Warning: No samples reached target set. Using expanded search.")
+            # If no samples reached, return expanded initial bounds
+            return search_bounds
+        
+        # Compute bounds of states that reached the target
+        x0_in_backprojection = x0_samples[in_target]
+        
+        backprojection_bounds = np.stack([
+            np.min(x0_in_backprojection, axis=0),
+            np.max(x0_in_backprojection, axis=0)
+        ], axis=1)
+        
+        print(f"  {np.sum(in_target)}/{num_samples} samples reached target set")
+        
+        return backprojection_bounds
+
 def setup_analyzer(system_type='DoubleIntegrator', controller_name='constraint_default_more_data_5hz', init_range=None):
     """Setup analyzer for simulation testing"""
     import sys, os
@@ -616,5 +761,124 @@ def setup_analyzer(system_type='DoubleIntegrator', controller_name='constraint_d
 
     print(f"  Created analyzer for {system_type}")
     print(f"  Time horizon: {time_horizon}, Max symbolic steps: {max_diff}")
+
+    return analyzer
+
+#TODO: maybe merge this with setup_analyzer above?
+def setup_backward_analyzer(system_type='DoubleIntegrator', controller_name='constraint_default_more_data_5hz', init_range=None, partitioner=None, propogator=None):
+    import sys, os
+    sys.path.insert(0, os.path.join(os.getcwd(), 'nfl_robustness_training/src'))
+
+    device = 'cpu'
+
+    if system_type == 'DoubleIntegrator':
+        controller = load_controller('DoubleIntegrator', controller_name, False, device=device)
+        # controller = nfl_load_controller('DoubleIntegrator', controller_name)
+        ol_dyn = dynamics.DoubleIntegrator(dt=0.2)
+        ol_dyn.At_torch = ol_dyn.At_torch.to(device)
+        ol_dyn.bt_torch = ol_dyn.bt_torch.to(device)
+        ol_dyn.ct_torch = ol_dyn.ct_torch.to(device)
+        cl_dyn = cl_systems.ClosedLoopDynamics(controller, ol_dyn, device=device)
+
+        # Use custom init_range if provided, otherwise use default
+        if init_range is None:
+            init_range = torch.tensor([[2.5, 3.0], [-0.25, 0.25]], device=device)
+        else:
+            # Convert numpy array to torch tensor if needed
+            if isinstance(init_range, np.ndarray):
+                init_range = torch.tensor(init_range, dtype=torch.float32, device=device)
+            elif isinstance(init_range, torch.Tensor):
+                init_range = init_range.to(device)
+            else:
+                init_range = torch.tensor(init_range, device=device)
+
+        time_horizon = 30
+        max_diff = 10
+
+    elif system_type == 'Unicycle_NL':
+        controller = load_controller('Unicycle_NL', controller_name, False, device=device)
+        # controller = nfl_load_controller('Unicycle_NL', controller_name)
+        ol_dyn = dynamics.Unicycle_NL(dt=0.2)
+        ol_dyn.At_torch = ol_dyn.At_torch.to(device)
+        ol_dyn.bt_torch = ol_dyn.bt_torch.to(device)
+        ol_dyn.ct_torch = ol_dyn.ct_torch.to(device)
+        cl_dyn = cl_systems.Unicycle_NL(controller, ol_dyn, device=device)
+
+        # Use custom init_range if provided, otherwise use default
+        if init_range is None:
+            init_range = torch.tensor([
+                [-9.55, -9.45],
+                [3.45, 3.55],
+                [-np.pi/24, np.pi/24]
+            ], device=device)
+        else:
+            # Convert numpy array to torch tensor if needed
+            if isinstance(init_range, np.ndarray):
+                init_range = torch.tensor(init_range, dtype=torch.float32, device=device)
+            elif isinstance(init_range, torch.Tensor):
+                init_range = init_range.to(device)
+            else:
+                init_range = torch.tensor(init_range, device=device)
+
+        time_horizon = 52
+        max_diff = 10
+
+    # # Temporary fix to make controller compatible with CROWN:
+
+    # def make_crown_compatible(controller):
+    #     """
+    #     CROWN expects controller.module to be a Sequential.
+    #     This extracts the layers from a custom nn.Module and
+    #     rebuilds them as Sequential, then wraps in DataParallel.
+    #     """
+    #     # Unwrap DataParallel if already wrapped
+    #     base = controller.module if hasattr(controller, 'module') else controller
+
+    #     # If it's already Sequential, just wrap and return
+    #     if isinstance(base, torch.nn.Sequential):
+    #         return torch.nn.DataParallel(base)
+
+    #     # Otherwise, extract layers in order and rebuild as Sequential
+    #     # This works for any module that's just a stack of Linear + ReLU
+    #     layers = []
+    #     for name, module in base.named_modules():
+    #         if name == '':
+    #             continue  # skip the top-level module itself
+    #         if isinstance(module, (torch.nn.Linear, torch.nn.ReLU)):
+    #             layers.append(module)
+
+    #     # If we didn't find explicit ReLU modules (because forward() calls
+    #     # F.relu inline), we need to infer the structure from the Linear layers
+    #     if not any(isinstance(l, torch.nn.ReLU) for l in layers):
+    #         linear_layers = [m for m in layers if isinstance(m, torch.nn.Linear)]
+    #         layers = []
+    #         for i, linear in enumerate(linear_layers):
+    #             layers.append(linear)
+    #             # Add ReLU after every layer except the last one
+    #             if i < len(linear_layers) - 1:
+    #                 layers.append(torch.nn.ReLU())
+
+    #     seq = torch.nn.Sequential(*layers)
+    #     return torch.nn.DataParallel(seq)
+
+    # controller = make_crown_compatible(controller)
+    controller = controller2sequential(controller)
+    analyzer = analyzers.ClosedLoopBackwardAnalyzer(controller, ol_dyn)
+
+    if partitioner is not None:
+        analyzer.partitioner = partitioner
+    else:
+        print("Setting default partitioner")
+        analyzer.partitioner = {"type": "Uniform", "num_partitions": "[4, 4]"}
+        print(f"  Using default partitioner for {system_type}")
+
+    if propogator is not None:
+        analyzer.propagator = propogator
+    else:
+        print("Setting custom propagator")
+        analyzer.propagator = {"type": "CROWN", "boundary_type": "rectangle", "num_iterations": 1}
+        print(f"  Using custom propagator for {system_type}")
+
+    print(f"  Created backward analyzer for {system_type}")
 
     return analyzer
