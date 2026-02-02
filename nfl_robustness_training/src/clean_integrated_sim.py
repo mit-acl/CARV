@@ -137,8 +137,10 @@ class ReachabilityTester:
     """
     Reachability calculations using ReachableSetHorizon.
     """
-    def __init__(self, analyzer, process_noise_std=0.01, measurement_noise_std=0.05):
+    def __init__(self, analyzer, process_noise_std=0.01, measurement_noise_std=0.05,
+                 backward_analyzer=None):
         self.analyzer = analyzer
+        self.backward_analyzer = backward_analyzer
 
         # Track horizons by timestep
         self.horizons: Dict[int, ReachableSetHorizon] = {}
@@ -557,144 +559,89 @@ class ReachabilityTester:
 
         return t_elapsed
 
-    def backward(self, target_timestep: int, start_timestep: int, 
-             num_partitions: Optional[List[int]] = None, 
-             overapprox: bool = True):
+    def backward(self, final_state_range: np.ndarray, boundary_type: str = "rectangle", t_max: int = 5, overapprox: bool = True):
+        # TODO: integrate with horizons
         """
         Compute backward reachable set (backprojection set)
         
         Args:
-            target_timestep: The timestep with the target set (higher number)
-            start_timestep: The timestep to backproject to (lower number)
-            num_partitions: Number of partitions for each dimension (e.g., [4, 4])
-            overapprox: Whether to use overapproximation
+            final_state_range: The final state range to backproject to
+            boundary_type: The type of boundary (e.g., "rectangle", "ellipsoid")
         
         Returns: computation time
         """
+        target_set = constraints.state_range_to_constraint(final_state_range, boundary_type)
         
-        # Validate inputs
-        if target_timestep <= start_timestep:
-            print(f"Error: target_timestep ({target_timestep}) must be > start_timestep ({start_timestep})")
-            return False
-            
-        if target_timestep not in self.horizons:
-            print(f"Error: No horizon exists at target timestep {target_timestep}")
-            return False
-        
-        # Get target horizon and its bounds
-        target_horizon = self.horizons[target_timestep]
-        target_bounds = target_horizon.get_tight_bound()
-        
-        if target_bounds is None:
-            print(f"Error: No bounds available at timestep {target_timestep}")
-            return False
-        
-        # Create horizon at start timestep if it doesn't exist
-        if start_timestep not in self.horizons:
-            self.horizons[start_timestep] = ReachableSetHorizon(start_timestep, device=self.analyzer.device)
-        
-        num_steps = target_timestep - start_timestep
-        
-        print("=" * 20 + " Backward " + "=" * 20)
-        print(f"Starting backward propagation: t={target_timestep} -> t={start_timestep} ({num_steps} steps back)")
-        
-        # Set default partitions if not provided
-        if num_partitions is None:
-            num_states = target_bounds.shape[0]
-            num_partitions = [4] * num_states
-        
-        t_start = time.time()
-        
-        # Perform backward reachability using empirical sampling
-        backprojection_bounds = self._compute_backprojection_empirical(
-            target_bounds, 
-            target_timestep, 
-            start_timestep,
-            num_samples=10000
+        backprojection_sets, analyzer_info = self.backward_analyzer.get_backprojection_set(
+            target_set,
+            t_max=t_max,
+            overapprox=overapprox
         )
-        
-        t_elapsed = time.time() - t_start
-        
-        # Add calculation to start horizon
-        self.horizons[start_timestep].add_calculation(
-            bounds=backprojection_bounds,
-            calc_type=CalculationType.BACKWARD,
-            origin_timestep=target_timestep,
-            computation_time=t_elapsed,
-            step_size=num_steps,
-            notes=f"Backward {num_steps}-step from t={target_timestep}"
-        )
-        
-        # Print info
-        print(f"  From t={target_timestep} to t={start_timestep} (k={num_steps} steps)")
-        print(f"  Target volume: {target_horizon.get_tight_volume():.6f}")
-        print(f"  Computed in {t_elapsed:.4f}s")
-        print(f"  Backprojection volume: {np.prod(backprojection_bounds[:, 1] - backprojection_bounds[:, 0]):.6f}")
-        print(f"  Tightest volume at t={start_timestep}: {self.horizons[start_timestep].get_tight_volume():.6f}\n")
-        
-        return t_elapsed
 
-    def _compute_backprojection_empirical(self, target_bounds: np.ndarray, 
-                                        target_t: int, start_t: int,
-                                        num_samples: int = 10000) -> np.ndarray:
-        """
-        Empirically compute backprojection set by sampling and checking which
-        initial states reach the target set.
+        print("DEBUG: backward reachablity complete")
+        return backprojection_sets, analyzer_info
+
+    # def _compute_backprojection_empirical(self, target_bounds: np.ndarray, 
+    #                                     target_t: int, start_t: int,
+    #                                     num_samples: int = 10000) -> np.ndarray:
+    #     """
+    #     Empirically compute backprojection set by sampling and checking which
+    #     initial states reach the target set.
         
-        This is a Monte Carlo approach to approximate the backprojection set.
-        """
-        num_states = target_bounds.shape[0]
+    #     This is a Monte Carlo approach to approximate the backprojection set.
+    #     """
+    #     num_states = target_bounds.shape[0]
         
-        # Sample broadly from state space (we need a reasonable initial search space)
-        # Use the initial set as a reference, but expand it
-        init_horizon = self.horizons[0]
-        init_bounds = init_horizon.get_tight_bound()
+    #     # Sample broadly from state space (we need a reasonable initial search space)
+    #     # Use the initial set as a reference, but expand it
+    #     init_horizon = self.horizons[0]
+    #     init_bounds = init_horizon.get_tight_bound()
         
-        # Expand search space by 50% in each direction
-        search_bounds = init_bounds.copy()
-        ranges = search_bounds[:, 1] - search_bounds[:, 0]
-        search_bounds[:, 0] -= ranges * 0.5
-        search_bounds[:, 1] += ranges * 0.5
+    #     # Expand search space by 50% in each direction
+    #     search_bounds = init_bounds.copy()
+    #     ranges = search_bounds[:, 1] - search_bounds[:, 0]
+    #     search_bounds[:, 0] -= ranges * 0.5
+    #     search_bounds[:, 1] += ranges * 0.5
         
-        # Sample initial states
-        np.random.seed(42)
-        x0_samples = np.random.uniform(
-            low=search_bounds[:, 0],
-            high=search_bounds[:, 1],
-            size=(num_samples, num_states)
-        )
+    #     # Sample initial states
+    #     np.random.seed(42)
+    #     x0_samples = np.random.uniform(
+    #         low=search_bounds[:, 0],
+    #         high=search_bounds[:, 1],
+    #         size=(num_samples, num_states)
+    #     )
         
-        # Propagate forward to target timestep
-        xt = x0_samples.copy()
-        for step in range(start_t, target_t):
-            u_nn = self.analyzer.cl_system.dynamics.control_nn(
-                xt, self.analyzer.cl_system.controller.cpu()
-            )
-            xt1 = self.analyzer.cl_system.dynamics.dynamics_step(xt, u_nn)
-            xt = xt1
+    #     # Propagate forward to target timestep
+    #     xt = x0_samples.copy()
+    #     for step in range(start_t, target_t):
+    #         u_nn = self.analyzer.cl_system.dynamics.control_nn(
+    #             xt, self.analyzer.cl_system.controller.cpu()
+    #         )
+    #         xt1 = self.analyzer.cl_system.dynamics.dynamics_step(xt, u_nn)
+    #         xt = xt1
         
-        # Check which samples ended up in the target set
-        in_target = np.all(
-            (xt >= target_bounds[:, 0]) & (xt <= target_bounds[:, 1]),
-            axis=1
-        )
+    #     # Check which samples ended up in the target set
+    #     in_target = np.all(
+    #         (xt >= target_bounds[:, 0]) & (xt <= target_bounds[:, 1]),
+    #         axis=1
+    #     )
         
-        if np.sum(in_target) == 0:
-            print(f"  Warning: No samples reached target set. Using expanded search.")
-            # If no samples reached, return expanded initial bounds
-            return search_bounds
+    #     if np.sum(in_target) == 0:
+    #         print(f"  Warning: No samples reached target set. Using expanded search.")
+    #         # If no samples reached, return expanded initial bounds
+    #         return search_bounds
         
-        # Compute bounds of states that reached the target
-        x0_in_backprojection = x0_samples[in_target]
+    #     # Compute bounds of states that reached the target
+    #     x0_in_backprojection = x0_samples[in_target]
         
-        backprojection_bounds = np.stack([
-            np.min(x0_in_backprojection, axis=0),
-            np.max(x0_in_backprojection, axis=0)
-        ], axis=1)
+    #     backprojection_bounds = np.stack([
+    #         np.min(x0_in_backprojection, axis=0),
+    #         np.max(x0_in_backprojection, axis=0)
+    #     ], axis=1)
         
-        print(f"  {np.sum(in_target)}/{num_samples} samples reached target set")
+    #     print(f"  {np.sum(in_target)}/{num_samples} samples reached target set")
         
-        return backprojection_bounds
+    #     return backprojection_bounds
 
 def setup_analyzer(system_type='DoubleIntegrator', controller_name='constraint_default_more_data_5hz', init_range=None):
     """Setup analyzer for simulation testing"""
