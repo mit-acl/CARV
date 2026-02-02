@@ -1,5 +1,5 @@
 
-from clean_integrated_sim import setup_analyzer, ReachabilityTester, CalculationType
+from clean_integrated_sim import setup_analyzer, setup_backward_analyzer, ReachabilityTester, CalculationType
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation, PillowWriter
 from matplotlib.patches import Rectangle
@@ -47,6 +47,134 @@ def test1():
         # tester.horizons[t].list_calculations()
 
         t+=1
+
+# def test_backward():
+#     """Test backward reachability with animation"""
+#     # analyzer = setup_analyzer('DoubleIntegrator', 'constraint_default_more_data_5hz')
+#     analyzer = setup_analyzer('DoubleIntegrator', 'constraint_default_more_data_5hz')
+#     backward_analyzer = setup_backward_analyzer('DoubleIntegrator', 'constraint_default_more_data_5hz')
+#     tester = ReachabilityTester(analyzer, backward_analyzer=backward_analyzer)
+#     final_state_range = np.array([[4.5, 5.0], [-0.25, 0.25]])
+#     tester.backward(final_state_range)
+#     # print("\nCreating tester with backward reachability...")
+#     # tester = ReachabilityTester(analyzer)
+
+#     # # Forward propagation to t=5
+#     # print("\n" + "=" * 20 + " Forward to t=5 " + "=" * 20)
+#     # for t in range(5):
+#     #     tester.concrete(t, t+1)
+#     #     tester.real_state_empirical(t, t+1)
+    
+#     # print("\n" + "=" * 20 + " Target Set at t=5 " + "=" * 20)
+#     # tester.horizons[5].list_calculations()
+    
+#     # # Backward propagation from t=5 to t=0, t=1, t=2, t=3, t=4
+#     # print("\n" + "=" * 20 + " Backward Propagation " + "=" * 20)
+#     # for start_t in [0, 1, 2, 3, 4]:
+#     #     tester.backward(target_timestep=5, start_timestep=start_t)
+#     #     tester.horizons[start_t].list_calculations()
+    
+#     # print("\n" + "=" * 20 + " Summary " + "=" * 20)
+#     # for t in range(6):
+#     #     print(f"t={t}: {tester.horizons[t]}")
+
+def test_backward():
+    """Test backward reachability with proper horizon integration"""
+    print("=" * 80)
+    print("TESTING BACKWARD REACHABILITY")
+    print("=" * 80)
+    
+    # Setup analyzers
+    analyzer = setup_analyzer('DoubleIntegrator', 'constraint_default_more_data_5hz')
+    backward_analyzer = setup_backward_analyzer('DoubleIntegrator', 'constraint_default_more_data_5hz')
+    
+    # Create tester with both analyzers
+    tester = ReachabilityTester(analyzer, backward_analyzer=backward_analyzer)
+    
+    print("\n" + "=" * 60)
+    print("PHASE 1: FORWARD PROPAGATION")
+    print("=" * 60)
+    
+    # Forward propagation to build up some timesteps
+    print("\nPropagating forward from t=0 to t=10...")
+    for t in range(10):
+        tester.concrete(t, t+1)
+        tester.real_state_empirical(t, t+1)
+        print(f"  t={t} → t={t+1}: tight vol = {tester.horizons[t+1].get_tight_volume():.6f}")
+    
+    print("\n" + "=" * 60)
+    print("PHASE 2: BACKWARD PROPAGATION")
+    print("=" * 60)
+    
+    # Test backward from t=10, going back 5 timesteps
+    start_timestep = 10
+    num_steps = 5
+    
+    print(f"\nBackward propagation: from t={start_timestep}, going back {num_steps} steps")
+    print(f"This should create backward sets at t={start_timestep - num_steps} to t={start_timestep - 1}")
+    
+    tester.backward(start_timestep=start_timestep, num_steps=num_steps)
+    
+    print("\n" + "=" * 60)
+    print("PHASE 3: VERIFY RESULTS")
+    print("=" * 60)
+    
+    # Check the results at each timestep
+    print(f"\nChecking timesteps {start_timestep - num_steps} to {start_timestep}:\n")
+    
+    for t in range(start_timestep - num_steps, start_timestep + 1):
+        if t in tester.horizons:
+            horizon = tester.horizons[t]
+            
+            # Count calculation types
+            concrete_count = sum(1 for c in horizon.calculations.values() 
+                               if c['calc_type'] == CalculationType.CONCRETE)
+            empirical_count = sum(1 for c in horizon.calculations.values() 
+                                if c['calc_type'] == CalculationType.EMPIRICAL)
+            backward_count = sum(1 for c in horizon.calculations.values() 
+                               if c['calc_type'] == CalculationType.BACKWARD)
+            
+            print(f"t={t}:")
+            print(f"  Concrete: {concrete_count}, Empirical: {empirical_count}, Backward: {backward_count}")
+            print(f"  Tight volume: {horizon.get_tight_volume():.6f}")
+            
+            # Show backward calculation details if present
+            for calc_id, calc_info in horizon.calculations.items():
+                if calc_info['calc_type'] == CalculationType.BACKWARD:
+                    print(f"    → Backward set: origin=t{calc_info['origin_timestep']}, "
+                          f"steps_to_target={calc_info['step_size']}, "
+                          f"volume={calc_info['volume']:.6f}")
+            print()
+    
+    print("=" * 60)
+    print("PHASE 4: DETAILED LISTINGS")
+    print("=" * 60)
+    
+    # Show detailed calculations for a few key timesteps
+    for t in [start_timestep - num_steps, start_timestep - 3, start_timestep - 1, start_timestep]:
+        if t in tester.horizons:
+            print(f"\n--- Detailed view of t={t} ---")
+            tester.horizons[t].list_calculations()
+    
+    print("\n" + "=" * 60)
+    print("TEST COMPLETE")
+    print("=" * 60)
+    
+    # Summary
+    print("\nSummary:")
+    print(f"  Forward timesteps: 0 to {start_timestep}")
+    print(f"  Backward from: t={start_timestep}")
+    print(f"  Backward steps: {num_steps}")
+    print(f"  Backward sets at: t={start_timestep - num_steps} to t={start_timestep - 1}")
+    
+    total_backward = sum(
+        1 for h in tester.horizons.values()
+        for c in h.calculations.values()
+        if c['calc_type'] == CalculationType.BACKWARD
+    )
+    print(f"  Total backward calculations: {total_backward}")
+    
+    return tester
 
 def animate():
     """Create animation of reachability propagation following test pattern"""
@@ -370,5 +498,9 @@ if __name__ == "__main__":
     import sys
     if len(sys.argv) > 1 and sys.argv[1] == '--animate':
         animate()
+    elif len(sys.argv) > 1 and sys.argv[1] == '--backward': 
+        test_backward()
+    elif len(sys.argv) > 1 and sys.argv[1] == '--animate-backward':  
+        animate_backward()                                         
     else:
         test1()
