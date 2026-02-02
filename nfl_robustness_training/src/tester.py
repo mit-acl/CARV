@@ -493,6 +493,330 @@ def animate():
     print(f"  Total frames: {len(frames)}")
     print(f"  Output: {output_file}")
 
+# def animate_backward():
+#     """Animate backward reachability using updated backward() API"""
+#     print("=" * 80)
+#     print("CREATING BACKWARD REACHABILITY ANIMATION")
+#     print("=" * 80)
+
+#     analyzer = setup_analyzer('DoubleIntegrator', 'constraint_default_more_data_5hz')
+#     backward_analyzer = setup_backward_analyzer('DoubleIntegrator', 'constraint_default_more_data_5hz')
+
+#     tester = ReachabilityTester(analyzer, backward_analyzer=backward_analyzer)
+
+#     # --------------------------------------------------
+#     # PHASE 1: Forward propagation (build horizons)
+#     # --------------------------------------------------
+#     T = 10
+#     for t in range(T):
+#         tester.concrete(t, t + 1)
+#         tester.real_state_empirical(t, t + 1)
+
+#     if T not in tester.horizons:
+#         raise RuntimeError("No horizon at target timestep")
+
+#     frames = []
+#     max_back_steps = 6
+
+#     print("\nGenerating backward animation frames...")
+
+#     for k in range(1, max_back_steps + 1):
+#         print(f"  Backward step {k}/{max_back_steps}")
+
+#         tester.backward(start_timestep=T, num_steps=k)
+
+#         fig, ax = plt.subplots(figsize=(10, 7))
+#         ax.set_title(
+#             f'Backward Reachability (target t={T}, depth={k})',
+#             fontsize=14, fontweight='bold'
+#         )
+#         ax.set_xlabel('State 1')
+#         ax.set_ylabel('State 2')
+#         ax.grid(True, alpha=0.3)
+
+#         all_bounds = []
+
+#         # --------------------------------------------------
+#         # Draw target tight bound at T
+#         # --------------------------------------------------
+#         target_bounds = tester.horizons[T].get_tight_bound()
+#         if target_bounds is not None:
+#             rect = Rectangle(
+#                 target_bounds[:2, 0],
+#                 target_bounds[0, 1] - target_bounds[0, 0],
+#                 target_bounds[1, 1] - target_bounds[1, 0],
+#                 edgecolor='red',
+#                 facecolor='red',
+#                 alpha=0.35,
+#                 linewidth=3,
+#                 label='Target (tight bound @ T)'
+#             )
+#             ax.add_patch(rect)
+#             all_bounds.append(target_bounds)
+
+#         # --------------------------------------------------
+#         # Draw backward reachable sets
+#         # --------------------------------------------------
+#         for t in range(T - k, T):
+#             if t not in tester.horizons:
+#                 continue
+
+#             horizon = tester.horizons[t]
+#             for calc in horizon.calculations.values():
+#                 if calc['calc_type'] != CalculationType.BACKWARD:
+#                     continue
+#                 if calc['origin_timestep'] != T:
+#                     continue
+
+#                 bounds = calc['bounds']
+#                 all_bounds.append(bounds)
+
+#                 rect = Rectangle(
+#                     bounds[:2, 0],
+#                     bounds[0, 1] - bounds[0, 0],
+#                     bounds[1, 1] - bounds[1, 0],
+#                     edgecolor='blue',
+#                     facecolor='none',
+#                     linewidth=2,
+#                     linestyle='--',
+#                     alpha=0.8,
+#                     label=f'Backward @ t={t}' if t == T - k else None
+#                 )
+#                 ax.add_patch(rect)
+
+#         # --------------------------------------------------
+#         # Forward tight bounds (context)
+#         # --------------------------------------------------
+#         for t, horizon in tester.horizons.items():
+#             if t > T:
+#                 continue
+
+#             bounds = horizon.get_tight_bound()
+#             if bounds is None:
+#                 continue
+
+#             all_bounds.append(bounds)
+#             rect = Rectangle(
+#                 bounds[:2, 0],
+#                 bounds[0, 1] - bounds[0, 0],
+#                 bounds[1, 1] - bounds[1, 0],
+#                 edgecolor='black',
+#                 facecolor='black',
+#                 alpha=0.15,
+#                 linewidth=1,
+#                 label='Forward tight bounds' if t == 0 else None
+#             )
+#             ax.add_patch(rect)
+
+#         # --------------------------------------------------
+#         # Axis limits
+#         # --------------------------------------------------
+#         if all_bounds:
+#             B = np.array(all_bounds)
+#             x_min, x_max = B[:, 0, 0].min(), B[:, 0, 1].max()
+#             y_min, y_max = B[:, 1, 0].min(), B[:, 1, 1].max()
+
+#             pad_x = 0.2 * (x_max - x_min)
+#             pad_y = 0.2 * (y_max - y_min)
+
+#             ax.set_xlim(x_min - pad_x, x_max + pad_x)
+#             ax.set_ylim(y_min - pad_y, y_max + pad_y)
+
+#         # Legend (deduplicated)
+#         handles, labels = ax.get_legend_handles_labels()
+#         by_label = dict(zip(labels, handles))
+#         ax.legend(by_label.values(), by_label.keys(), loc='upper left')
+
+#         # Info box
+#         ax.text(
+#             0.02, 0.02,
+#             f"Target timestep: T={T}\nBackward depth: {k}\nShowing t={T-k} → t={T-1}",
+#             transform=ax.transAxes,
+#             fontsize=9,
+#             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.7)
+#         )
+
+#         # --------------------------------------------------
+#         # Capture frame
+#         # --------------------------------------------------
+#         fig.canvas.draw()
+#         image = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8)
+#         image = image.reshape(fig.canvas.get_width_height()[::-1] + (4,))
+#         frames.append(image[:, :, :3])
+
+#         plt.close(fig)
+
+#     # --------------------------------------------------
+#     # Save animation
+#     # --------------------------------------------------
+#     import os, imageio
+
+#     output_dir = './animation_output'
+#     os.makedirs(output_dir, exist_ok=True)
+#     gif_path = os.path.join(output_dir, 'backward_reachability.gif')
+
+#     durations = [1000] * len(frames)  # 5000 ms per frame
+#     imageio.mimsave(gif_path, frames, duration=durations, loop=0)
+
+#     print("\n" + "=" * 80)
+#     print("BACKWARD ANIMATION COMPLETE")
+#     print("=" * 80)
+#     print(f"Saved to: {gif_path}")
+
+def plot_backward_debug():
+    """Static debug plot: forward empirical reachability + backward reachable sets"""
+
+    print("=" * 80)
+    print("PLOTTING BACKWARD REACHABILITY DEBUG VIEW")
+    print("=" * 80)
+
+    import os
+    output_dir = './animation_output'
+    os.makedirs(output_dir, exist_ok=True)
+    output_file = os.path.join(output_dir, 'backward_reachability_debug.png')
+
+    analyzer = setup_analyzer('DoubleIntegrator', 'constraint_default_more_data_5hz')
+    backward_analyzer = setup_backward_analyzer('DoubleIntegrator', 'constraint_default_more_data_5hz')
+
+    tester = ReachabilityTester(analyzer, backward_analyzer=backward_analyzer)
+
+    # --------------------------------------------------
+    # Forward propagation (empirical only)
+    # --------------------------------------------------
+    T = 10
+    for t in range(T):
+        tester.real_state_empirical(t, t + 1)  # only empirical propagation
+
+    # --------------------------------------------------
+    # Backward propagation (single call)
+    # --------------------------------------------------
+    BACKWARD_STEPS = 6
+    tester.backward(start_timestep=T, num_steps=BACKWARD_STEPS)
+
+    # --------------------------------------------------
+    # Plot
+    # --------------------------------------------------
+    fig, ax = plt.subplots(figsize=(10, 8))
+    ax.set_title("Backward Reachability Debug Plot", fontsize=14, fontweight='bold')
+    ax.set_xlabel("State 1")
+    ax.set_ylabel("State 2")
+    ax.grid(True, alpha=0.3)
+
+    all_bounds = []
+
+    # --------------------------------------------------
+    # Forward empirical reachable sets (history)
+    # --------------------------------------------------
+    for t in range(T + 1):
+        horizon = tester.horizons.get(t)
+        if horizon is None:
+            continue
+
+        # Only include EMPIRICAL calculations
+        empirical_bounds_list = [
+            calc['bounds']
+            for calc in horizon.calculations.values()
+            if calc['calc_type'] == CalculationType.EMPIRICAL
+        ]
+
+        for bounds in empirical_bounds_list:
+            all_bounds.append(bounds)
+            rect = Rectangle(
+                bounds[:2, 0],
+                bounds[0, 1] - bounds[0, 0],
+                bounds[1, 1] - bounds[1, 0],
+                edgecolor='black',
+                facecolor='none',
+                linewidth=1,
+                alpha=0.6,
+                label='Forward empirical' if t == 0 else None
+            )
+            ax.add_patch(rect)
+
+    # --------------------------------------------------
+    # Target tight set at T
+    # --------------------------------------------------
+    target_bounds_list = [
+        calc['bounds']
+        for calc in tester.horizons[T].calculations.values()
+        if calc['calc_type'] == CalculationType.EMPIRICAL
+    ]
+    if target_bounds_list:
+        # Take the first one (or merge if multiple)
+        target_bounds = target_bounds_list[0]
+        all_bounds.append(target_bounds)
+        rect = Rectangle(
+            target_bounds[:2, 0],
+            target_bounds[0, 1] - target_bounds[0, 0],
+            target_bounds[1, 1] - target_bounds[1, 0],
+            edgecolor='red',
+            facecolor='red',
+            alpha=0.35,
+            linewidth=3,
+            label='Target set (empirical @ T)'
+        )
+        ax.add_patch(rect)
+
+    # --------------------------------------------------
+    # Backward reachable sets
+    # --------------------------------------------------
+    for t in range(T - BACKWARD_STEPS, T):
+        horizon = tester.horizons.get(t)
+        if horizon is None:
+            continue
+
+        for calc in horizon.calculations.values():
+            if calc['calc_type'] != CalculationType.BACKWARD:
+                continue
+            if calc['origin_timestep'] != T:
+                continue
+
+            bounds = calc['bounds']
+            all_bounds.append(bounds)
+
+            rect = Rectangle(
+                bounds[:2, 0],
+                bounds[0, 1] - bounds[0, 0],
+                bounds[1, 1] - bounds[1, 0],
+                edgecolor='blue',
+                facecolor='none',
+                linestyle='--',
+                linewidth=2,
+                alpha=0.9,
+                label='Backward reachable sets' if t == T - BACKWARD_STEPS else None
+            )
+            ax.add_patch(rect)
+
+    # --------------------------------------------------
+    # Axis limits
+    # --------------------------------------------------
+    if all_bounds:
+        B = np.array(all_bounds)
+        x_min, x_max = B[:, 0, 0].min(), B[:, 0, 1].max()
+        y_min, y_max = B[:, 1, 0].min(), B[:, 1, 1].max()
+
+        pad_x = 0.2 * (x_max - x_min)
+        pad_y = 0.2 * (y_max - y_min)
+
+        ax.set_xlim(x_min - pad_x, x_max + pad_x)
+        ax.set_ylim(y_min - pad_y, y_max + pad_y)
+
+    # --------------------------------------------------
+    # Legend
+    # --------------------------------------------------
+    handles, labels = ax.get_legend_handles_labels()
+    by_label = dict(zip(labels, handles))
+    ax.legend(by_label.values(), by_label.keys(), loc='upper left')
+
+    # --------------------------------------------------
+    # Save figure to animation_output folder
+    # --------------------------------------------------
+    plt.savefig(output_file, dpi=150, bbox_inches='tight')
+    print(f"\nSaved backward reachability debug plot to: {output_file}")
+
+    plt.close(fig)
+
+
 
 if __name__ == "__main__":
     import sys
@@ -501,6 +825,8 @@ if __name__ == "__main__":
     elif len(sys.argv) > 1 and sys.argv[1] == '--backward': 
         test_backward()
     elif len(sys.argv) > 1 and sys.argv[1] == '--animate-backward':  
-        animate_backward()                                         
+        animate_backward()    
+    elif len(sys.argv) > 1 and sys.argv[1] == '--backward-debug':  
+        plot_backward_debug()                                       
     else:
         test1()
