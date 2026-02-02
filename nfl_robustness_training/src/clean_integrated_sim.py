@@ -559,89 +559,152 @@ class ReachabilityTester:
 
         return t_elapsed
 
-    def backward(self, final_state_range: np.ndarray, boundary_type: str = "rectangle", t_max: int = 5, overapprox: bool = True):
-        # TODO: integrate with horizons
+    # def backward(self, final_state_range: np.ndarray, boundary_type: str = "rectangle", t_max: int = 5, overapprox: bool = True):
+    #     # TODO: integrate with horizons
+    #     """
+    #     Compute backward reachable set (backprojection set)
+        
+    #     Args:
+    #         final_state_range: The final state range to backproject to
+    #         boundary_type: The type of boundary (e.g., "rectangle", "ellipsoid")
+    #         t_max: The time horizon for backprojection
+    #         overapprox: 
+    #     """
+
+    #     # if start_timestep not in self.horizons:
+    #     #     print(f"Error: No horizon exists at timestep {start_timestep}")
+    #     #     return False
+
+    #     # if backproject_timestep is None:
+    #     #     backproject_timestep = start_timestep - 1
+    #     # elif backproject_timestep >= start_timestep:
+    #     #     print(f"Error: backproject_timestep must be less than start_timestep")
+    #     #     return False
+    #     # elif backproject_timestep < 0:
+    #     #     print(f"Error: backproject_timestep must be non-negative")
+    #     #     return False
+
+    #     # # Track total computation time
+    #     # total_time = 0.0
+    #     # current_parent_timestep = start_timestep
+    #     # num_steps = start_timestep - backproject_timestep
+
+    #     # print("="*20 + " Backward " + "="*20)
+    #     # print(f"Starting backward propagation: t={start_timestep} -> t={backproject_timestep} ({num_steps} steps)")
+
+    #     # perform backprojection
+    #     target_set = constraints.state_range_to_constraint(final_state_range, boundary_type)
+        
+    #     backprojection_sets, analyzer_info = self.backward_analyzer.get_backprojection_set(
+    #         target_set,
+    #         t_max=t_max,
+    #         overapprox=overapprox
+    #     )
+
+    #     print("DEBUG: backward reachablity complete")
+    #     print(f"Backprojection sets: {backprojection_sets.range}")
+    #     return backprojection_sets, analyzer_info
+
+    def backward(self, start_timestep: int, num_steps: int = 5, boundary_type: str = "rectangle", overapprox: bool = True):
         """
-        Compute backward reachable set (backprojection set)
+        Compute backward reachable set (backprojection set) and store in horizons.
         
         Args:
-            final_state_range: The final state range to backproject to
+            start_timestep: The target timestep index (T) to backproject FROM
+            num_steps: Number of discrete timestep indices to backproject
             boundary_type: The type of boundary (e.g., "rectangle", "ellipsoid")
+            overapprox: Whether to use over-approximation
         
-        Returns: computation time
+        Returns:
+            Computation time
         """
-        target_set = constraints.state_range_to_constraint(final_state_range, boundary_type)
         
+        if start_timestep not in self.horizons:
+            print(f"Error: No horizon exists at timestep {start_timestep}")
+            return False
+        
+        if self.backward_analyzer is None:
+            print("Error: No backward analyzer available")
+            return False
+        
+        earliest_timestep = start_timestep - num_steps
+        if earliest_timestep < 0:
+            print(f"Error: Backprojection would go to t={earliest_timestep} (negative timestep)")
+            return False
+        
+        # Get dt and convert discrete timestep indices to continuous time
+        dt = self.backward_analyzer.propagator.dynamics.dt
+        t_max = num_steps * dt  # Convert timestep indices to seconds
+        
+        # Get target set
+        start_horizon = self.horizons[start_timestep]
+        final_state_range = start_horizon.get_tight_bound()
+        
+        if final_state_range is None:
+            print(f"Error: No bounds available at timestep {start_timestep}")
+            return False
+        
+        print("=" * 20 + " Backward " + "=" * 20)
+        print(f"Computing backprojection from target at timestep index {start_timestep}")
+        print(f"Going back {num_steps} timestep indices = {t_max}s simulation time")
+        print(f"Target timestep indices: {earliest_timestep} to {start_timestep-1}")
+        
+        # Perform backprojection
+        t_start = time.time()
+        target_set = constraints.state_range_to_constraint(final_state_range, boundary_type)
         backprojection_sets, analyzer_info = self.backward_analyzer.get_backprojection_set(
             target_set,
-            t_max=t_max,
+            t_max=t_max,  # Pass continuous time
             overapprox=overapprox
         )
-
-        print("DEBUG: backward reachablity complete")
-        return backprojection_sets, analyzer_info
-
-    # def _compute_backprojection_empirical(self, target_bounds: np.ndarray, 
-    #                                     target_t: int, start_t: int,
-    #                                     num_samples: int = 10000) -> np.ndarray:
-    #     """
-    #     Empirically compute backprojection set by sampling and checking which
-    #     initial states reach the target set.
+        t_elapsed = time.time() - t_start
         
-    #     This is a Monte Carlo approach to approximate the backprojection set.
-    #     """
-    #     num_states = target_bounds.shape[0]
+        num_timesteps = backprojection_sets.get_t_max()
         
-    #     # Sample broadly from state space (we need a reasonable initial search space)
-    #     # Use the initial set as a reference, but expand it
-    #     init_horizon = self.horizons[0]
-    #     init_bounds = init_horizon.get_tight_bound()
+        if num_timesteps != num_steps:
+            print(f"Warning: Expected {num_steps} timesteps but got {num_timesteps}")
+            print(f"  Check that backward analyzer dt matches forward analyzer dt")
         
-    #     # Expand search space by 50% in each direction
-    #     search_bounds = init_bounds.copy()
-    #     ranges = search_bounds[:, 1] - search_bounds[:, 0]
-    #     search_bounds[:, 0] -= ranges * 0.5
-    #     search_bounds[:, 1] += ranges * 0.5
+        print(f"\nStoring {num_timesteps} backprojection sets:")
         
-    #     # Sample initial states
-    #     np.random.seed(42)
-    #     x0_samples = np.random.uniform(
-    #         low=search_bounds[:, 0],
-    #         high=search_bounds[:, 1],
-    #         size=(num_samples, num_states)
-    #     )
+        # Store each timestep's backprojection
+        for i in range(num_timesteps):
+            current_timestep = earliest_timestep + i
+            steps_to_target = start_timestep - current_timestep
+            
+            constraint = backprojection_sets.get_constraint_at_time_index(i)
+            
+            if isinstance(constraint, constraints.PolytopeConstraint):
+                bounds = constraint.to_range()
+            elif isinstance(constraint, constraints.LpConstraint):
+                bounds = constraint.range
+            else:
+                print(f"Warning: Unknown constraint type at index {i}")
+                continue
+            
+            volume = np.prod(bounds[:, 1] - bounds[:, 0])
+            
+            if current_timestep not in self.horizons:
+                self.horizons[current_timestep] = ReachableSetHorizon(
+                    current_timestep, 
+                    device=self.analyzer.device
+                )
+            
+            self.horizons[current_timestep].add_calculation(
+                bounds=bounds,
+                calc_type=CalculationType.BACKWARD,
+                origin_timestep=start_timestep,
+                computation_time=t_elapsed / num_timesteps,
+                step_size=steps_to_target,
+                notes=f'Backproject from t={start_timestep} ({steps_to_target} steps to target)'
+            )
+            
+            if num_steps <= 10 or i % 5 == 0 or i == num_timesteps - 1:
+                print(f"  t={current_timestep} ({steps_to_target} steps to target): volume={volume:.6f}")
         
-    #     # Propagate forward to target timestep
-    #     xt = x0_samples.copy()
-    #     for step in range(start_t, target_t):
-    #         u_nn = self.analyzer.cl_system.dynamics.control_nn(
-    #             xt, self.analyzer.cl_system.controller.cpu()
-    #         )
-    #         xt1 = self.analyzer.cl_system.dynamics.dynamics_step(xt, u_nn)
-    #         xt = xt1
+        print(f"\nBackward propagation complete: {t_elapsed:.4f}s")
         
-    #     # Check which samples ended up in the target set
-    #     in_target = np.all(
-    #         (xt >= target_bounds[:, 0]) & (xt <= target_bounds[:, 1]),
-    #         axis=1
-    #     )
-        
-    #     if np.sum(in_target) == 0:
-    #         print(f"  Warning: No samples reached target set. Using expanded search.")
-    #         # If no samples reached, return expanded initial bounds
-    #         return search_bounds
-        
-    #     # Compute bounds of states that reached the target
-    #     x0_in_backprojection = x0_samples[in_target]
-        
-    #     backprojection_bounds = np.stack([
-    #         np.min(x0_in_backprojection, axis=0),
-    #         np.max(x0_in_backprojection, axis=0)
-    #     ], axis=1)
-        
-    #     print(f"  {np.sum(in_target)}/{num_samples} samples reached target set")
-        
-    #     return backprojection_bounds
+        return t_elapsed
 
 def setup_analyzer(system_type='DoubleIntegrator', controller_name='constraint_default_more_data_5hz', init_range=None):
     """Setup analyzer for simulation testing"""
@@ -770,45 +833,6 @@ def setup_backward_analyzer(system_type='DoubleIntegrator', controller_name='con
         time_horizon = 52
         max_diff = 10
 
-    # # Temporary fix to make controller compatible with CROWN:
-
-    # def make_crown_compatible(controller):
-    #     """
-    #     CROWN expects controller.module to be a Sequential.
-    #     This extracts the layers from a custom nn.Module and
-    #     rebuilds them as Sequential, then wraps in DataParallel.
-    #     """
-    #     # Unwrap DataParallel if already wrapped
-    #     base = controller.module if hasattr(controller, 'module') else controller
-
-    #     # If it's already Sequential, just wrap and return
-    #     if isinstance(base, torch.nn.Sequential):
-    #         return torch.nn.DataParallel(base)
-
-    #     # Otherwise, extract layers in order and rebuild as Sequential
-    #     # This works for any module that's just a stack of Linear + ReLU
-    #     layers = []
-    #     for name, module in base.named_modules():
-    #         if name == '':
-    #             continue  # skip the top-level module itself
-    #         if isinstance(module, (torch.nn.Linear, torch.nn.ReLU)):
-    #             layers.append(module)
-
-    #     # If we didn't find explicit ReLU modules (because forward() calls
-    #     # F.relu inline), we need to infer the structure from the Linear layers
-    #     if not any(isinstance(l, torch.nn.ReLU) for l in layers):
-    #         linear_layers = [m for m in layers if isinstance(m, torch.nn.Linear)]
-    #         layers = []
-    #         for i, linear in enumerate(linear_layers):
-    #             layers.append(linear)
-    #             # Add ReLU after every layer except the last one
-    #             if i < len(linear_layers) - 1:
-    #                 layers.append(torch.nn.ReLU())
-
-    #     seq = torch.nn.Sequential(*layers)
-    #     return torch.nn.DataParallel(seq)
-
-    # controller = make_crown_compatible(controller)
     controller = controller2sequential(controller)
     analyzer = analyzers.ClosedLoopBackwardAnalyzer(controller, ol_dyn)
 
