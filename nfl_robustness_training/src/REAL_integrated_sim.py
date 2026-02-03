@@ -28,6 +28,7 @@ class CalculationType(Enum):
     SAMPLED = "sampled"
     EMPIRICAL = "empirical"
 
+
 class Obstacles:
     """
     State obstacles
@@ -301,11 +302,20 @@ class ReachabilityTester:
             collisions = self.obstacles.check_collision(bounds)
             if collisions is not None:
                 # Collision detected, stop propagation
-                print(f" Warning: Collision detected at t={current_timestep} with obstacles!\n"
-                    f" Stopping concrete propagation.\n"
-                    f" Bounds: {bounds}\n"
-                    f" Obstacles: {collisions}\n")
-                return total_time # Return time up to collisionq
+                print(f" Warning: Collision detected at t={current_timestep}")
+                print(f" Stopping concrete propagation.")
+                print(f" Bounds: {bounds}")
+                print(f" Obstacles: {collisions}\n")
+
+                return {
+                    'success': False,
+                    'time': total_time,
+                    'completed_steps': step + 1,
+                    'collision': True,
+                    'collision_timestep': current_timestep,
+                    'collision_obstacles': collisions,
+                    'final_bounds': bounds
+                }
 
             # Update parent reference for next iteration
             current_parent_timestep = current_timestep
@@ -317,7 +327,13 @@ class ReachabilityTester:
               f"bounds= {bounds}\n"
               f"final vol @t={current_timestep}: {np.prod(bounds[:, 1] - bounds[:, 0]):.6f}\n")
 
-        return total_time
+        return {
+            'success': True,
+            'time': total_time,
+            'completed_steps': num_steps,
+            'collision': False,
+            'final_bounds': bounds
+        }
 
     def sampled_bounds(self, start_timestep: int, end: Optional[int] = None, num_samples: int = 10000):
         """
@@ -523,11 +539,22 @@ class ReachabilityTester:
 
         collisions = self.obstacles.check_collision(kf_bounds)
         if collisions is not None:
-            # Collision detected, stop propagation
-            print(f" Warning: Collision with Robot detected at t={end} with obstacles!\n"
-                f" Bounds: {kf_bounds}\n"
-                f" Obstacles: {collisions}\n")
+            # Collision detected
+            print(f" Warning: Collision detected at t={end}")
+            print(f" Bounds: {kf_bounds}")
+            print(f" Obstacles: {collisions}\n")
 
+            return {
+                'success': False,
+                'time': t_elapsed,
+                'completed_steps': end - start,
+                'collision': True,
+                'collision_timestep': end,
+                'collision_obstacles': collisions,
+                'final_bounds': kf_bounds,
+                'real_state': real_state,
+                'estimated_state': estimated_state
+            }
         else:
             print(f"  From t={start} to t={end}")
             print(f"  True State: {real_state}")
@@ -536,7 +563,15 @@ class ReachabilityTester:
             print(f"  Bounds Volume: {np.prod(kf_bounds[:, 1] - kf_bounds[:, 0]):.6f}")
             print(f"  Tightest overlapped volume at t = {end}: {self.horizons[end].get_tight_volume():.6f}\n")
 
-        return t_elapsed
+            return {
+                'success': True,
+                'time': t_elapsed,
+                'completed_steps': end - start,
+                'collision': False,
+                'final_bounds': kf_bounds,
+                'real_state': real_state,
+                'estimated_state': estimated_state
+            }
 
     def symbolic(self, start: int, end: int):
         """
@@ -604,12 +639,6 @@ class ReachabilityTester:
 
         # Check for collisions with obstacles
         collisions = self.obstacles.check_collision(bounds)
-        if collisions is not None:
-            # Collision detected
-            print(f" Warning: Collision detected at t={end} with obstacles!\n"
-                f" Bounds: {bounds}\n"
-                f" Obstacles: {collisions}\n")
-
         # Print info
         print("=" * 20 + " Symbolic " + "=" * 20)
         print(f"  Parent Volume: {parent_horizon.get_tight_volume()}")
@@ -618,7 +647,29 @@ class ReachabilityTester:
         print(f"  Volume: {np.prod(bounds[:, 1] - bounds[:, 0]):.6f}")
         print(f"  Tightest volume: {self.horizons[end].get_tight_volume():.6f}")
 
-        return t_elapsed, bounds
+        if collisions is not None:
+            # Collision detected
+            print(f" Warning: Collision detected at t={end}")
+            print(f" Bounds: {bounds}")
+            print(f" Obstacles: {collisions}\n")
+
+            return {
+                'success': False,
+                'time': t_elapsed,
+                'completed_steps': k,
+                'collision': True,
+                'collision_timestep': end,
+                'collision_obstacles': collisions,
+                'final_bounds': bounds
+            }
+        else:
+            return {
+                'success': True,
+                'time': t_elapsed,
+                'completed_steps': k,
+                'collision': False,
+                'final_bounds': bounds
+            }
 
 def setup_analyzer(system_type='DoubleIntegrator', controller_name='constraint_default_more_data_5hz', init_range=None):
     """Setup analyzer for simulation testing"""
