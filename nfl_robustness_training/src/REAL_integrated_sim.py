@@ -10,6 +10,7 @@ from itertools import product
 import time
 
 from enum import Enum
+from typing import Optional, List, Dict, Tuple, Union
 import nfl_veripy.dynamics as dynamics
 
 from auto_LiRPA import BoundedModule, BoundedTensor
@@ -154,13 +155,13 @@ class ReachabilityTester:
     """
     Reachability calculations using ReachableSetHorizon.
     """
-    def __init__(self, analyzer, obstacles: Obstacles | None = None, process_noise_std=0.01, measurement_noise_std=0.05):
+    def __init__(self, analyzer, obstacles_list=None, process_noise_std=0.01, measurement_noise_std=0.05):
         self.analyzer = analyzer
 
-        if obstacles is None:
+        if obstacles_list is None:
             self.obstacles = Obstacles(None)
         else:
-            self.obstacles = obstacles
+            self.obstacles = Obstacles(obstacles_list)
 
         # Track horizons by timestep
         self.horizons: Dict[int, ReachableSetHorizon] = {}
