@@ -706,7 +706,7 @@ class ReachabilityTester:
         
         return t_elapsed
 
-def setup_analyzer(system_type='DoubleIntegrator', controller_name='constraint_default_more_data_5hz', init_range=None):
+def setup_analyzer(system_type='DoubleIntegrator', controller_name='constraint_default_more_data_5hz', init_range=None, max_diff: int = 10):
     """Setup analyzer for simulation testing"""
     import sys, os
     sys.path.insert(0, os.path.join(os.getcwd(), 'nfl_robustness_training/src'))
@@ -734,7 +734,7 @@ def setup_analyzer(system_type='DoubleIntegrator', controller_name='constraint_d
                 init_range = torch.tensor(init_range, device=device)
 
         time_horizon = 30
-        max_diff = 10
+        # max_diff = 10
 
     elif system_type == 'Unicycle_NL':
         controller = load_controller('Unicycle_NL', controller_name, False, device=device)
@@ -761,7 +761,7 @@ def setup_analyzer(system_type='DoubleIntegrator', controller_name='constraint_d
                 init_range = torch.tensor(init_range, device=device)
 
         time_horizon = 52
-        max_diff = 10
+        # max_diff = 10
 
     else:
         raise ValueError(f"Unknown system type: {system_type}")
