@@ -121,7 +121,7 @@ class LinearKalmanEstimator(StateEstimator):
 
         u.reshape((1,-1))
 
-        print(f'DEBUG: u is {u.shape} \n B is {self.B.shape}')
+        # print(f'DEBUG: u is {u.shape} \n B is {self.B.shape}')
 
         u = u.reshape(-1, 1)
 
