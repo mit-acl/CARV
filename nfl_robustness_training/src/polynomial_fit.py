@@ -1,12 +1,3 @@
-"""
-Volume-Dependent Timing Analysis
-
-Investigates how symbolic propagation timing depends on volume by:
-1. Fitting separate equations for different volume ranges
-2. Checking if the k² coefficient varies with volume
-3. Testing threshold effects
-"""
-
 import numpy as np
 import torch
 import time
@@ -21,7 +12,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.getcwd(), 'nfl_robustness_training/src'))
 
-from clean_integrated_sim import setup_analyzer, ReachabilityTester, ReachableSetHorizon, CalculationType
+from REAL_integrated_sim import setup_analyzer, ReachabilityTester, ReachableSetHorizon, CalculationType
 from utils.robust_training_utils import ReachableSet
 
 

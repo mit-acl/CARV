@@ -3,7 +3,7 @@ Timing Analysis: Concrete vs Symbolic Reachability Computation
 Compares sequential concrete steps to single/multi-step symbolic propagation
 """
 
-from clean_integrated_sim import setup_analyzer, ReachabilityTester, CalculationType
+from REAL_integrated_sim import setup_analyzer, ReachabilityTester, CalculationType
 import matplotlib.pyplot as plt
 import numpy as np
 import time
@@ -20,17 +20,18 @@ plt.rcParams['font.size'] = 10
 class TimingAnalyzer:
     """Analyze and compare timing of concrete vs symbolic reachability"""
     
-    def __init__(self, system_type='DoubleIntegrator', controller_name='constraint_default_more_data_5hz', num_trials=10, max_sym_horizon=10):
+    def __init__(self, system_type='DoubleIntegrator', controller_name='constraint_default_more_data_5hz', num_trials=10, max_diff=10):
         """Initialize analyzer for timing tests
         
         Args:
             system_type: Type of dynamical system
             controller_name: Name of controller to use
             num_trials: Number of trials to run for each test (with random initial states)
+            max_diff: Maximum number of symbolic steps allowed in single propagation
         """
         self.system_type = system_type
         self.controller_name = controller_name
-        self.analyzer = setup_analyzer(system_type, controller_name, max_diff=max_sym_horizon)
+        self.analyzer = setup_analyzer(system_type, controller_name, max_diff=max_diff)
         self.num_trials = num_trials
         
         # Get initial bounds for sampling
@@ -78,8 +79,12 @@ class TimingAnalyzer:
             
             # Sequential concrete steps
             for t in range(horizon):
-                step_time = tester.concrete(t, t + 1)
-                total_time += step_time
+                result = tester.concrete(t, t + 1)
+                if isinstance(result, dict):
+                    total_time += result['time']
+                else:
+                    # Fallback for old return format
+                    total_time += result
             
             # Get final volume
             final_horizon = tester.horizons[horizon]
@@ -125,7 +130,12 @@ class TimingAnalyzer:
             tester = ReachabilityTester(self.analyzer)
             
             # Single symbolic step
-            step_time = tester.symbolic(0, horizon)
+            result = tester.symbolic(0, horizon)
+            if isinstance(result, dict):
+                step_time = result['time']
+            else:
+                # Fallback for old return format
+                step_time = result
             
             # Get final volume
             final_horizon = tester.horizons[horizon]
@@ -181,14 +191,21 @@ class TimingAnalyzer:
                 if next_t <= current_t:
                     break
                     
-                step_time = tester.symbolic(current_t, next_t)
-                total_time += step_time
+                result = tester.symbolic(current_t, next_t)
+                if isinstance(result, dict):
+                    total_time += result['time']
+                else:
+                    # Fallback for old return format
+                    total_time += result
                 current_t = next_t
                 
             # Handle remainder if horizon not evenly divisible
             if current_t < horizon:
-                step_time = tester.symbolic(current_t, horizon)
-                total_time += step_time
+                result = tester.symbolic(current_t, horizon)
+                if isinstance(result, dict):
+                    total_time += result['time']
+                else:
+                    total_time += result
                 
             # Get final volume
             final_horizon = tester.horizons[horizon]
@@ -810,7 +827,7 @@ def run_analysis(system_type='DoubleIntegrator',
                  horizons=None,
                  symbolic_step_counts=None,
                  num_trials=10,
-                 max_sym_horizon=10):
+                 max_diff=10):
     """
     Main entry point for timing analysis
     
@@ -820,6 +837,7 @@ def run_analysis(system_type='DoubleIntegrator',
         horizons: List of horizons to test (default: [2, 3, 4, 5, 6, 8, 10])
         symbolic_step_counts: List of step counts for multi-step symbolic (default: [1, 2, 3, 5])
         num_trials: Number of trials per test with random initial states (default: 10)
+        max_diff: Maximum number of symbolic steps allowed in single propagation (default: 10)
     """
     if horizons is None:
         horizons = [2, 3, 4, 5, 6, 8, 10]
@@ -828,7 +846,7 @@ def run_analysis(system_type='DoubleIntegrator',
         symbolic_step_counts = [1, 2, 3, 5]
     
     # Create analyzer
-    analyzer = TimingAnalyzer(system_type, controller_name, num_trials=num_trials, max_sym_horizon=max_sym_horizon)
+    analyzer = TimingAnalyzer(system_type, controller_name, num_trials=num_trials, max_diff=max_diff)
     
     # Run comparison
     analyzer.run_comparison(horizons, symbolic_step_counts)
@@ -864,27 +882,29 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         system_type = sys.argv[1]
     else:
-        # system_type = 'DoubleIntegrator'
-        system_type = 'Unicycle_NL'
+        system_type = 'DoubleIntegrator'
     
     if len(sys.argv) > 2:
         controller_name = sys.argv[2]
     else:
-        # controller_name = 'constraint_default_more_data_5hz'
-        controller_name = 'natural_none_expanded_5hz_big'
+        controller_name = 'constraint_default_more_data_5hz'
     
     if len(sys.argv) > 3:
         num_trials = int(sys.argv[3])
     else:
         num_trials = 10
     
+    if len(sys.argv) > 4:
+        max_diff = int(sys.argv[4])
+    else:
+        max_diff = 10
+    
     # Run analysis
     run_analysis(
         system_type=system_type,
         controller_name=controller_name,
-        # horizons=[2, 3, 4, 5, 6, 8, 10],
-        horizons=[i for i in range(2,21)],
+        horizons=[2, 3, 4, 5, 6, 8, 10],
         symbolic_step_counts=[1, 2, 3, 5],
         num_trials=num_trials,
-        max_sym_horizon=20,
+        max_diff=max_diff
     )

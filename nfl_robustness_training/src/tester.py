@@ -1,12 +1,34 @@
 
-from clean_integrated_sim import setup_analyzer, setup_backward_analyzer, ReachabilityTester, CalculationType
+from REAL_integrated_sim import setup_analyzer, setup_backward_analyzer, ReachabilityTester, CalculationType, Obstacles
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation, PillowWriter
 from matplotlib.patches import Rectangle
 import numpy as np
 
 def test():
+# [[2.5, 3.0], [-0.25, 0.25]]
+    obs1 = np.array([[-5.0, -3.0], [2.0, 4.0]])
+    obs2 = np.array([[0.0, 1.6], [-1.0, -0.4]])
+    obstacles = Obstacles([obs1, obs2])
+
+# [ 1.5735503,  2.4511724],
+#        [-0.9427511, -0.7375897]
+
     analyzer = setup_analyzer('DoubleIntegrator', 'constraint_default_more_data_5hz')
+
+    print("\nCreating interactive tester...")
+    tester = ReachabilityTester(analyzer, obstacles_list=obstacles)
+
+    print("\n" + "=" * 20 + " Initial State " + "=" * 20 +"")
+    print(tester.horizons[0])
+    t = 0
+
+    print(tester.symbolic(0,7))
+
+def test1():
+    analyzer = setup_analyzer('Unicycle_NL', 'natural_none_default')
+    # analyzer = setup_analyzer('DoubleIntegrator', 'constraint_default_more_data_5hz')
+
 
     print("\nCreating interactive tester...")
     tester = ReachabilityTester(analyzer)
@@ -14,14 +36,10 @@ def test():
     print("\n" + "=" * 20 + " Initial State " + "=" * 20)
     print(tester.horizons[0])
     t = 0
-    while t<15:
-        tester.concrete(t,t+3)
-        tester.real_state_empirical(t,t+1)
-        tester.horizons[t].list_calculations()
 
-        t+=1
+    print(tester.symbolic(0,7))
 
-def test1():
+def test2():
     analyzer = setup_analyzer('Unicycle_NL', 'natural_none_default')
     # analyzer = setup_analyzer('DoubleIntegrator', 'constraint_default_more_data_5hz')
 
@@ -31,22 +49,8 @@ def test1():
     print("\n" + "=" * 20 + " Initial State " + "=" * 20)
     print(tester.horizons[0])
     t = 0
-    while t<10:
-        print(f"At t={t} starting the calculations")
-        print(tester.symbolic(t,t+1))
-        print(tester.symbolic(t,t+2))
-        print(tester.symbolic(t,t+3))
-        print(tester.symbolic(t,t+4))
-        print(tester.symbolic(t,t+5))
-        print(tester.symbolic(t,t+6))
-        print(tester.symbolic(t,t+7))
-        print(tester.symbolic(t,t+8))
-        print(tester.symbolic(t,t+9))
-        print(tester.symbolic(t,t+10))
-        # tester.real_state_empirical(t,t+1)
-        # tester.horizons[t].list_calculations()
-
-        t+=1
+    tester.symbolic(0,10)
+    tester.concrete(0,10)
 
 # def test_backward():
 #     """Test backward reachability with animation"""
@@ -182,7 +186,9 @@ def animate():
     print("CREATING ANIMATION")
     print("=" * 80)
 
-    analyzer = setup_analyzer('Unicycle_NL', 'natural_none_default')
+    # analyzer = setup_analyzer('Unicycle_NL', 'natural_none_default')
+    analyzer = setup_analyzer('DoubleIntegrator', 'constraint_default_more_data_5hz')
+
 
     # Create tester without dynamic plot (we'll save frames instead)
     tester = ReachabilityTester(analyzer)

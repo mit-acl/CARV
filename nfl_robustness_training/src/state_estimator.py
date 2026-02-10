@@ -109,7 +109,7 @@ class LinearKalmanEstimator(StateEstimator):
         self.B = B
 
 
-    def predict(self, dynamics_fn: Callable, control_input: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def predict(self, control_input: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
         Kalman Filter prediction step.
         """
