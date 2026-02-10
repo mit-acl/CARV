@@ -8,15 +8,15 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 from matplotlib.animation import FuncAnimation, PillowWriter
 from matplotlib.gridspec import GridSpec
-from ast import literal_eval
-from itertools import product
-from copy import deepcopy
+# from ast import literal_eval
+# from itertools import product
+# from copy import deepcopy
 import time
 from typing import Dict, List, Tuple, Optional
 from enum import Enum
 import nfl_veripy.dynamics as dynamics
 
-from auto_LiRPA import BoundedModule, BoundedTensor
+# from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import *
 import cl_systems
 

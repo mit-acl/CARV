@@ -9,7 +9,7 @@ def test():
 # [[2.5, 3.0], [-0.25, 0.25]]
     obs1 = np.array([[-5.0, -3.0], [2.0, 4.0]])
     obs2 = np.array([[0.0, 1.6], [-1.0, -0.4]])
-    obstacles = Obstacles([obs1, obs2])
+    obstacles =[obs1, obs2]
 
 # [ 1.5735503,  2.4511724],
 #        [-0.9427511, -0.7375897]
@@ -17,13 +17,15 @@ def test():
     analyzer = setup_analyzer('DoubleIntegrator', 'constraint_default_more_data_5hz')
 
     print("\nCreating interactive tester...")
-    tester = ReachabilityTester(analyzer, obstacles_list=obstacles)
 
+    tester = ReachabilityTester(analyzer, obstacles_list=obstacles)
     print("\n" + "=" * 20 + " Initial State " + "=" * 20 +"")
     print(tester.horizons[0])
     t = 0
 
-    print(tester.symbolic(0,7))
+    tester.symbolic(0,10)
+    tester.symbolic(10,20)
+    tester.symbolic(20,30)
 
 def test1():
     analyzer = setup_analyzer('Unicycle_NL', 'natural_none_default')

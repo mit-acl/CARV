@@ -49,16 +49,25 @@ class Obstacles:
             return None
 
         collisions = []
+        intersections = []
 
         for obs in self.obstacle_list:
             # Check for overlap in all dimensions
             if np.all(state[:, 0] <= obs[:, 1]) and np.all(state[:, 1] >= obs[:, 0]):
                 collisions.append(obs)
 
+            intersection = np.column_stack((
+                    np.maximum(state[:, 0], obs[:, 0]),  # max of lower bounds
+                    np.minimum(state[:, 1], obs[:, 1])   # min of upper bounds
+                ))
+            intersections.append(intersection)
+
         if len(collisions) > 0:
-            return collisions
+            return collisions, intersections
         else:
-            return None
+            return None, None
+
+
 
 class ReachableSetHorizon:
     """
@@ -177,6 +186,8 @@ class ReachabilityTester:
         init_bounds = analyzer.reachable_sets[0].full_set.cpu().numpy()
         self.horizons[0] = ReachableSetHorizon(0, device=analyzer.device)
 
+        self.time = 0.0
+
         # Sample random initial state
         num_states = init_bounds.shape[0]
         np.random.seed(None)
@@ -201,6 +212,10 @@ class ReachabilityTester:
         self.measurement_noise_std = measurement_noise_std
 
         self.estimator = self.create_estimator(analyzer, initial_state, init_bounds, process_noise_std, measurement_noise_std)
+
+    def get_time(self):
+        """Get total computation time for all calculations performed so far"""
+        return self.time
 
     def create_estimator(self, analyzer, initial_state, initial_bounds, process_noise_std, measurement_noise_std):
         """Create appropriate filter based on dynamics type"""
@@ -307,13 +322,14 @@ class ReachabilityTester:
 
 
             # Check for collisions with obstacles
-            collisions = self.obstacles.check_collision(bounds)
+            collisions, intersections = self.obstacles.check_collision(bounds)
             if collisions is not None:
                 # Collision detected, stop propagation
                 print(f" Warning: Collision detected at t={current_timestep}")
                 print(f" Stopping concrete propagation.")
                 print(f" Bounds: {bounds}")
                 print(f" Obstacles: {collisions}\n")
+                self.time += total_time
 
                 return {
                     'success': False,
@@ -322,6 +338,7 @@ class ReachabilityTester:
                     'collision': True,
                     'collision_timestep': current_timestep,
                     'collision_obstacles': collisions,
+                    'intersections': intersections,
                     'final_bounds': bounds
                 }
 
@@ -329,11 +346,12 @@ class ReachabilityTester:
             current_parent_timestep = current_timestep
 
 
-
         print(f"Concrete propagation of {num_steps} steps: \n"
               f"total time={total_time:.4f}s\n"
               f"bounds= {bounds}\n"
               f"final vol @t={current_timestep}: {np.prod(bounds[:, 1] - bounds[:, 0]):.6f}\n")
+
+        self.time += total_time
 
         return {
             'success': True,
@@ -546,12 +564,14 @@ class ReachabilityTester:
             real_state=real_state  # Store the true state
         )
 
-        collisions = self.obstacles.check_collision(kf_bounds)
+        self.time += t_elapsed
+        collisions, intersections = self.obstacles.check_collision(kf_bounds)
         if collisions is not None:
             # Collision detected
             print(f" Warning: Collision detected at t={end}")
             print(f" Bounds: {kf_bounds}")
             print(f" Obstacles: {collisions}\n")
+
 
             return {
                 'success': False,
@@ -560,16 +580,17 @@ class ReachabilityTester:
                 'collision': True,
                 'collision_timestep': end,
                 'collision_obstacles': collisions,
+                'intersections': intersections,
                 'final_bounds': kf_bounds,
                 'real_state': real_state,
                 'estimated_state': estimated_state
             }
         else:
             print(f"  From t={start} to t={end}")
-            print(f"  True State: {real_state}")
-            print(f"  KF Estimate: {estimated_state}")
-            print(f"  Estimation Error: {np.linalg.norm(real_state - estimated_state):.6f}")
-            print(f"  Bounds Volume: {np.prod(kf_bounds[:, 1] - kf_bounds[:, 0]):.6f}")
+            # print(f"  True State: {real_state}")
+            # print(f"  KF Estimate: {estimated_state}")
+            # print(f"  Estimation Error: {np.linalg.norm(real_state - estimated_state):.6f}")
+            # print(f"  Bounds Volume: {np.prod(kf_bounds[:, 1] - kf_bounds[:, 0]):.6f}")
             print(f"  Tightest overlapped volume at t = {end}: {self.horizons[end].get_tight_volume():.6f}\n")
 
             return {
@@ -647,7 +668,7 @@ class ReachabilityTester:
         )
 
         # Check for collisions with obstacles
-        collisions = self.obstacles.check_collision(bounds)
+        collisions, intersections = self.obstacles.check_collision(bounds)
         # Print info
         print("=" * 20 + " Symbolic " + "=" * 20)
         print(f"  Parent Volume: {parent_horizon.get_tight_volume()}")
@@ -655,6 +676,8 @@ class ReachabilityTester:
         print(f"  Computed in {t_elapsed:.4f}s")
         print(f"  Volume: {np.prod(bounds[:, 1] - bounds[:, 0]):.6f}")
         print(f"  Tightest volume: {self.horizons[end].get_tight_volume():.6f}")
+
+        self.time += t_elapsed
 
         if collisions is not None:
             # Collision detected
@@ -669,6 +692,7 @@ class ReachabilityTester:
                 'collision': True,
                 'collision_timestep': end,
                 'collision_obstacles': collisions,
+                'intersections': intersections,
                 'final_bounds': bounds
             }
         else:
