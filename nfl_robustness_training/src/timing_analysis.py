@@ -296,7 +296,25 @@ class TimingAnalyzer:
     def create_plots(self, output_dir='./timing_analysis'):
         """Create comprehensive visualization plots"""
         import os
+        
+        # Determine method suffix based on system type
+        method_suffix = 'di' if 'double' in self.system_type.lower() else 'uni'
+        
+        # Find the lowest available run number
+        base_dir = output_dir
+        os.makedirs(base_dir, exist_ok=True)
+        
+        run_number = 1
+        while True:
+            run_dir = os.path.join(base_dir, f'run_{run_number}_{method_suffix}')
+            if not os.path.exists(run_dir):
+                break
+            run_number += 1
+        
+        # Create the run directory and store it
+        output_dir = run_dir
         os.makedirs(output_dir, exist_ok=True)
+        self.run_output_dir = output_dir  # Store for use by save_results_table
         
         print(f"\nGenerating plots in {output_dir}...")
         
@@ -318,8 +336,11 @@ class TimingAnalyzer:
         # Plot 6: Heatmap of speedup
         self._plot_speedup_heatmap(output_dir)
         
-        # Plot 7: NEW - Direct symbolic vs concrete time comparison
+        # Plot 7: Direct symbolic vs concrete time comparison
         self._plot_symbolic_vs_concrete_direct(output_dir)
+        
+        # Plot 8: NEW - Ratio plot (symbolic/concrete time)
+        self._plot_time_ratio_vs_horizon(output_dir)
         
         print(f"All plots saved to {output_dir}/")
     
@@ -713,10 +734,133 @@ class TimingAnalyzer:
         plt.close()
         print(f"  ✓ symbolic_vs_concrete_direct.png")
     
+    def _plot_time_ratio_vs_horizon(self, output_dir):
+        """
+        NEW PLOT: Plot the ratio of symbolic time to concrete time vs horizon.
+        This directly shows the fraction: (symbolic k-step time) / (concrete N-step time)
+        
+        For each horizon N, we plot:
+        - Ratio for single symbolic step (k=1): symbolic_time(N) / concrete_time(N)
+        - Ratios for multi-step symbolic (k=2,3,5,...): symbolic_k_time(N) / concrete_time(N)
+        
+        A ratio < 1 means symbolic is faster; ratio > 1 means concrete is faster.
+        """
+        fig, ax = plt.subplots(figsize=(14, 8))
+        
+        # --- Single-step symbolic ratio ---
+        horizons_sym = sorted(self.results['symbolic_single'].keys())
+        ratios = []
+        ratio_errors = []
+        
+        for h in horizons_sym:
+            if h in self.results['concrete_sequential']:
+                concrete_mean = self.results['concrete_sequential'][h]['time_mean']
+                concrete_std = self.results['concrete_sequential'][h]['time_std']
+                symbolic_mean = self.results['symbolic_single'][h]['time_mean']
+                symbolic_std = self.results['symbolic_single'][h]['time_std']
+                
+                ratio = symbolic_mean / concrete_mean
+                # Error propagation for division
+                rel_error = np.sqrt((symbolic_std/symbolic_mean)**2 + (concrete_std/concrete_mean)**2)
+                ratio_error = ratio * rel_error
+                
+                ratios.append(ratio)
+                ratio_errors.append(ratio_error)
+            else:
+                ratios.append(np.nan)
+                ratio_errors.append(0)
+        
+        ax.errorbar(horizons_sym, ratios, yerr=ratio_errors, fmt='s-', linewidth=2.5, markersize=9,
+                    capsize=5, capthick=2, label='Symbolic Single-Step (k=1)', 
+                    color='#27AE60', alpha=0.85, zorder=10)
+        
+        # --- Multi-step symbolic ratios ---
+        multi_data = {}
+        for (h, n), stats in self.results['symbolic_multi'].items():
+            if h in self.results['concrete_sequential']:
+                concrete_mean = self.results['concrete_sequential'][h]['time_mean']
+                concrete_std = self.results['concrete_sequential'][h]['time_std']
+                symbolic_mean = stats['time_mean']
+                symbolic_std = stats['time_std']
+                
+                ratio = symbolic_mean / concrete_mean
+                rel_error = np.sqrt((symbolic_std/symbolic_mean)**2 + (concrete_std/concrete_mean)**2)
+                ratio_error = ratio * rel_error
+                
+                if n not in multi_data:
+                    multi_data[n] = {'horizons': [], 'ratios': [], 'errors': []}
+                multi_data[n]['horizons'].append(h)
+                multi_data[n]['ratios'].append(ratio)
+                multi_data[n]['errors'].append(ratio_error)
+        
+        # Plot each k-step configuration
+        colors = plt.cm.plasma(np.linspace(0.2, 0.8, len(multi_data)))
+        for i, (num_steps, data) in enumerate(sorted(multi_data.items())):
+            sorted_idx = np.argsort(data['horizons'])
+            hs_sorted = [data['horizons'][i] for i in sorted_idx]
+            ratios_sorted = [data['ratios'][i] for i in sorted_idx]
+            errors_sorted = [data['errors'][i] for i in sorted_idx]
+            ax.errorbar(hs_sorted, ratios_sorted, yerr=errors_sorted, fmt='o--', linewidth=2, markersize=7,
+                        capsize=4, capthick=1.5, label=f'Symbolic {num_steps}-Step (k={num_steps})', 
+                        color=colors[i], alpha=0.8)
+        
+        # --- Reference line at ratio = 1 (break-even point) ---
+        ax.axhline(y=1, color='red', linestyle=':', linewidth=2, alpha=0.7, 
+                   label='Break-even (symbolic = concrete)', zorder=5)
+        
+        # --- Shaded regions ---
+        y_max = ax.get_ylim()[1]
+        ax.fill_between(ax.get_xlim(), 0, 1, alpha=0.1, color='green', 
+                        label='Symbolic faster (ratio < 1)')
+        ax.fill_between(ax.get_xlim(), 1, y_max, alpha=0.1, color='red', 
+                        label='Concrete faster (ratio > 1)')
+        
+        ax.set_xlabel('Horizon N (timesteps)', fontsize=13, fontweight='bold')
+        ax.set_ylabel('Time Ratio: Symbolic(k steps) / Concrete(N steps)', fontsize=13, fontweight='bold')
+        ax.set_title(f'Efficiency Ratio: Symbolic vs Concrete Time ({self.system_type}, n={self.num_trials} trials)\n'
+                     f'Lower is better for symbolic', 
+                     fontsize=14, fontweight='bold')
+        ax.legend(loc='best', fontsize=10, ncol=2)
+        ax.grid(True, alpha=0.3)
+        ax.set_ylim(bottom=0)  # Ensure we start at 0
+        
+        # Add text annotations explaining the ratio
+        ax.text(0.02, 0.98, 
+                'Ratio < 1: Symbolic is faster\nRatio > 1: Concrete is faster', 
+                transform=ax.transAxes, fontsize=10, verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+        
+        plt.tight_layout()
+        plt.savefig(f'{output_dir}/time_ratio_vs_horizon.png', dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"  ✓ time_ratio_vs_horizon.png")
+    
     def save_results_table(self, output_dir='./timing_analysis'):
         """Save results as CSV tables with statistics"""
         import os
-        os.makedirs(output_dir, exist_ok=True)
+        
+        # Use the same directory as create_plots if it was already called
+        if hasattr(self, 'run_output_dir'):
+            output_dir = self.run_output_dir
+        else:
+            # Determine method suffix based on system type
+            method_suffix = 'di' if 'double' in self.system_type.lower() else 'uni'
+            
+            # Find the lowest available run number
+            base_dir = output_dir
+            os.makedirs(base_dir, exist_ok=True)
+            
+            run_number = 1
+            while True:
+                run_dir = os.path.join(base_dir, f'run_{run_number}_{method_suffix}')
+                if not os.path.exists(run_dir):
+                    break
+                run_number += 1
+            
+            # Create the run directory
+            output_dir = run_dir
+            os.makedirs(output_dir, exist_ok=True)
+            self.run_output_dir = output_dir
         
         # Table 1: Concrete vs Single Symbolic
         data = []
@@ -742,6 +886,7 @@ class TimingAnalyzer:
                     concrete_mean = self.results['concrete_sequential'][h]['time_mean']
                     symbolic_mean = stats['time_mean']
                     row['Speedup'] = concrete_mean / symbolic_mean
+                    row['Time_Ratio_Symbolic_to_Concrete'] = symbolic_mean / concrete_mean
             
             data.append(row)
         
@@ -764,6 +909,7 @@ class TimingAnalyzer:
             if h in self.results['concrete_sequential']:
                 concrete_mean = self.results['concrete_sequential'][h]['time_mean']
                 row['Speedup_vs_Concrete'] = concrete_mean / stats['time_mean']
+                row['Time_Ratio_Symbolic_to_Concrete'] = stats['time_mean'] / concrete_mean
             
             if h in self.results['symbolic_single']:
                 single_mean = self.results['symbolic_single'][h]['time_mean']
@@ -820,6 +966,223 @@ class TimingAnalyzer:
         df_trials = pd.DataFrame(all_trials)
         df_trials.to_csv(f'{output_dir}/detailed_trials.csv', index=False)
         print(f"  ✓ detailed_trials.csv (n={self.num_trials} trials per test)")
+    
+    def perform_regression_analysis(self, output_dir='./timing_analysis'):
+        """
+        Perform regression analysis on timing data and save coefficients.
+        
+        Fits two regression lines:
+        1. Concrete time vs horizon: concrete_time = a1 * horizon + b1
+        2. Time ratio vs horizon: (symbolic_time / concrete_time) = a2 * horizon + b2
+        
+        Saves coefficients to regression_fits.csv for use in other code.
+        """
+        import os
+        from scipy import stats
+        
+        # Use the same directory as create_plots if it was already called
+        if hasattr(self, 'run_output_dir'):
+            output_dir = self.run_output_dir
+        else:
+            # Determine method suffix based on system type
+            method_suffix = 'di' if 'double' in self.system_type.lower() else 'uni'
+            
+            # Find the lowest available run number
+            base_dir = output_dir
+            os.makedirs(base_dir, exist_ok=True)
+            
+            run_number = 1
+            while True:
+                run_dir = os.path.join(base_dir, f'run_{run_number}_{method_suffix}')
+                if not os.path.exists(run_dir):
+                    break
+                run_number += 1
+            
+            # Create the run directory
+            output_dir = run_dir
+            os.makedirs(output_dir, exist_ok=True)
+            self.run_output_dir = output_dir
+        
+        print(f"\n  Performing regression analysis...")
+        
+        # ===== Regression 1: Concrete time vs horizon =====
+        horizons_concrete = sorted(self.results['concrete_sequential'].keys())
+        concrete_times = [self.results['concrete_sequential'][h]['time_mean'] for h in horizons_concrete]
+        concrete_stds = [self.results['concrete_sequential'][h]['time_std'] for h in horizons_concrete]
+        
+        # Weighted linear regression (weight by inverse variance)
+        weights_concrete = 1.0 / (np.array(concrete_stds)**2 + 1e-10)
+        slope_concrete, intercept_concrete, r_value_concrete, p_value_concrete, std_err_concrete = \
+            stats.linregress(horizons_concrete, concrete_times)
+        
+        # Also compute weighted version
+        coeffs_concrete_weighted = np.polyfit(horizons_concrete, concrete_times, 1, w=weights_concrete)
+        slope_concrete_weighted = coeffs_concrete_weighted[0]
+        intercept_concrete_weighted = coeffs_concrete_weighted[1]
+        
+        # Calculate R^2 for weighted fit
+        y_pred_weighted = slope_concrete_weighted * np.array(horizons_concrete) + intercept_concrete_weighted
+        ss_res = np.sum(weights_concrete * (np.array(concrete_times) - y_pred_weighted)**2)
+        ss_tot = np.sum(weights_concrete * (np.array(concrete_times) - np.average(concrete_times, weights=weights_concrete))**2)
+        r_squared_concrete_weighted = 1 - (ss_res / ss_tot)
+        
+        print(f"    Concrete time vs horizon:")
+        print(f"      Unweighted: time = {slope_concrete:.6f} * horizon + {intercept_concrete:.6f}")
+        print(f"                  R² = {r_value_concrete**2:.6f}, p = {p_value_concrete:.6e}")
+        print(f"      Weighted:   time = {slope_concrete_weighted:.6f} * horizon + {intercept_concrete_weighted:.6f}")
+        print(f"                  R² = {r_squared_concrete_weighted:.6f}")
+        
+        # ===== Regression 2: Time ratio vs horizon (symbolic single-step) =====
+        horizons_ratio = []
+        time_ratios = []
+        ratio_stds = []
+        
+        for h in sorted(self.results['symbolic_single'].keys()):
+            if h in self.results['concrete_sequential']:
+                concrete_mean = self.results['concrete_sequential'][h]['time_mean']
+                concrete_std = self.results['concrete_sequential'][h]['time_std']
+                symbolic_mean = self.results['symbolic_single'][h]['time_mean']
+                symbolic_std = self.results['symbolic_single'][h]['time_std']
+                
+                ratio = symbolic_mean / concrete_mean
+                # Error propagation for ratio
+                rel_error = np.sqrt((symbolic_std/symbolic_mean)**2 + (concrete_std/concrete_mean)**2)
+                ratio_std = ratio * rel_error
+                
+                horizons_ratio.append(h)
+                time_ratios.append(ratio)
+                ratio_stds.append(ratio_std)
+        
+        if len(horizons_ratio) > 1:
+            # Weighted linear regression
+            weights_ratio = 1.0 / (np.array(ratio_stds)**2 + 1e-10)
+            slope_ratio, intercept_ratio, r_value_ratio, p_value_ratio, std_err_ratio = \
+                stats.linregress(horizons_ratio, time_ratios)
+            
+            # Weighted version
+            coeffs_ratio_weighted = np.polyfit(horizons_ratio, time_ratios, 1, w=weights_ratio)
+            slope_ratio_weighted = coeffs_ratio_weighted[0]
+            intercept_ratio_weighted = coeffs_ratio_weighted[1]
+            
+            # Calculate R^2 for weighted fit
+            y_pred_ratio_weighted = slope_ratio_weighted * np.array(horizons_ratio) + intercept_ratio_weighted
+            ss_res_ratio = np.sum(weights_ratio * (np.array(time_ratios) - y_pred_ratio_weighted)**2)
+            ss_tot_ratio = np.sum(weights_ratio * (np.array(time_ratios) - np.average(time_ratios, weights=weights_ratio))**2)
+            r_squared_ratio_weighted = 1 - (ss_res_ratio / ss_tot_ratio)
+            
+            print(f"\n    Time ratio (symbolic/concrete) vs horizon:")
+            print(f"      Unweighted: ratio = {slope_ratio:.6f} * horizon + {intercept_ratio:.6f}")
+            print(f"                  R² = {r_value_ratio**2:.6f}, p = {p_value_ratio:.6e}")
+            print(f"      Weighted:   ratio = {slope_ratio_weighted:.6f} * horizon + {intercept_ratio_weighted:.6f}")
+            print(f"                  R² = {r_squared_ratio_weighted:.6f}")
+        else:
+            slope_ratio = np.nan
+            intercept_ratio = np.nan
+            r_value_ratio = np.nan
+            p_value_ratio = np.nan
+            slope_ratio_weighted = np.nan
+            intercept_ratio_weighted = np.nan
+            r_squared_ratio_weighted = np.nan
+            print(f"\n    Time ratio regression: insufficient data points")
+        
+        # ===== Save regression coefficients to CSV =====
+        regression_results = {
+            'Regression': [
+                'Concrete_Time_vs_Horizon_Unweighted',
+                'Concrete_Time_vs_Horizon_Weighted',
+                'TimeRatio_vs_Horizon_Unweighted',
+                'TimeRatio_vs_Horizon_Weighted'
+            ],
+            'Slope': [
+                slope_concrete,
+                slope_concrete_weighted,
+                slope_ratio,
+                slope_ratio_weighted
+            ],
+            'Intercept': [
+                intercept_concrete,
+                intercept_concrete_weighted,
+                intercept_ratio,
+                intercept_ratio_weighted
+            ],
+            'R_Squared': [
+                r_value_concrete**2,
+                r_squared_concrete_weighted,
+                r_value_ratio**2 if not np.isnan(r_value_ratio) else np.nan,
+                r_squared_ratio_weighted
+            ],
+            'P_Value': [
+                p_value_concrete,
+                np.nan,  # Not computed for weighted
+                p_value_ratio,
+                np.nan
+            ],
+            'Formula': [
+                f'concrete_time = {slope_concrete:.6f} * horizon + {intercept_concrete:.6f}',
+                f'concrete_time = {slope_concrete_weighted:.6f} * horizon + {intercept_concrete_weighted:.6f}',
+                f'ratio = {slope_ratio:.6f} * horizon + {intercept_ratio:.6f}' if not np.isnan(slope_ratio) else 'N/A',
+                f'ratio = {slope_ratio_weighted:.6f} * horizon + {intercept_ratio_weighted:.6f}' if not np.isnan(slope_ratio_weighted) else 'N/A'
+            ],
+            'Description': [
+                'Linear fit: concrete sequential time vs horizon (ordinary least squares)',
+                'Linear fit: concrete sequential time vs horizon (weighted by inverse variance)',
+                'Linear fit: symbolic/concrete time ratio vs horizon (ordinary least squares)',
+                'Linear fit: symbolic/concrete time ratio vs horizon (weighted by inverse variance)'
+            ]
+        }
+        
+        df_regression = pd.DataFrame(regression_results)
+        df_regression.to_csv(f'{output_dir}/regression_fits.csv', index=False)
+        print(f"\n  ✓ regression_fits.csv")
+        
+        # ===== Also save Python-readable coefficients file =====
+        with open(f'{output_dir}/regression_coefficients.py', 'w') as f:
+            f.write('"""\\n')
+            f.write('Regression coefficients for timing analysis\\n')
+            f.write(f'System: {self.system_type}\\n')
+            f.write(f'Controller: {self.controller_name}\\n')
+            f.write(f'Number of trials: {self.num_trials}\\n')
+            f.write('"""\\n\\n')
+            
+            f.write('# Concrete time vs horizon\\n')
+            f.write(f'CONCRETE_SLOPE = {slope_concrete:.10f}\\n')
+            f.write(f'CONCRETE_INTERCEPT = {intercept_concrete:.10f}\\n')
+            f.write(f'CONCRETE_R_SQUARED = {r_value_concrete**2:.10f}\\n')
+            f.write(f'CONCRETE_P_VALUE = {p_value_concrete:.10e}\\n')
+            f.write('\\n')
+            f.write(f'CONCRETE_SLOPE_WEIGHTED = {slope_concrete_weighted:.10f}\\n')
+            f.write(f'CONCRETE_INTERCEPT_WEIGHTED = {intercept_concrete_weighted:.10f}\\n')
+            f.write(f'CONCRETE_R_SQUARED_WEIGHTED = {r_squared_concrete_weighted:.10f}\\n')
+            f.write('\\n\\n')
+            
+            f.write('# Time ratio (symbolic/concrete) vs horizon\\n')
+            if not np.isnan(slope_ratio):
+                f.write(f'RATIO_SLOPE = {slope_ratio:.10f}\\n')
+                f.write(f'RATIO_INTERCEPT = {intercept_ratio:.10f}\\n')
+                f.write(f'RATIO_R_SQUARED = {r_value_ratio**2:.10f}\\n')
+                f.write(f'RATIO_P_VALUE = {p_value_ratio:.10e}\\n')
+                f.write('\\n')
+                f.write(f'RATIO_SLOPE_WEIGHTED = {slope_ratio_weighted:.10f}\\n')
+                f.write(f'RATIO_INTERCEPT_WEIGHTED = {intercept_ratio_weighted:.10f}\\n')
+                f.write(f'RATIO_R_SQUARED_WEIGHTED = {r_squared_ratio_weighted:.10f}\\n')
+            else:
+                f.write('RATIO_SLOPE = None  # Insufficient data\\n')
+                f.write('RATIO_INTERCEPT = None\\n')
+                f.write('RATIO_R_SQUARED = None\\n')
+                f.write('RATIO_P_VALUE = None\\n')
+                f.write('RATIO_SLOPE_WEIGHTED = None\\n')
+                f.write('RATIO_INTERCEPT_WEIGHTED = None\\n')
+                f.write('RATIO_R_SQUARED_WEIGHTED = None\\n')
+            f.write('\\n\\n')
+            
+            f.write('# Usage examples:\\n')
+            f.write('# predicted_concrete_time = CONCRETE_SLOPE * horizon + CONCRETE_INTERCEPT\\n')
+            f.write('# predicted_ratio = RATIO_SLOPE * horizon + RATIO_INTERCEPT\\n')
+            f.write('# predicted_symbolic_time = predicted_ratio * predicted_concrete_time\\n')
+        
+        print(f"  ✓ regression_coefficients.py")
+        
+        return df_regression
 
 
 def run_analysis(system_type='DoubleIntegrator', 
@@ -839,6 +1202,8 @@ def run_analysis(system_type='DoubleIntegrator',
         num_trials: Number of trials per test with random initial states (default: 10)
         max_diff: Maximum number of symbolic steps allowed in single propagation (default: 10)
     """
+    import os
+    
     if horizons is None:
         horizons = [2, 3, 4, 5, 6, 8, 10]
     
@@ -851,16 +1216,19 @@ def run_analysis(system_type='DoubleIntegrator',
     # Run comparison
     analyzer.run_comparison(horizons, symbolic_step_counts)
     
-    # Create plots
+    # Create plots (this will set analyzer.run_output_dir)
     analyzer.create_plots()
     
-    # Save tables
+    # Save tables (this will use the same directory)
     analyzer.save_results_table()
+    
+    # Perform regression analysis
+    analyzer.perform_regression_analysis()
     
     print("\n" + "=" * 80)
     print("TIMING ANALYSIS COMPLETE")
     print("=" * 80)
-    print(f"Results saved to: ./timing_analysis/")
+    print(f"Results saved to: {analyzer.run_output_dir}/")
     print(f"Number of trials per test: {num_trials}")
     print("\nGenerated files:")
     print("  • time_vs_horizon.png")
@@ -869,10 +1237,13 @@ def run_analysis(system_type='DoubleIntegrator',
     print("  • time_per_step.png")
     print("  • multistep_comparison.png")
     print("  • speedup_heatmap.png")
-    print("  • symbolic_vs_concrete_direct.png  [NEW]")
+    print("  • symbolic_vs_concrete_direct.png")
+    print("  • time_ratio_vs_horizon.png")
     print("  • concrete_vs_symbolic.csv")
     print("  • symbolic_multistep.csv")
     print("  • detailed_trials.csv")
+    print("  • regression_fits.csv")
+    print("  • regression_coefficients.py")
 
 
 if __name__ == "__main__":
@@ -903,8 +1274,10 @@ if __name__ == "__main__":
     run_analysis(
         system_type=system_type,
         controller_name=controller_name,
-        horizons=[2, 3, 4, 5, 6, 8, 10],
-        symbolic_step_counts=[1, 2, 3, 5],
+        # horizons=[2, 3, 4, 5, 6, 8, 10],
+        horizons=[i for i in range(2,21,2)],
+        # symbolic_step_counts=[1, 2, 3, 5],
+        symbolic_step_counts=[1,2],
         num_trials=num_trials,
         max_diff=max_diff
     )
