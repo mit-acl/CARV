@@ -46,7 +46,7 @@ class Obstacles:
     def check_collision(self, state: np.ndarray):
         """ Check if state collides with any obstacle"""
         if self.obstacle_list is None:
-            return None
+            return None, None
 
         collisions = []
         intersections = []
@@ -56,13 +56,13 @@ class Obstacles:
             if np.all(state[:, 0] <= obs[:, 1]) and np.all(state[:, 1] >= obs[:, 0]):
                 collisions.append(obs)
 
-            intersection = np.column_stack((
+                intersection = np.column_stack((
                     np.maximum(state[:, 0], obs[:, 0]),  # max of lower bounds
                     np.minimum(state[:, 1], obs[:, 1])   # min of upper bounds
                 ))
-            intersections.append(intersection)
+                intersections.append(intersection)
 
-        if len(collisions) > 0:
+        if len(collisions) > 0 and len(intersections) > 0:
             return collisions, intersections
         else:
             return None, None
@@ -708,12 +708,12 @@ class ReachabilityTester:
     #     # TODO: integrate with horizons
     #     """
     #     Compute backward reachable set (backprojection set)
-        
+
     #     Args:
     #         final_state_range: The final state range to backproject to
     #         boundary_type: The type of boundary (e.g., "rectangle", "ellipsoid")
     #         t_max: The time horizon for backprojection
-    #         overapprox: 
+    #         overapprox:
     #     """
 
     #     # if start_timestep not in self.horizons:
@@ -739,7 +739,7 @@ class ReachabilityTester:
 
     #     # perform backprojection
     #     target_set = constraints.state_range_to_constraint(final_state_range, boundary_type)
-        
+
     #     backprojection_sets, analyzer_info = self.backward_analyzer.get_backprojection_set(
     #         target_set,
     #         t_max=t_max,
@@ -753,47 +753,47 @@ class ReachabilityTester:
     # def backward(self, start_timestep: int, num_steps: int = 5, boundary_type: str = "rectangle", overapprox: bool = True):
     #     """
     #     Compute backward reachable set (backprojection set) and store in horizons.
-        
+
     #     Args:
     #         start_timestep: The target timestep index (T) to backproject FROM
     #         num_steps: Number of discrete timestep indices to backproject
     #         boundary_type: The type of boundary (e.g., "rectangle", "ellipsoid")
     #         overapprox: Whether to use over-approximation
-        
+
     #     Returns:
     #         Computation time
     #     """
-        
+
     #     if start_timestep not in self.horizons:
     #         print(f"Error: No horizon exists at timestep {start_timestep}")
     #         return False
-        
+
     #     if self.backward_analyzer is None:
     #         print("Error: No backward analyzer available")
     #         return False
-        
+
     #     earliest_timestep = start_timestep - num_steps
     #     if earliest_timestep < 0:
     #         print(f"Error: Backprojection would go to t={earliest_timestep} (negative timestep)")
     #         return False
-        
+
     #     # Get dt and convert discrete timestep indices to continuous time
     #     dt = self.backward_analyzer.propagator.dynamics.dt
     #     t_max = num_steps * dt  # Convert timestep indices to seconds
-        
+
     #     # Get target set
     #     start_horizon = self.horizons[start_timestep]
     #     final_state_range = start_horizon.get_tight_bound()
-        
+
     #     if final_state_range is None:
     #         print(f"Error: No bounds available at timestep {start_timestep}")
     #         return False
-        
+
     #     print("=" * 20 + " Backward " + "=" * 20)
     #     print(f"Computing backprojection from target at timestep index {start_timestep}")
     #     print(f"Going back {num_steps} timestep indices = {t_max}s simulation time")
     #     print(f"Target timestep indices: {earliest_timestep} to {start_timestep-1}")
-        
+
     #     # Perform backprojection
     #     t_start = time.time()
     #     target_set = constraints.state_range_to_constraint(final_state_range, boundary_type)
@@ -803,22 +803,22 @@ class ReachabilityTester:
     #         overapprox=overapprox
     #     )
     #     t_elapsed = time.time() - t_start
-        
+
     #     num_timesteps = backprojection_sets.get_t_max()
-        
+
     #     if num_timesteps != num_steps:
     #         print(f"Warning: Expected {num_steps} timesteps but got {num_timesteps}")
     #         print(f"  Check that backward analyzer dt matches forward analyzer dt")
-        
+
     #     print(f"\nStoring {num_timesteps} backprojection sets:")
-        
+
     #     # Store each timestep's backprojection
     #     for i in range(num_timesteps):
     #         current_timestep = earliest_timestep + i
     #         steps_to_target = start_timestep - current_timestep
-            
+
     #         constraint = backprojection_sets.get_constraint_at_time_index(i)
-            
+
     #         if isinstance(constraint, constraints.PolytopeConstraint):
     #             bounds = constraint.to_range()
     #         elif isinstance(constraint, constraints.LpConstraint):
@@ -826,15 +826,15 @@ class ReachabilityTester:
     #         else:
     #             print(f"Warning: Unknown constraint type at index {i}")
     #             continue
-            
+
     #         volume = np.prod(bounds[:, 1] - bounds[:, 0])
-            
+
     #         if current_timestep not in self.horizons:
     #             self.horizons[current_timestep] = ReachableSetHorizon(
-    #                 current_timestep, 
+    #                 current_timestep,
     #                 device=self.analyzer.device
     #             )
-            
+
     #         self.horizons[current_timestep].add_calculation(
     #             bounds=bounds,
     #             calc_type=CalculationType.BACKWARD,
@@ -843,60 +843,60 @@ class ReachabilityTester:
     #             step_size=steps_to_target,
     #             notes=f'Backproject from t={start_timestep} ({steps_to_target} steps to target)'
     #         )
-            
+
     #         if num_steps <= 10 or i % 5 == 0 or i == num_timesteps - 1:
     #             print(f"  t={current_timestep} ({steps_to_target} steps to target): volume={volume:.6f}")
-        
+
     #     print(f"\nBackward propagation complete: {t_elapsed:.4f}s")
 
     #     #TODO: fix retval
-        
+
     #     return t_elapsed
 
     def backward(self, start_timestep: int, num_steps: int = 5, boundary_type: str = "rectangle", overapprox: bool = True):
         """
         Compute backward reachable set (backprojection set) and store in horizons.
-        
+
         Args:
             start_timestep: The target timestep index (T) to backproject FROM
             num_steps: Number of discrete timestep indices to backproject
             boundary_type: The type of boundary (e.g., "rectangle", "ellipsoid")
             overapprox: Whether to use over-approximation
-        
+
         Returns:
             Dictionary with success status, timing, and collision info
         """
-        
+
         if start_timestep not in self.horizons:
             print(f"Error: No horizon exists at timestep {start_timestep}")
             return {'success': False, 'error': 'No horizon at start_timestep'}
-        
+
         if self.backward_analyzer is None:
             print("Error: No backward analyzer available")
             return {'success': False, 'error': 'No backward analyzer'}
-        
+
         earliest_timestep = start_timestep - num_steps
         if earliest_timestep < 0:
             print(f"Error: Backprojection would go to t={earliest_timestep} (negative timestep)")
             return {'success': False, 'error': 'Negative timestep'}
-        
+
         # Get dt and convert discrete timestep indices to continuous time
         dt = self.backward_analyzer.propagator.dynamics.dt
         t_max = num_steps * dt  # Convert timestep indices to seconds
-        
+
         # Get target set
         start_horizon = self.horizons[start_timestep]
         final_state_range = start_horizon.get_tight_bound()
-        
+
         if final_state_range is None:
             print(f"Error: No bounds available at timestep {start_timestep}")
             return {'success': False, 'error': 'No bounds available'}
-        
+
         print("=" * 20 + " Backward " + "=" * 20)
         print(f"Computing backprojection from target at timestep index {start_timestep}")
         print(f"Going back {num_steps} timestep indices = {t_max}s simulation time")
         print(f"Target timestep indices: {earliest_timestep} to {start_timestep-1}")
-        
+
         # Perform backprojection
         t_start = time.time()
         target_set = constraints.state_range_to_constraint(final_state_range, boundary_type)
@@ -906,27 +906,30 @@ class ReachabilityTester:
             overapprox=overapprox
         )
         t_elapsed = time.time() - t_start
-        
+
         num_timesteps = backprojection_sets.get_t_max()
-        
+
         if num_timesteps != num_steps:
             print(f"Warning: Expected {num_steps} timesteps but got {num_timesteps}")
             print(f"  Check that backward analyzer dt matches forward analyzer dt")
-        
+
         print(f"\nStoring {num_timesteps} backprojection sets:")
-        
+
         # Track collision info
         collision_detected = False
         collision_timestep = None
         collision_obstacles = None
-        
+
         # Store each timestep's backprojection
+        # NOTE: nfl_veripy returns backprojection sets ordered as:
+        #   index 0 = 1 step back (closest to target),
+        #   index N-1 = N steps back (furthest from target)
         for i in range(num_timesteps):
-            current_timestep = earliest_timestep + i
-            steps_to_target = start_timestep - current_timestep
-            
+            current_timestep = start_timestep - (i + 1)
+            steps_to_target = i + 1
+
             constraint = backprojection_sets.get_constraint_at_time_index(i)
-            
+
             if isinstance(constraint, constraints.PolytopeConstraint):
                 bounds = constraint.to_range()
             elif isinstance(constraint, constraints.LpConstraint):
@@ -934,15 +937,15 @@ class ReachabilityTester:
             else:
                 print(f"Warning: Unknown constraint type at index {i}")
                 continue
-            
+
             volume = np.prod(bounds[:, 1] - bounds[:, 0])
-            
+
             if current_timestep not in self.horizons:
                 self.horizons[current_timestep] = ReachableSetHorizon(
-                    current_timestep, 
+                    current_timestep,
                     device=self.analyzer.device
                 )
-            
+
             self.horizons[current_timestep].add_calculation(
                 bounds=bounds,
                 calc_type=CalculationType.BACKWARD,
@@ -951,25 +954,26 @@ class ReachabilityTester:
                 step_size=steps_to_target,
                 notes=f'Backproject from t={start_timestep} ({steps_to_target} steps to target)'
             )
-            
+
             # Check for collisions with obstacles
-            collisions = self.obstacles.check_collision(bounds)
+            collisions, intersections = self.obstacles.check_collision(bounds)
             if collisions is not None and not collision_detected:
                 collision_detected = True
                 collision_timestep = current_timestep
                 collision_obstacles = collisions
                 print(f"  ⚠ Collision detected at t={current_timestep}")
-            
+
             # Print progress
             print(f"  t={current_timestep} ({steps_to_target} steps to target): vol={volume:.6f}")
-        
+
         print(f"\nBackward propagation complete: {t_elapsed:.4f}s")
-        
+        self.time += t_elapsed
+
         if collision_detected:
             print(f"⚠ Warning: Collision detected during backward propagation")
             print(f"  First collision at t={collision_timestep}")
             print(f"  Obstacles: {collision_obstacles}\n")
-            
+
             return {
                 'success': False,
                 'time': t_elapsed,
@@ -989,6 +993,136 @@ class ReachabilityTester:
                 'num_timesteps': num_timesteps,
                 'earliest_timestep': earliest_timestep
             }
+
+    def backward_from_set(self, target_set: np.ndarray, target_timestep: int, num_steps: int = 5,
+                       boundary_type: str = "rectangle", overapprox: bool = True):
+
+        """
+        Backproject from an arbitrary set.
+
+        Args:
+            target_set: The set to backproject FROM (e.g., intersection of RSOA and obstacle)
+                        Shape: (n_dims, 2) with [lower, upper] bounds
+            target_timestep: The timestep this set lives at
+            num_steps: How many steps to backproject
+        """
+        if self.backward_analyzer is None:
+            return {'success': False, 'error': 'No backward analyzer'}
+
+        earliest_timestep = target_timestep - num_steps
+        if earliest_timestep < 0:
+            num_steps = target_timestep
+            earliest_timestep = 0
+
+        dt = self.backward_analyzer.propagator.dynamics.dt
+        t_max = num_steps * dt
+
+        print("=" * 20 + " Backward (from set) " + "=" * 20)
+        print(f"Backprojecting intersection at t={target_timestep}, going back {num_steps} steps")
+        print(f"Target set: {target_set}")
+
+        # Perform backprojection from the provided set
+        t_start = time.time()
+        target_constraint = constraints.state_range_to_constraint(target_set, boundary_type)
+        backprojection_sets, analyzer_info = self.backward_analyzer.get_backprojection_set(
+            target_constraint,
+            t_max=t_max,
+            overapprox=overapprox
+        )
+        t_elapsed = time.time() - t_start
+
+        num_timesteps = backprojection_sets.get_t_max()
+
+        # Check each backprojected set against existing tight bounds.
+        # If any backprojected set does NOT overlap with the existing tight bound at that timestep,
+        #  then the collision is unreachable (FALSE POSITIVE)
+
+        all_overlap = True
+        first_gap_timestep = None
+        overlap_details = []
+
+        #Used for storiong all bp bounds for animation
+        all_bp_bounds = []
+
+
+        # NOTE: nfl_veripy returns backprojection sets ordered as:
+        #   index 0 = 1 step back (closest to target),
+        #   index N-1 = N steps back (furthest from target)
+        # We iterate from closest-to-target backward to check the overlap chain.
+        for i in range(num_timesteps):
+            current_timestep = target_timestep - (i + 1)
+            steps_to_target = i + 1
+
+            constraint = backprojection_sets.get_constraint_at_time_index(i)
+
+            if isinstance(constraint, constraints.PolytopeConstraint):
+                bp_bounds = constraint.to_range()
+            elif isinstance(constraint, constraints.LpConstraint):
+                bp_bounds = constraint.range
+            else:
+                continue
+
+            volume = np.prod(bp_bounds[:, 1] - bp_bounds[:, 0])
+
+            #Used for storing all bp bounds for animation
+            all_bp_bounds.append({
+                'timestep': current_timestep,
+                'bp_bounds': bp_bounds.copy(),
+                'has_overlap': False  # updated below if overlap found
+            })
+
+
+            print(f"  t={current_timestep} ({steps_to_target} steps to target): vol={volume:.6f}")
+
+            if current_timestep in self.horizons:
+                tight = self.horizons[current_timestep].get_tight_bound()
+                if tight is not None:
+                    overlap_lower = np.maximum(bp_bounds[:, 0], tight[:, 0])
+                    overlap_upper = np.minimum(bp_bounds[:, 1], tight[:, 1])
+
+                    if np.all(overlap_lower <= overlap_upper):
+
+                        #Used for storing all bp bounds for animation
+                        all_bp_bounds[-1]['has_overlap'] = True
+
+                        overlap_vol = np.prod(overlap_upper - overlap_lower)
+                        tight_vol = np.prod(tight[:, 1] - tight[:, 0])
+                        overlap_fraction = overlap_vol / tight_vol if tight_vol > 0 else 0
+
+                        print(f"    OVERLAP with tight bound at t={current_timestep}")
+                        print(f"    Overlap volume: {overlap_vol:.6f} ({overlap_fraction:.1%} of tight bound)")
+
+                        overlap_details.append({
+                            'timestep': current_timestep,
+                            'bp_bounds': bp_bounds.copy(),
+                            'tight_bounds': tight.copy(),
+                            'overlap_volume': overlap_vol,
+                            'overlap_fraction': overlap_fraction
+                        })
+                    else:
+                        print(f"    No overlap at t={current_timestep} — chain broken, collision unreachable")
+                        all_overlap = False
+                        first_gap_timestep = current_timestep
+                        break
+
+        self.time += t_elapsed
+        print(f"\nBackprojection complete: {t_elapsed:.4f}s")
+
+        if all_overlap:
+            print(f" Collision IS reachable — continuous overlap chain from past to conflict")
+        else:
+            print(f" Collision is FALSE POSITIVE — chain broken at t={first_gap_timestep}")
+
+        return {
+            'success': True,
+            'time': t_elapsed,
+            'reachable_from_past': all_overlap,
+            'first_gap_timestep': first_gap_timestep,
+            'overlap_details': overlap_details,
+            'num_timesteps': num_timesteps,
+            'earliest_timestep': earliest_timestep,
+            'all_bp_bounds': all_bp_bounds, #Used for storiong all bp bounds for animation
+        }
 
 def setup_analyzer(system_type='DoubleIntegrator', controller_name='constraint_default_more_data_5hz', init_range=None, max_diff: int = 10):
     """Setup analyzer for simulation testing"""
