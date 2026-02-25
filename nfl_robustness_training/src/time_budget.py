@@ -16,7 +16,7 @@ class TimeBudget:
         self._start = None
         self._log = []             # [(operation_name, elapsed)] for current timestep
 
-    def calibrate(self, tester, max_symbolic_horizon=10, max_backward_horizon=10, num_repeats=2):
+    def calibrate(self, tester, max_symbolic_horizon=10, max_backward_horizon=10, num_repeats=1):
         """Run once at startup with a throwaway tester."""
         max_needed = max(max_symbolic_horizon, max_backward_horizon) + 5
         for t in range(max_needed):
@@ -26,9 +26,8 @@ class TimeBudget:
         for h in range(1, max_symbolic_horizon + 1):
             times = []
             for _ in range(num_repeats):
-                t0 = time.perf_counter()
-                tester.symbolic(0, h)
-                times.append(time.perf_counter() - t0)
+                result = tester.symbolic(0, h)
+                times.append(result['time'])
             self.symbolic_costs[h] = np.median(times)
 
         # Backward
@@ -38,21 +37,19 @@ class TimeBudget:
         for h in range(1, max_backward_horizon + 1):
             times = []
             for _ in range(num_repeats):
-                t0 = time.perf_counter()
-                tester.backward_from_set(
+                result = tester.backward_from_set(
                     target_set=dummy_set,
                     target_timestep=max_needed - 1,
                     num_steps=h
                 )
-                times.append(time.perf_counter() - t0)
+                times.append(result['time'])
             self.backward_costs[h] = np.median(times)
 
         # Concrete
         times = []
         for _ in range(num_repeats):
-            t0 = time.perf_counter()
-            tester.concrete(0, 15)
-            times.append(time.perf_counter() - t0)
+            result = tester.concrete(0, 15)
+            times.append(result['time'])
         self.concrete_cost = np.median(times) / 15  # per-step cost
 
     # ─── Timestep tracking ───────────────────────────────────────────
