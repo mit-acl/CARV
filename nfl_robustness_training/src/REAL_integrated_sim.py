@@ -26,6 +26,7 @@ from utils.nn import load_controller, controller2sequential
 from utils.robust_training_utils import ReachableSet
 from utils.robust_training_utils import Analyzer
 from state_estimator import LinearKalmanEstimator, ExtendedKalmanEstimator
+from safety_filter import make_safety_filter
 
 
 class CalculationType(Enum):
@@ -212,6 +213,8 @@ class ReachabilityTester:
         self.measurement_noise_std = measurement_noise_std
 
         self.estimator = self.create_estimator(analyzer, initial_state, init_bounds, process_noise_std, measurement_noise_std)
+
+        self.safety_filter = make_safety_filter(self, obstacles_list) if obstacles_list is not None else None
 
     def get_time(self):
         """Get total computation time for all calculations performed so far"""

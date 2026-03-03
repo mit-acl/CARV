@@ -1,8 +1,3 @@
-"""
-Updated refinement strategy. Keeps greedily extending the validated horizon as long as budget allows
-but with more modular structure
-"""
-
 from REAL_integrated_sim import setup_analyzer, ReachabilityTester
 from time_budget import TimeBudget
 import numpy as np
@@ -40,12 +35,6 @@ def symbolic_step(tester, job: VerificationTask, chunk_size: int):
         return job, result       # finished — caller gets the result
     return job, None             # incomplete — carry over
 
-# ─────────────────────────────────────────────
-#  Extension after deconfliction
-#  Pattern: concrete → (collision) → symbolic → (deconflict) → concrete → ...
-#  Keeps looping as long as budget allows; returns a carry-over job if
-#  symbolic verification couldn't finish within the budget.
-# ─────────────────────────────────────────────
 
 def try_extend(tester, validated_until, max_time, budget, max_symbolic_horizon, current_timestep, min_lookahead):
     """
@@ -94,9 +83,8 @@ def try_extend(tester, validated_until, max_time, budget, max_symbolic_horizon, 
 
         # Symbolic finished
         validated_until = conflict_time - 1 if result["collision"] else conflict_time
-        force_stop = result["collision"] and (conflict_time - current_timestep) < min_lookahead
-        print(f"Conflict confirmed at t={conflict_time} using symbolic" + (" — FORCED STOP" if force_stop else " — deferring") if result["collision"] else f"Deconflicted — validated until t={conflict_time}")
-        if force_stop or result["collision"]:
+        print(f"Conflict confirmed at t={conflict_time} using symbolic — stopping extension" if result["collision"] else f"Deconflicted — validated until t={conflict_time}")
+        if result["collision"]:
             return validated_until, None   # real danger — stop extending
 
         # Deconflicted — loop to scan further
@@ -110,7 +98,7 @@ def test1():
     analyzer = setup_analyzer('DoubleIntegrator', 'constraint_default_more_data_5hz')
 
     obstacles = [
-        np.array([[-np.inf, np.inf], [-np.inf, -1.0]]),
+        np.array([[-np.inf, np.inf], [-np.inf, -0.75]]),
         np.array([[-np.inf, 0.0],    [-np.inf, np.inf]]),
     ]
     tester  = ReachabilityTester(analyzer, obstacles)
@@ -145,12 +133,8 @@ def test1():
                 # job finished this timestep
                 conflict_time = pending_job.conflict_time
                 validated_until = conflict_time - 1 if result["collision"] else conflict_time
+                print(f"Conflict confirmed at t={conflict_time} — deferring to safety filter" if result["collision"] else f"Deconflicted — validated until t={conflict_time}")
 
-                force_stop = result["collision"] and (conflict_time - current_timestep) < MIN_LOOKAHEAD
-                print(f"Conflict confirmed at t={conflict_time}" + (" — FORCED STOP" if force_stop else " — deferring") if result["collision"] else f"Deconflicted — validated until t={conflict_time}")
-
-                if force_stop:
-                    break
                 if not result["collision"] and budget.remaining > 0:
                     validated_until, pending_job = try_extend(
                         tester, validated_until, MAX_TIME, budget,
@@ -178,11 +162,8 @@ def test1():
                 if result is not None:
                     # finished in one shot
                     validated_until = conflict_time - 1 if result["collision"] else conflict_time
-                    force_stop = result["collision"] and (conflict_time - current_timestep) < MIN_LOOKAHEAD
-                    print(f"Conflict confirmed at t={conflict_time}" + (" — FORCED STOP" if force_stop else " — deferring") if result["collision"] else f"Deconflicted — validated until t={conflict_time}")
+                    print(f"Conflict confirmed at t={conflict_time} — deferring to safety filter" if result["collision"] else f"Deconflicted — validated until t={conflict_time}")
                     pending_job = None
-                    if force_stop:
-                        break
                     if not result["collision"] and budget.remaining > 0:
                         validated_until, pending_job = try_extend(
                             tester, validated_until, MAX_TIME, budget,
@@ -195,6 +176,13 @@ def test1():
 
         if validated_until >= MAX_TIME:
             break
+
+        sf_result = tester.safety_filter.filter(tester.horizons[current_timestep].get_tight_bound())
+        if sf_result['intervened']:
+            print(f"[SafetyFilter t={current_timestep}] INTERVENED : {sf_result['reason']}")
+            break
+        else:
+            print(f"[SafetyFilter t={current_timestep}] nominal control is safe.")
 
         tester.real_state_empirical(current_timestep, current_timestep + 1)
         print(f"Safety margin: {validated_until - current_timestep} steps ahead")
