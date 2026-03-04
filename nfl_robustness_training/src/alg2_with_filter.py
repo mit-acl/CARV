@@ -1,3 +1,6 @@
+"""
+greedy extensino alg with safety filter
+"""
 from REAL_integrated_sim import setup_analyzer, ReachabilityTester
 from time_budget import TimeBudget
 import numpy as np
@@ -36,7 +39,7 @@ def symbolic_step(tester, job: VerificationTask, chunk_size: int):
     return job, None             # incomplete — carry over
 
 
-def try_extend(tester, validated_until, max_time, budget, max_symbolic_horizon, current_timestep, min_lookahead):
+def try_extend(tester, validated_until, max_time, budget, max_symbolic_horizon, current_timestep):
     """
     Greedily push validated_until toward max_time.
 
@@ -87,7 +90,6 @@ def try_extend(tester, validated_until, max_time, budget, max_symbolic_horizon, 
         if result["collision"]:
             return validated_until, None   # real danger — stop extending
 
-        # Deconflicted — loop to scan further
 
     return validated_until, None
 
@@ -105,7 +107,6 @@ def test1():
     tester_calibration = ReachabilityTester(analyzer)
 
     MIN_LOOKAHEAD        = 4
-    MAX_LOOKAHEAD        = 10
     MAX_SYMBOLIC_HORIZON = 10
     MAX_TIME             = 40
     budget = TimeBudget(timestep_budget=0.40)
@@ -167,7 +168,7 @@ def test1():
                     if not result["collision"] and budget.remaining > 0:
                         validated_until, pending_job = try_extend(
                             tester, validated_until, MAX_TIME, budget,
-                            MAX_SYMBOLIC_HORIZON, current_timestep, MIN_LOOKAHEAD
+                            MAX_SYMBOLIC_HORIZON, current_timestep
                         )
                 else:
                     # partial — carry over
