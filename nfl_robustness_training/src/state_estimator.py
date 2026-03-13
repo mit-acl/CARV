@@ -112,6 +112,7 @@ class LinearKalmanEstimator(StateEstimator):
     def predict(self, control_input: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
         Kalman Filter prediction step.
+        returns state and bounds
         """
         # Convert control to numpy if needed
         if isinstance(control_input, torch.Tensor):
