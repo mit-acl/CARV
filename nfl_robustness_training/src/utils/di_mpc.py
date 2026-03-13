@@ -1,14 +1,5 @@
 """
-Double integrator model and MPC controller using do-mpc (LinearModel).
-
-System:
-    States:  x = [p, v]  (position, velocity)
-    Input:   u = [a]     (acceleration)
-    Discrete dynamics (ZOH, dt=t_step):
-        x_{k+1} = A x_k + B u_k
-
-    Continuous A = [[0, 1],   B = [[0],
-                    [0, 0]]        [1]]
+Double integrator model MPC using do-mpc
 """
 
 from pyexpat import model
