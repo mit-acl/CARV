@@ -1,14 +1,16 @@
 """
-Updated refinement strategy with optional optimized extension.
+Optimized extension algorithm matching anim_alg5_optimization.py.
 
 When validated_until is at least MIN_SAFE_HORIZON ahead of current_timestep,
 the ExtensionOptimizer chooses whether to compute T+1 via:
-  - symbolic: from current_timestep to verified_until+1
-  - concrete:  from verified_until to verified_until+1
+  - concrete: tester.concrete(validated_until, T+1)
+  - symbolic: tester.symbolic(current_timestep, T+1)  — tighter bounds
 
-Otherwise, falls back to the standard baseline algorithm.
-try_extend is capped at current_timestep + MIN_SAFE_HORIZON so it never
-scans past the threshold where the optimizer should take over.
+The optimizer loops within each timestep until budget is exhausted, a
+pending job is created, or the margin drops below MIN_SAFE_HORIZON.
+
+The baseline concrete scan is capped at current_timestep + MIN_SAFE_HORIZON
+so the optimizer always gets a turn once the safe margin is reached.
 """
 
 from REAL_integrated_sim import setup_analyzer, ReachabilityTester
@@ -54,12 +56,8 @@ def symbolic_step(tester, job: VerificationTask, chunk_size: int):
 def try_extend(tester, validated_until, max_time, budget, max_symbolic_horizon,
                current_timestep, min_lookahead, safe_horizon_ceiling=None):
     """
-    Greedily push validated_until toward max_time using concrete scans,
-    falling back to symbolic to deconflict any collisions found.
-
-    If safe_horizon_ceiling is set (= current_timestep + MIN_SAFE_HORIZON),
-    the scan stops there rather than scanning all the way to max_time,
-    so the optimizer always gets a turn once the safe margin is reached.
+    Greedily push validated_until toward max_time (or safe_horizon_ceiling)
+    using concrete scans, falling back to symbolic to deconflict collisions.
 
     Returns (new_validated_until, pending_job | None).
     """
@@ -75,7 +73,7 @@ def try_extend(tester, validated_until, max_time, budget, max_symbolic_horizon,
             scan_ceiling,
             max_time
         )
-        print(f"[extend] Attempting concrete scan: t={validated_until} -> t={end_check_time}")
+        print(f"[extend] Concrete scan: t={validated_until} -> t={end_check_time}")
         collision, conflict_time = concrete_scan(tester, validated_until, end_check_time)
 
         if not collision:
@@ -118,14 +116,16 @@ def try_extend(tester, validated_until, max_time, budget, max_symbolic_horizon,
 def optimized_step(tester, validated_until, max_time, budget, max_symbolic_horizon,
                    current_timestep, min_lookahead, ext_optimizer):
     """
-    Use the ExtensionOptimizer to compute the reachable set at verified_until+1.
+    Extend the verified horizon by one step to T+1, using the method chosen
+    by the optimizer.
 
-    The optimizer chooses between:
-      - concrete: one step from validated_until to validated_until+1
-      - symbolic: k steps from current_timestep to validated_until+1
+      concrete: tester.concrete(validated_until, T+1)
+      symbolic: tester.symbolic(current_timestep, T+1) — tighter bounds
 
-    If the chosen method finds a collision, hands off to standard symbolic
-    deconfliction (same as baseline). Returns (new_validated_until, pending_job | None).
+    If the chosen method finds a collision, deconflict using the original
+    procedure: symbolic from current_timestep to conflict_time, chunked.
+
+    Returns (new_validated_until, pending_job | None).
     """
     target = validated_until + 1
     if target > max_time:
@@ -142,62 +142,48 @@ def optimized_step(tester, validated_until, max_time, budget, max_symbolic_horiz
         time_budget      = budget.remaining,
     )
 
-    # ── CONCRETE: one step from T to T+1 ──────────────────────────────
+    # ── Perform the chosen extension step ─────────────────────────────
     if method == "concrete":
         print(f"[opt_step] Concrete: t={validated_until} -> t={target}")
-        collision, conflict_time = concrete_scan(tester, validated_until, target)
+        result        = tester.concrete(validated_until, target)
+        conflict_time = result.get("collision_timestep")
 
-        if not collision:
-            return target, None
+    else:  # symbolic
+        full_span     = target - current_timestep
+        actual_k      = min(full_span, max_symbolic_horizon, budget.max_affordable_symbolic())
+        target        = current_timestep + actual_k   # may be capped by budget
+        print(f"[opt_step] Symbolic: t={current_timestep} -> t={target} (span={actual_k})")
+        result        = tester.symbolic(current_timestep, target)
+        conflict_time = result.get("collision_timestep")
 
-        print(f"[opt_step] Concrete found collision at t={conflict_time}, deconflicting")
-        if not budget.can_afford('symbolic', 1):
-            return conflict_time - 1, VerificationTask(
-                symbolic_start=conflict_time - 1,
-                conflict_time=conflict_time
-            )
+    if not result["collision"]:
+        print(f"[opt_step] Clean — validated until t={target}")
+        return target, None
 
-        chunk_size = min(budget.max_affordable_symbolic(), max_symbolic_horizon,
-                         conflict_time - validated_until)
-        job = VerificationTask(symbolic_start=validated_until, conflict_time=conflict_time)
-        job, result = symbolic_step(tester, job, chunk_size)
+    # ── Collision: deconflict with symbolic from current_timestep ─────
+    print(f"[opt_step] Collision at t={conflict_time} — deconflicting from t={current_timestep}")
 
-        if result is None:
-            return job.symbolic_start, job
+    if not budget.can_afford('symbolic', 1):
+        return conflict_time - 1, VerificationTask(
+            symbolic_start=conflict_time - 1,
+            conflict_time=conflict_time
+        )
 
-        if result["collision"]:
-            force_stop = (conflict_time - current_timestep) < min_lookahead
-            print(f"[opt_step] Conflict confirmed at t={conflict_time}"
-                  + (" — FORCED STOP" if force_stop else " — deferring"))
-            return conflict_time - 1, None
+    chunk_size = min(budget.max_affordable_symbolic(), max_symbolic_horizon)
+    job = VerificationTask(symbolic_start=current_timestep, conflict_time=conflict_time)
+    job, result = symbolic_step(tester, job, chunk_size)
 
-        print(f"[opt_step] Deconflicted — validated until t={conflict_time}")
-        return conflict_time, None
+    if result is None:
+        return job.symbolic_start, job
 
-    # ── SYMBOLIC: k steps from current_timestep to T+1 ────────────────
-    else:
-        k = target - current_timestep
-        actual_k      = min(k, max_symbolic_horizon, budget.max_affordable_symbolic())
-        actual_target = current_timestep + actual_k
+    if result["collision"]:
+        force_stop = (conflict_time - current_timestep) < min_lookahead
+        print(f"[opt_step] Conflict confirmed at t={conflict_time}"
+              + (" — FORCED STOP" if force_stop else " — deferring"))
+        return conflict_time - 1, None
 
-        print(f"[opt_step] Symbolic: t={current_timestep} -> t={actual_target} "
-              f"(k={actual_k}, requested t={target})")
-
-        job = VerificationTask(symbolic_start=current_timestep, conflict_time=actual_target)
-        job, result = symbolic_step(tester, job, actual_k)
-
-        if result is None:
-            return job.symbolic_start, job
-
-        if result["collision"]:
-            conflict_time = actual_target
-            force_stop    = (conflict_time - current_timestep) < min_lookahead
-            print(f"[opt_step] Symbolic found conflict before t={actual_target}"
-                  + (" — FORCED STOP" if force_stop else " — deferring"))
-            return conflict_time - 1, None
-
-        print(f"[opt_step] Symbolic clean — validated until t={actual_target}")
-        return actual_target, None
+    print(f"[opt_step] Deconflicted — validated until t={conflict_time}")
+    return conflict_time, None
 
 
 def _get_volume(tester, timestep):
@@ -276,8 +262,6 @@ def test1():
                 if force_stop:
                     break
                 if not result["collision"] and budget.remaining > 0:
-                    # After carry-over deconfliction, only extend to MIN_SAFE_HORIZON
-                    # ceiling so the optimizer can take over from there
                     validated_until, pending_job = try_extend(
                         tester, validated_until, MAX_TIME, budget,
                         MAX_SYMBOLIC_HORIZON, current_timestep, MIN_LOOKAHEAD,
@@ -291,15 +275,19 @@ def test1():
             safety_margin = validated_until - current_timestep  # recheck after carry-over
 
             if safety_margin >= MIN_SAFE_HORIZON:
-                # ── OPTIMIZED: ask optimizer for next step at T+1 ─────────
-                validated_until, pending_job = optimized_step(
-                    tester, validated_until, MAX_TIME, budget,
-                    MAX_SYMBOLIC_HORIZON, current_timestep, MIN_LOOKAHEAD,
-                    ext_optimizer
-                )
+                # ── OPTIMIZED: loop until budget gone, horizon maxed, or
+                # a pending job is created (collision mid-step) ───────────
+                while (validated_until - current_timestep >= MIN_SAFE_HORIZON
+                       and validated_until < MAX_TIME
+                       and pending_job is None
+                       and budget.remaining > 0):
+                    validated_until, pending_job = optimized_step(
+                        tester, validated_until, MAX_TIME, budget,
+                        MAX_SYMBOLIC_HORIZON, current_timestep, MIN_LOOKAHEAD,
+                        ext_optimizer
+                    )
 
-                # If optimizer result dropped us below MIN_SAFE_HORIZON,
-                # recover with baseline — but only up to the ceiling
+                # If margin dropped below threshold (e.g. collision), recover
                 new_margin = validated_until - current_timestep
                 if new_margin < MIN_SAFE_HORIZON and pending_job is None \
                         and budget.remaining > 0:
@@ -312,18 +300,17 @@ def test1():
                     )
 
             else:
-                # ── BASELINE: concrete scan + symbolic deconflict ─────────
+                # ── BASELINE: concrete scan capped at MIN_SAFE_HORIZON ────
                 explore_from   = max(validated_until, current_timestep)
                 end_check_time = min(
                     explore_from + budget.max_affordable_concrete(),
-                    current_timestep + MIN_SAFE_HORIZON,   # never scan past ceiling
+                    current_timestep + MIN_SAFE_HORIZON,
                     MAX_TIME
                 )
                 collision, conflict_time = concrete_scan(tester, explore_from, end_check_time)
 
                 if not collision:
                     validated_until = end_check_time
-                    # If we just hit the ceiling, hand off to optimizer
                     new_margin = validated_until - current_timestep
                     if new_margin >= MIN_SAFE_HORIZON and budget.remaining > 0:
                         print(f"[baseline] Reached MIN_SAFE_HORIZON "
@@ -359,7 +346,6 @@ def test1():
                         if not result["collision"] and budget.remaining > 0:
                             new_margin = validated_until - current_timestep
                             if new_margin >= MIN_SAFE_HORIZON:
-                                # Already past ceiling — go straight to optimizer
                                 print(f"[baseline] Deconflicted past MIN_SAFE_HORIZON "
                                       f"— handing off to optimizer")
                                 validated_until, pending_job = optimized_step(

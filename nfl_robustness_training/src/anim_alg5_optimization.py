@@ -160,6 +160,7 @@ def optimized_step_anim(frames, tester, validated_until, max_time, budget,
         current_vol=current_vol,
         verified_vol=verified_vol,
         time_budget=budget.remaining,
+        w_vol=50.0,
     )
 
     push(frames, tester, current_timestep,
@@ -167,74 +168,65 @@ def optimized_step_anim(frames, tester, validated_until, max_time, budget,
          f"cur_vol={current_vol:.3f}  ver_vol={verified_vol:.3f}",
          "optimizer")
 
-    # ── CONCRETE branch ──────────────────────────────────────────────
+    # ── Perform the chosen extension step ─────────────────────────────
     if method == "concrete":
-        result = tester.concrete(validated_until, target)
-        collision    = result["collision"]
+        result        = tester.concrete(validated_until, target)
+        collision     = result["collision"]
         conflict_time = result.get("collision_timestep")
         push(frames, tester, current_timestep,
              f"t={current_timestep}  [OPT] concrete {validated_until}→{target}"
              + (f"  ⚠ conflict@{conflict_time}" if collision else "  ✓ clear"),
              "optimizer")
 
-        if not collision:
-            return target, None
-
-        if not budget.can_afford('symbolic', 1):
-            return conflict_time - 1, VerificationTask(
-                symbolic_start=conflict_time - 1, conflict_time=conflict_time)
-
-        chunk_size = min(budget.max_affordable_symbolic(), max_symbolic_horizon,
-                         conflict_time - validated_until)
-        job = VerificationTask(symbolic_start=validated_until, conflict_time=conflict_time)
-        sym_start = job.symbolic_start
-        job, result_s = symbolic_step(tester, job, chunk_size)
+    else:  # symbolic
+        full_span = target - current_timestep
+        actual_k  = min(full_span, max_symbolic_horizon, budget.max_affordable_symbolic())
+        target    = current_timestep + actual_k   # may be capped by budget
+        result        = tester.symbolic(current_timestep, target)
+        collision     = result["collision"]
+        conflict_time = result.get("collision_timestep")
         push(frames, tester, current_timestep,
-             f"t={current_timestep}  [OPT] symbolic verify {sym_start}→{job.symbolic_start}",
+             f"t={current_timestep}  [OPT] symbolic {current_timestep}→{target}"
+             f"  (span={actual_k})"
+             + (f"  ⚠ conflict@{conflict_time}" if collision else "  ✓ clean"),
              "optimizer")
 
-        if result_s is None:
-            return job.symbolic_start, job
-
-        if result_s["collision"]:
-            force_stop = (conflict_time - current_timestep) < min_lookahead
-            push(frames, tester, current_timestep,
-                 f"t={current_timestep}  [OPT] conflict confirmed@{conflict_time}"
-                 + (" FORCED STOP" if force_stop else " — deferring"),
-                 "optimizer")
-            return conflict_time - 1, None
-
+    if not collision:
         push(frames, tester, current_timestep,
-             f"t={current_timestep}  [OPT] deconflicted vu={conflict_time}", "optimizer")
-        return conflict_time, None
+             f"t={current_timestep}  [OPT] clean — vu={target}", "optimizer")
+        return target, None
 
-    # ── SYMBOLIC branch ──────────────────────────────────────────────
-    else:
-        k = target - current_timestep
-        actual_k      = min(k, max_symbolic_horizon, budget.max_affordable_symbolic())
-        actual_target = current_timestep + actual_k
+    # ── Collision: deconflict with symbolic from current_timestep ─────
+    push(frames, tester, current_timestep,
+         f"t={current_timestep}  [OPT] collision@{conflict_time} — deconflicting from t={current_timestep}",
+         "optimizer")
 
-        job = VerificationTask(symbolic_start=current_timestep, conflict_time=actual_target)
-        job, result_s = symbolic_step(tester, job, actual_k)
+    if not budget.can_afford('symbolic', 1):
+        return conflict_time - 1, VerificationTask(
+            symbolic_start=conflict_time - 1, conflict_time=conflict_time)
+
+    chunk_size = min(budget.max_affordable_symbolic(), max_symbolic_horizon)
+    job        = VerificationTask(symbolic_start=current_timestep, conflict_time=conflict_time)
+    sym_start  = job.symbolic_start
+    job, result_s = symbolic_step(tester, job, chunk_size)
+    push(frames, tester, current_timestep,
+         f"t={current_timestep}  [OPT] deconflict symbolic {sym_start}→{job.symbolic_start}",
+         "optimizer")
+
+    if result_s is None:
+        return job.symbolic_start, job
+
+    if result_s["collision"]:
+        force_stop = (conflict_time - current_timestep) < min_lookahead
         push(frames, tester, current_timestep,
-             f"t={current_timestep}  [OPT] symbolic {current_timestep}→{actual_target}"
-             + (f"  ⚠ conflict" if (result_s and result_s["collision"]) else "  ✓ clean"),
+             f"t={current_timestep}  [OPT] conflict confirmed@{conflict_time}"
+             + (" FORCED STOP" if force_stop else " — deferring"),
              "optimizer")
+        return conflict_time - 1, None
 
-        if result_s is None:
-            return job.symbolic_start, job
-
-        if result_s["collision"]:
-            force_stop = (actual_target - current_timestep) < min_lookahead
-            push(frames, tester, current_timestep,
-                 f"t={current_timestep}  [OPT] conflict before t={actual_target}"
-                 + (" FORCED STOP" if force_stop else " — deferring"),
-                 "optimizer")
-            return actual_target - 1, None
-
-        push(frames, tester, current_timestep,
-             f"t={current_timestep}  [OPT] symbolic clean vu={actual_target}", "optimizer")
-        return actual_target, None
+    push(frames, tester, current_timestep,
+         f"t={current_timestep}  [OPT] deconflicted vu={conflict_time}", "optimizer")
+    return conflict_time, None
 
 
 # ══════════════════════════════════════════════
@@ -296,12 +288,19 @@ while current_timestep < MAX_TIME:
         safety_margin = validated_until - current_timestep
 
         if safety_margin >= MIN_SAFE_HORIZON:
-            # ── OPTIMIZED ────────────────────────────────────────────
-            validated_until, pending_job = optimized_step_anim(
-                frames, tester, validated_until, MAX_TIME, budget,
-                MAX_SYMBOLIC_HORIZON, current_timestep, MIN_LOOKAHEAD,
-                ext_optimizer
-            )
+            # ── OPTIMIZED: loop until budget gone, horizon maxed, or
+            # a pending job is created (collision mid-step) ───────────
+            while (validated_until - current_timestep >= MIN_SAFE_HORIZON
+                   and validated_until < MAX_TIME
+                   and pending_job is None
+                   and budget.remaining > 0):
+                validated_until, pending_job = optimized_step_anim(
+                    frames, tester, validated_until, MAX_TIME, budget,
+                    MAX_SYMBOLIC_HORIZON, current_timestep, MIN_LOOKAHEAD,
+                    ext_optimizer
+                )
+
+            # If margin dropped below threshold (e.g. collision), recover
             new_margin = validated_until - current_timestep
             if new_margin < MIN_SAFE_HORIZON and pending_job is None \
                     and budget.remaining > 0:
@@ -592,6 +591,6 @@ ani = animation.FuncAnimation(fig, update, frames=len(frames),
                                interval=600, blit=False, repeat=True)
 
 out_path = "alg5_stop_concrete.gif"
-ani.save(out_path, writer="pillow", fps=1.2, dpi=130)
+ani.save(out_path, writer="pillow", fps=2.0, dpi=130)
 print(f"Saved to {out_path}")
 plt.close()
