@@ -29,6 +29,7 @@ def di_model(A:np.ndarray, B: np.ndarray, t_step: float = 0.1):
 
 
 def di_mpc(model: do_mpc.model.Model,
+           obstacles: list = None,
            t_step: float = 0.1,
            n_horizon: int = 8) -> do_mpc.controller.MPC:
 
@@ -38,11 +39,20 @@ def di_mpc(model: do_mpc.model.Model,
     mpc.settings.supress_ipopt_output()
     mpc.settings.store_full_solution = True
 
-    lterm = model.u['a']**2
-    mterm = model.x['v']**2
+    p = model.x['p']
+    v = model.x['v']
+    a = model.u["a"]
+    p_goal = DM([0])
+    v_goal = DM([0])
+
+    #lterm is per timstep
+    lterm = 5*(p-p_goal).T @ (p-p_goal) + v**2
+
+    #mterm is final objective
+    mterm = (p-p_goal).T @ (p-p_goal) + (v-v_goal).T @ (v-v_goal)
 
     mpc.set_objective(mterm=mterm, lterm=lterm)
-    mpc.set_rterm(a=0.0)
+    mpc.set_rterm(a=0.1)
 
     mpc.bounds['lower', '_x', 'p'] = 0.0
     mpc.bounds['upper', '_x', 'p'] = 5.0
@@ -51,6 +61,30 @@ def di_mpc(model: do_mpc.model.Model,
     mpc.bounds['lower', '_u', 'a'] = -1.0
     mpc.bounds['upper', '_u', 'a'] = 1.0
 
+    if obstacles:
+        p_var = model.x['p']
+        v_var = model.x['v']
+        state_vars  = [p_var, v_var]
+        state_names = ['p',   'v']
+        # Inflation margins per dim from Kalman bounds diagnostics:
+        # max half-width of bound seen
+        inflation = [0.7, 0.3]   # [position, velocity]
+
+        for i_obs, obs in enumerate(obstacles):
+            for i_dim in range(min(obs.shape[0], len(state_vars))):
+                lo, hi = float(obs[i_dim, 0]), float(obs[i_dim, 1])
+                x_dim  = state_vars[i_dim]
+                name   = state_names[i_dim]
+                m      = inflation[i_dim] if i_dim < len(inflation) else 0.0
+                if np.isfinite(hi) and not np.isfinite(lo):
+                    # obstacle region: x_dim <= hi  →  avoid: x_dim >= hi + m
+                    mpc.set_nl_cons(f'obs{i_obs}_{name}_lo', -x_dim, ub=-(hi + m))
+                elif np.isfinite(lo) and not np.isfinite(hi):
+                    # obstacle region: x_dim >= lo  →  avoid: x_dim <= lo - m
+                    mpc.set_nl_cons(f'obs{i_obs}_{name}_hi', x_dim, ub=lo - m)
+
+    print("MPC constraints:")
+    print(mpc.nl_cons_list)
     mpc.setup()
     return mpc
 
@@ -66,13 +100,13 @@ def di_simulator(model: do_mpc.model.Model,
 
 if __name__ == '__main__':
     t_step   = 0.1
-    n_steps  = 10
+    n_steps  = 100
     A = np.array([[1,t_step],
                  [0,1]])
     B = np.array([[0.5 * t_step**2],[t_step]])
 
     x0 = np.array([[1.5],   # close to wall
-               [-1.0]]) # moving toward wall (negative velocity)
+               [-1.5]]) # moving toward wall (negative velocity)
     # Build discrete model, MPC, and simulator
     model     = di_model(A, B, t_step=t_step)
     mpc       = di_mpc(model, t_step=t_step, n_horizon=20)

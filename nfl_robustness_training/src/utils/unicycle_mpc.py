@@ -28,6 +28,7 @@ def unicycle_model(dt: float = 0.1, v: float = 1.0):
     return model
 
 def unicycle_mpc(model: do_mpc.model.Model,
+                 obstacles: list = None,
                  dt: float = 0.1,
                  n_horizon: int = 8) -> do_mpc.controller.MPC:
 
@@ -39,27 +40,41 @@ def unicycle_mpc(model: do_mpc.model.Model,
 
     p = model.x['p']
     omega = model.u["omega"]
-    p_goal = DM([0,0])
-
+    p_goal = DM([2,0])
 
     lterm = (p-p_goal).T @ (p-p_goal) + 0.1 * omega**2
     mterm = (p-p_goal).T @ (p-p_goal)
 
     mpc.set_objective(mterm=mterm, lterm=lterm)
-    mpc.set_rterm(omega = 0)
+    mpc.set_rterm(omega**2)
 
     mpc.bounds['lower', '_u', 'omega'] = -1.0
     mpc.bounds['upper', '_u', 'omega'] = 1.0
 
-    # Left circle
-    cx1, cy1, r1 = -6.0, -0.5, 2.3
-    dist_sq1 = (p[0] - cx1)**2 + (p[1] - cy1)**2
-    mpc.set_nl_cons('obs1', -dist_sq1, ub=-r1**2)
+    if obstacles is None:
+        # Default hardcoded circular obstacles for standalone testing
+        cx1, cy1, r1 = -6.0, -0.5, 2.3
+        dist_sq1 = (p[0] - cx1)**2 + (p[1] - cy1)**2
+        mpc.set_nl_cons('obs1', -dist_sq1, ub=-r1**2)
 
-    # Right circle
-    cx2, cy2, r2 = -2.0, 1.5, 1.5
-    dist_sq2 = (p[0] - cx2)**2 + (p[1] - cy2)**2
-    mpc.set_nl_cons('obs2', -dist_sq2, ub=-r2**2)
+        cx2, cy2, r2 = -2.0, 1.5, 1.5
+        dist_sq2 = (p[0] - cx2)**2 + (p[1] - cy2)**2
+        mpc.set_nl_cons('obs2', -dist_sq2, ub=-r2**2)
+    else:
+        # Takes in obstacle list from Reachability Tester and adds
+        # to MPC obstacle constraints
+        pos_names = ['x', 'y']
+        for i_obs, obs in enumerate(obstacles):
+            for i_dim in range(min(obs.shape[0], 2)):  # only x, y position dims
+                lo, hi = float(obs[i_dim, 0]), float(obs[i_dim, 1])
+                x_dim  = p[i_dim]
+                name   = pos_names[i_dim]
+                if np.isfinite(hi) and not np.isfinite(lo):
+                    # obstacle region: x_dim <= hi  →  avoid: x_dim >= hi
+                    mpc.set_nl_cons(f'obs{i_obs}_{name}_lo', -x_dim, ub=-hi)
+                elif np.isfinite(lo) and not np.isfinite(hi):
+                    # obstacle region: x_dim >= lo  →  avoid: x_dim <= lo
+                    mpc.set_nl_cons(f'obs{i_obs}_{name}_hi', x_dim, ub=lo)
 
     mpc.setup()
     return mpc
@@ -75,7 +90,7 @@ if __name__ == "__main__":
     nstep = 150
 
     model = unicycle_model(dt, v= 1.0)
-    mpc = unicycle_mpc(model, dt, 10)
+    mpc = unicycle_mpc(model, dt=dt, n_horizon=10)
     simulator = unicycle_simulator(model, dt)
 
     x0 = np.array([-8.0, 2, -pi/4]).reshape(-1, 1)  # from the plot's start position

@@ -16,7 +16,6 @@ from utils.di_mpc import di_model, di_mpc, di_simulator
 from utils.unicycle_mpc import unicycle_model, unicycle_mpc
 from state_estimator import LinearKalmanEstimator, ExtendedKalmanEstimator
 
-
 class MPCSafetyFilter:
     """
     base class for MPC safety filters
@@ -27,7 +26,7 @@ class MPCSafetyFilter:
         self.obstacles    = obstacles if obstacles is not None else []
         self.max_lookback = max_lookback
 
-    def collides(self, bounds: np.ndarray) -> bool:
+    def _collides(self, bounds: np.ndarray) -> bool:
         for obs in self.obstacles:
             if np.all(bounds[:, 1] >= obs[:, 0]) and np.all(bounds[:, 0] <= obs[:, 1]):
                 return True
@@ -47,11 +46,20 @@ class MPCSafetyFilter:
         for lookback in range(2, self.max_lookback + 1):
             t_back = collision_timestep - lookback
 
+            if t_back < 0:
+                break
+
+
             bounds_at_back = horizons[t_back].get_tight_bound()
+            # half_widths = (bounds_at_back[:, 1] - bounds_at_back[:, 0]) / 2.0
+            # print(f"  [bounds diag] t_back={t_back}: half_widths={np.round(half_widths, 4)}")
             center = (bounds_at_back[:, 0] + bounds_at_back[:, 1]) / 2.0
 
             try:
-                traj_bounds = self.run_mpc_from_bounds(bounds_at_back, center)
+                print(f"====== t_back: {t_back} =======")
+                print(f"  [MPC parent bounds] p={np.round(bounds_at_back[0], 4)}  "
+                      f"v={np.round(bounds_at_back[1], 4)}  center={np.round(center, 4)}")
+                traj_bounds, _, controls = self._run_mpc_from_bounds(bounds_at_back, center)
             except Exception as e:
                 print(f"  [MPC filter] failed at t_back={t_back}: {e}")
                 continue
@@ -59,21 +67,21 @@ class MPCSafetyFilter:
             collision_found = False
             collision_step  = None
             for step, b in enumerate(traj_bounds[1:], start=1):
-                if self.collides(b):
+                if self._collides(b):
                     collision_found = True
                     collision_step  = step
                     break
 
             if not collision_found:
-                print(f"  [MPC filter] Safe! Stopping timestep = {t_back}")
-                return t_back
+                print(f"  [MPC filter] Safe. Stopping timestep = {t_back}")
+                return t_back, controls
             else:
                 print(f"  [MPC filter] Collision at step {collision_step} "
                       f"from t_back={t_back}, going further back.")
 
         print(f"  [MPC filter] No safe stopping timestep found within "
               f"{self.max_lookback} lookback steps.")
-        return None
+        return None, []
 
 
 class LinearMPCSafetyFilter(MPCSafetyFilter):
@@ -92,10 +100,10 @@ class LinearMPCSafetyFilter(MPCSafetyFilter):
         self.B          = estimator.B
 
         self._model     = di_model(self.A, self.B, t_step=t_step)
-        self._mpc       = di_mpc(self._model, t_step=t_step, n_horizon=n_horizon)
+        self._mpc       = di_mpc(self._model, obstacles=obstacles, t_step=t_step, n_horizon=n_horizon)
         self._simulator = di_simulator(self._model, t_step=t_step)
 
-    def run_mpc_from_bounds(self, initial_bounds: np.ndarray, center: np.ndarray) -> list:
+    def _run_mpc_from_bounds(self, initial_bounds: np.ndarray, center: np.ndarray) -> list:
         """
         Receding-horizon MPC + Kalman estimation for n_horizon steps
         MPC gets controls and KF gets bounds -> repeat
@@ -113,14 +121,19 @@ class LinearMPCSafetyFilter(MPCSafetyFilter):
             self._mpc.set_initial_guess()
 
             trajectory_bounds = [initial_bounds.copy()]
+            points   = []
+            controls = []
 
             for _ in range(self.n_horizon):
                 x = estimator.x.reshape(2, 1)
                 u = self._mpc.make_step(x)
                 _, bounds = estimator.predict(np.array(u).flatten())
                 trajectory_bounds.append(bounds.copy())
+                points.append(x)
+                controls.append(np.array(u).flatten().copy())
 
-            return trajectory_bounds
+            print(f"controls: {controls}")
+            return trajectory_bounds, points, controls
         finally:
             estimator.x      = saved_x
             estimator.P      = saved_P
@@ -142,9 +155,9 @@ class UniycleMPCSafetyFilter(MPCSafetyFilter):
         self.n_horizon  = n_horizon
 
         self._model = unicycle_model(dt=dt, v=v)
-        self._mpc   = unicycle_mpc(self._model, dt=dt, n_horizon=n_horizon)
+        self._mpc   = unicycle_mpc(self._model, obstacles=obstacles, dt=dt, n_horizon=n_horizon)
 
-    def run_mpc_from_bounds(self, initial_bounds: np.ndarray, center: np.ndarray) -> list:
+    def _run_mpc_from_bounds(self, initial_bounds: np.ndarray, center: np.ndarray) -> list:
         """
         Receding-horizon unicycle MPC + EKF propagation
         """
@@ -161,25 +174,32 @@ class UniycleMPCSafetyFilter(MPCSafetyFilter):
             self._mpc.set_initial_guess()
 
             trajectory_bounds = [initial_bounds.copy()]
+            points   = []
+            controls = []
 
             for _ in range(self.n_horizon):
                 x = estimator.x.reshape(-1, 1)
                 u = self._mpc.make_step(x)
                 _, bounds = estimator.predict(np.array(u).flatten())
                 trajectory_bounds.append(bounds.copy())
+                points.append(x)
+                controls.append(np.array(u).flatten().copy())
 
-            return trajectory_bounds
+            return trajectory_bounds, points, controls
         finally:
             estimator.x      = saved_x
             estimator.P      = saved_P
             estimator.bounds = saved_bounds
 
 
-def make_mpc_safety_filter(tester, obstacles_list, t_step: float = 1.0,
-                            n_horizon: int = 8, max_lookback: int = 10):
+def make_mpc_safety_filter(tester, obstacles_list=None, t_step: float = 0.1,
+                            n_horizon: int = 10, max_lookback: int = 10):
     """
     Build the MPCSafetyFilter subclass from a tester object.
     """
+    if obstacles_list is None:
+        obstacles_list = tester.obstacles.obstacle_list
+
     dynamics_name = type(tester.analyzer.cl_system.dynamics).__name__
 
     if dynamics_name == 'DoubleIntegrator':
