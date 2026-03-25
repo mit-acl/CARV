@@ -46,10 +46,10 @@ def di_mpc(model: do_mpc.model.Model,
     v_goal = DM([0])
 
     #lterm is per timstep
-    lterm = 5*(p-p_goal).T @ (p-p_goal) + v**2
+    lterm = (p-p_goal).T @ (p-p_goal) + 5*v**2
 
     #mterm is final objective
-    mterm = (p-p_goal).T @ (p-p_goal) + (v-v_goal).T @ (v-v_goal)
+    mterm = 100 * (p-p_goal).T @ (p-p_goal) + 100* (v-v_goal).T @ (v-v_goal)
 
     mpc.set_objective(mterm=mterm, lterm=lterm)
     mpc.set_rterm(a=0.1)
@@ -68,7 +68,7 @@ def di_mpc(model: do_mpc.model.Model,
         state_names = ['p',   'v']
         # Inflation margins per dim from Kalman bounds diagnostics:
         # max half-width of bound seen
-        inflation = [0.7, 0.3]   # [position, velocity]
+        inflation = [0.5, 0.3]   # [position, velocity]
 
         for i_obs, obs in enumerate(obstacles):
             for i_dim in range(min(obs.shape[0], len(state_vars))):
@@ -83,8 +83,8 @@ def di_mpc(model: do_mpc.model.Model,
                     # obstacle region: x_dim >= lo  →  avoid: x_dim <= lo - m
                     mpc.set_nl_cons(f'obs{i_obs}_{name}_hi', x_dim, ub=lo - m)
 
-    print("MPC constraints:")
-    print(mpc.nl_cons_list)
+    # print("MPC constraints:")
+    # print(mpc.nl_cons_list)
     mpc.setup()
     return mpc
 

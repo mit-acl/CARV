@@ -65,16 +65,29 @@ def unicycle_mpc(model: do_mpc.model.Model,
         # to MPC obstacle constraints
         pos_names = ['x', 'y']
         for i_obs, obs in enumerate(obstacles):
-            for i_dim in range(min(obs.shape[0], 2)):  # only x, y position dims
-                lo, hi = float(obs[i_dim, 0]), float(obs[i_dim, 1])
-                x_dim  = p[i_dim]
-                name   = pos_names[i_dim]
-                if np.isfinite(hi) and not np.isfinite(lo):
-                    # obstacle region: x_dim <= hi  →  avoid: x_dim >= hi
-                    mpc.set_nl_cons(f'obs{i_obs}_{name}_lo', -x_dim, ub=-hi)
-                elif np.isfinite(lo) and not np.isfinite(hi):
-                    # obstacle region: x_dim >= lo  →  avoid: x_dim <= lo
-                    mpc.set_nl_cons(f'obs{i_obs}_{name}_hi', x_dim, ub=lo)
+            x_lo, x_hi = float(obs[0, 0]), float(obs[0, 1])
+            y_lo, y_hi = float(obs[1, 0]), float(obs[1, 1])
+            x_bounded  = np.isfinite(x_lo) and np.isfinite(x_hi)
+            y_bounded  = np.isfinite(y_lo) and np.isfinite(y_hi)
+
+            if x_bounded and y_bounded:
+                # Bounded box: ellipse fitted to box shape + conservative buffer
+                cx = (x_lo + x_hi) / 2.0
+                cy = (y_lo + y_hi) / 2.0
+                a  = (x_hi - x_lo) / 2.0 + 0.1
+                b  = (y_hi - y_lo) / 2.0 + 0.15
+                ellipse = (p[0] - cx)**2 / a**2 + (p[1] - cy)**2 / b**2
+                mpc.set_nl_cons(f'obs{i_obs}_ellipse', -ellipse, ub=-1.0)
+            else:
+                # Half-space obstacle: handle each finite bound independently
+                for i_dim in range(min(obs.shape[0], 2)):
+                    lo, hi = float(obs[i_dim, 0]), float(obs[i_dim, 1])
+                    x_dim  = p[i_dim]
+                    name   = pos_names[i_dim]
+                    if np.isfinite(hi) and not np.isfinite(lo):
+                        mpc.set_nl_cons(f'obs{i_obs}_{name}_lo', -x_dim, ub=-hi)
+                    elif np.isfinite(lo) and not np.isfinite(hi):
+                        mpc.set_nl_cons(f'obs{i_obs}_{name}_hi', x_dim, ub=lo)
 
     mpc.setup()
     return mpc
