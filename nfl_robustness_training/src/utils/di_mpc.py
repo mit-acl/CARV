@@ -42,7 +42,7 @@ def di_mpc(model: do_mpc.model.Model,
     p = model.x['p']
     v = model.x['v']
     a = model.u["a"]
-    p_goal = DM([0])
+    p_goal = DM([0.3])
     v_goal = DM([0])
 
     #lterm is per timstep
@@ -68,7 +68,7 @@ def di_mpc(model: do_mpc.model.Model,
         state_names = ['p',   'v']
         # Inflation margins per dim from Kalman bounds diagnostics:
         # max half-width of bound seen
-        inflation = [0.5, 0.3]   # [position, velocity]
+        inflation = [0.3, 0.2]   # [position, velocity]
 
         for i_obs, obs in enumerate(obstacles):
             for i_dim in range(min(obs.shape[0], len(state_vars))):

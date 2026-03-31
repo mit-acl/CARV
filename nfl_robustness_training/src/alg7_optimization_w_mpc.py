@@ -15,6 +15,7 @@ so the optimizer always gets a turn once the safe margin is reached.
 
 from REAL_integrated_sim import setup_analyzer, ReachabilityTester
 from time_budget import TimeBudget
+import time
 from multi_obj_opt.strategies import ExtensionOptimizer
 import numpy as np
 from typing import Optional
@@ -128,8 +129,8 @@ def try_extend(tester, validated_until, max_time, budget, max_symbolic_horizon,
 
         if result["collision"]:
             print(f"[extend] Conflict confirmed at t={conflict_time} — running MPC filter")
-            validated_until = max(validated_until,
-                                  apply_mpc_filter(mpc_sf, conflict_time, tester, mpc_state))
+            validated_until = max(validated_until, conflict_time - 1)
+            apply_mpc_filter(mpc_sf, conflict_time, tester, mpc_state)
             return validated_until, None
         else:
             validated_until = conflict_time
@@ -205,8 +206,8 @@ def optimized_step(tester, validated_until, max_time, budget, max_symbolic_horiz
 
     if result["collision"]:
         print(f"[opt_step] Conflict confirmed at t={conflict_time} — running MPC filter")
-        stopping_t = apply_mpc_filter(mpc_sf, conflict_time, tester, mpc_state)
-        return stopping_t, None
+        apply_mpc_filter(mpc_sf, conflict_time, tester, mpc_state)
+        return conflict_time - 1, None
 
     print(f"[opt_step] Deconflicted — validated until t={conflict_time}")
     return conflict_time, None
@@ -226,7 +227,10 @@ def apply_mpc_filter(mpc_sf, conflict_time, tester, mpc_state: dict):
     Updates mpc_state with the committed plan and sets mpc_needed=True.
     Returns latest stopping timestep
     """
+    t0 = time.perf_counter()
     stopping_t, controls = mpc_sf.find_stopping_timestep(conflict_time, tester.horizons)
+    print(f"  [MPC timing] find_stopping_timestep took {time.perf_counter() - t0:.3f}s\n"
+          f"  {conflict_time-2-stopping_t} iterations")
 
     if stopping_t is not None:
         committed_at = mpc_state.get('committed_at') # previously committed mpc
@@ -259,12 +263,21 @@ def test1():
 
     obstacles = [
         np.array([[-np.inf, np.inf], [-np.inf, -1.0]]),
-        np.array([[-np.inf, 0.0],    [-np.inf, np.inf]]),
+        np.array([[-np.inf, 0.3],    [-np.inf, np.inf]]),
     ]
+
     tester             = ReachabilityTester(analyzer, obstacles)
     tester_calibration = ReachabilityTester(analyzer)
 
     mpc_sf             = make_mpc_safety_filter(tester, obstacles_list=obstacles, t_step=0.1, n_horizon=10)
+
+    # obstacles = [
+    # np.array([[-5.5, -5], [2, 2.2 ], [-np.inf, np.inf]]),
+    # ]
+    # analyzer           = setup_analyzer('Unicycle_NL', 'natural_none_default')
+    # tester             = ReachabilityTester(analyzer, obstacles)
+    # tester_calibration = ReachabilityTester(analyzer)
+    # mpc_sf             = make_mpc_safety_filter(tester, obstacles_list=obstacles, t_step=0.1)
 
 
     MIN_LOOKAHEAD        = 4
@@ -273,7 +286,7 @@ def test1():
     SYMBOLIC_BUFFER = 5
     MAX_TIME             = 40
 
-    budget = TimeBudget(timestep_budget=0.40)
+    budget = TimeBudget(timestep_budget=1.0)
     budget.calibrate(tester_calibration, max_symbolic_horizon=MAX_SYMBOLIC_HORIZON,
                      max_backward_horizon=0)
 
@@ -342,8 +355,8 @@ def test1():
                 pending_job   = None
                 if result["collision"]:
                     print(f"Conflict confirmed at t={conflict_time} — running MPC filter")
-                    validated_until = max(validated_until,
-                                         apply_mpc_filter(mpc_sf, conflict_time, tester, mpc_state))
+                    validated_until = max(validated_until, conflict_time - 1)
+                    apply_mpc_filter(mpc_sf, conflict_time, tester, mpc_state)
                 else:
                     print(f"Deconflicted — validated until t={conflict_time}")
                     validated_until = conflict_time
@@ -355,7 +368,7 @@ def test1():
                             safe_horizon_ceiling=current_timestep + MIN_SAFE_HORIZON
                         )
 
-        # ── Phase 2: main decision — optimized or baseline ─────────────────
+        # Phase 2: main decision — optimized or baseline
         else:
             safety_margin = validated_until - current_timestep  # recheck after carry-over
             dynamic_symbolic_horizon = get_dynamic_symbolic_horizon(
@@ -365,8 +378,8 @@ def test1():
             )
 
             if safety_margin >= MIN_SAFE_HORIZON:
-                # ── OPTIMIZED: loop until budget gone, horizon maxed, or
-                # a pending job is created (collision mid-step) ───────────
+                #  OPTIMIZED: loop until budget gone, horizon maxed, or
+                # a pending job is created (collision mid-step)
                 while (validated_until - current_timestep >= MIN_SAFE_HORIZON
                        and validated_until < MAX_TIME
                        and pending_job is None
@@ -385,8 +398,7 @@ def test1():
 
                 # If margin dropped below threshold (e.g. collision), recover
                 new_margin = validated_until - current_timestep
-                if new_margin < MIN_SAFE_HORIZON and pending_job is None \
-                        and budget.remaining > 0:
+                if new_margin < MIN_SAFE_HORIZON and pending_job is None and budget.remaining > 0:
                     print(f"[opt] Margin dropped to {new_margin} < {MIN_SAFE_HORIZON} "
                           f"— recovering with baseline extend")
                     validated_until, pending_job = try_extend(
@@ -397,7 +409,7 @@ def test1():
                     )
 
             else:
-                # ── BASELINE: concrete scan capped at MIN_SAFE_HORIZON ────
+                #  BASELINE: concrete scan capped at MIN_SAFE_HORIZON
                 explore_from   = max(validated_until, current_timestep)
                 end_check_time = min(
                     explore_from + budget.max_affordable_concrete(),
@@ -431,8 +443,8 @@ def test1():
                         pending_job = None
                         if result["collision"]:
                             print(f"Conflict confirmed at t={conflict_time} — running MPC filter")
-                            validated_until = max(validated_until,
-                                                  apply_mpc_filter(mpc_sf, conflict_time, tester, mpc_state))
+                            validated_until = max(validated_until, conflict_time - 1)
+                            apply_mpc_filter(mpc_sf, conflict_time, tester, mpc_state)
                         else:
                             print(f"Deconflicted — validated until t={conflict_time}")
                             validated_until = conflict_time

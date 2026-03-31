@@ -49,7 +49,6 @@ class MPCSafetyFilter:
             if t_back < 0:
                 break
 
-
             bounds_at_back = horizons[t_back].get_tight_bound()
             # half_widths = (bounds_at_back[:, 1] - bounds_at_back[:, 0]) / 2.0
             # print(f"  [bounds diag] t_back={t_back}: half_widths={np.round(half_widths, 4)}")
@@ -65,23 +64,23 @@ class MPCSafetyFilter:
                 continue
 
             collision_found = False
-            collision_step  = None
+            mpc_collision_step  = None
             for step, b in enumerate(traj_bounds[1:], start=1):
                 if self._collides(b):
                     collision_found = True
-                    collision_step  = step
+                    mpc_collision_step  = step
                     break
 
             if not collision_found:
                 print(f"  [MPC filter] Safe. Stopping timestep = {t_back}")
                 return t_back, controls
             else:
-                print(f"  [MPC filter] Collision at step {collision_step} "
+                print(f"  [MPC filter] Collision at step {mpc_collision_step} "
                       f"from t_back={t_back}, going further back.")
 
         print(f"  [MPC filter] No safe stopping timestep found within "
               f"{self.max_lookback} lookback steps.")
-        return None, []
+        return collision_timestep-1, []
 
 
 class LinearMPCSafetyFilter(MPCSafetyFilter):

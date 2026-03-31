@@ -10,6 +10,7 @@ Frame tuple: (rsoa_snap, mpc_traj_bounds, mpc_t_back, current_t, label, origin)
 
 from REAL_integrated_sim import setup_analyzer, ReachabilityTester
 from mpc_safety_filter import make_mpc_safety_filter
+import time
 from alg7_optimization_w_mpc import (
     concrete_scan, symbolic_step, VerificationTask,
     _get_volume, get_dynamic_symbolic_horizon
@@ -32,19 +33,29 @@ MAX_SYMBOLIC_HORIZON = 10
 SYMBOLIC_BUFFER      = 5
 
 obstacles = [
-    np.array([[-np.inf, np.inf], [-np.inf, -0.85]]),
-    np.array([[-np.inf, 0.0],    [-np.inf, np.inf]]),
+    np.array([[-np.inf, np.inf], [-np.inf, -1.0]]),
+    np.array([[-np.inf, 0.3],    [-np.inf, np.inf]]),
 ]
+
+# obstacles = [
+#     np.array([[-5.5, -5], [2, 2.2 ], [-np.inf, np.inf]]),
+# ]
 
 # ── Setup ──
 print("Setting up analyzer...")
+
+# analyzer           = setup_analyzer('Unicycle_NL', 'natural_none_default')
+# tester             = ReachabilityTester(analyzer, obstacles)
+# tester_calibration = ReachabilityTester(analyzer)
+# mpc_sf             = make_mpc_safety_filter(tester, obstacles_list=obstacles, t_step=0.1)
+
+
 analyzer           = setup_analyzer('DoubleIntegrator', 'constraint_default_more_data_5hz')
 tester             = ReachabilityTester(analyzer, obstacles)
 tester_calibration = ReachabilityTester(analyzer)
-mpc_sf             = make_mpc_safety_filter(tester, obstacles_list=obstacles,
-                                            t_step=0.1, n_horizon=10)
+mpc_sf             = make_mpc_safety_filter(tester, obstacles_list=obstacles, t_step=0.1, n_horizon=10)
 
-budget = TimeBudget(timestep_budget=0.40)
+budget = TimeBudget(timestep_budget=1.0)
 print("Calibrating time budget...")
 budget.calibrate(tester_calibration, max_symbolic_horizon=MAX_SYMBOLIC_HORIZON,
                  max_backward_horizon=0)
@@ -78,7 +89,7 @@ def snapshot_rsoa(tester):
 
 def push(frames, current_t, label, origin="info", mpc_traj=None, mpc_t_back=None):
     frames.append((snapshot_rsoa(tester), mpc_traj or [], mpc_t_back,
-                   current_t, label, origin))
+                   current_t, label, origin, list(mpc_traj_bounds_all)))
 
 
 # ── MPC state (module-level, mirrors alg7 mpc_state dict) ──
@@ -110,7 +121,9 @@ def apply_mpc_filter_frames(frames, conflict_time, current_timestep):
         center = (bounds_at_back[:, 0] + bounds_at_back[:, 1]) / 2.0
 
         try:
+            t0 = time.perf_counter()
             traj_bounds, _, controls = mpc_sf._run_mpc_from_bounds(bounds_at_back, center)
+            print(f"  [MPC timing] t_back={t_back} _run_mpc_from_bounds took {time.perf_counter() - t0:.3f}s")
         except Exception as e:
             push(frames, current_timestep,
                  f"t={current_timestep}  [MPC] failed at t_back={t_back}: {e}", "mpc")
@@ -198,7 +211,8 @@ def try_extend_anim(frames, validated_until, max_time, budget,
             push(frames, current_timestep,
                  f"t={current_timestep}  [extend] conflict confirmed@{conflict_time} — MPC filter",
                  origin)
-            vu = max(vu, apply_mpc_filter_frames(frames, conflict_time, current_timestep))
+            vu = max(vu, conflict_time - 1)
+            apply_mpc_filter_frames(frames, conflict_time, current_timestep)
             return vu, None
         else:
             vu = conflict_time
@@ -278,8 +292,8 @@ def optimized_step_anim(frames, validated_until, max_time, budget,
         push(frames, current_timestep,
              f"t={current_timestep}  [OPT] conflict confirmed@{conflict_time} — MPC filter",
              "optimizer")
-        stopping_t = apply_mpc_filter_frames(frames, conflict_time, current_timestep)
-        return stopping_t, None
+        apply_mpc_filter_frames(frames, conflict_time, current_timestep)
+        return conflict_time - 1, None
 
     push(frames, current_timestep,
          f"t={current_timestep}  [OPT] deconflicted vu={conflict_time}", "optimizer")
@@ -349,9 +363,8 @@ while current_timestep < MAX_TIME:
                 push(frames, current_timestep,
                      f"t={current_timestep}  [carry] conflict confirmed@{conflict_time} — MPC filter",
                      "baseline")
-                validated_until = max(validated_until,
-                                      apply_mpc_filter_frames(frames, conflict_time,
-                                                              current_timestep))
+                validated_until = max(validated_until, conflict_time - 1)
+                apply_mpc_filter_frames(frames, conflict_time, current_timestep)
             else:
                 push(frames, current_timestep,
                      f"t={current_timestep}  [carry] ✓ deconflicted vu={conflict_time}",
@@ -448,10 +461,8 @@ while current_timestep < MAX_TIME:
                         push(frames, current_timestep,
                              f"t={current_timestep}  [BASE] conflict confirmed@{conflict_time} — MPC filter",
                              "baseline")
-                        validated_until = max(
-                            validated_until,
-                            apply_mpc_filter_frames(frames, conflict_time, current_timestep)
-                        )
+                        validated_until = max(validated_until, conflict_time - 1)
+                        apply_mpc_filter_frames(frames, conflict_time, current_timestep)
                     else:
                         push(frames, current_timestep,
                              f"t={current_timestep}  [BASE] ✓ deconflicted vu={conflict_time}",
@@ -561,7 +572,7 @@ title = ax.set_title("", color="#eee", fontsize=11, fontfamily="monospace", pad=
 
 # Axis limits
 all_x1, all_x2 = [], []
-for snap, _, _, _, _, _ in frames:
+for snap, _, _, _, _, _, _ in frames:
     for t, entry in snap.items():
         all_x1.extend([v for v in entry["x1"] if np.isfinite(v) and abs(v) < _BOUND_LIMIT])
         all_x2.extend([v for v in entry["x2"] if np.isfinite(v) and abs(v) < _BOUND_LIMIT])
@@ -595,7 +606,7 @@ def update(frame_idx):
         a.remove()
     dynamic_artists.clear()
 
-    snap, mpc_traj_data, mpc_t_back, ct, label, origin = frames[frame_idx]
+    snap, mpc_traj_data, mpc_t_back, ct, label, origin, stashed_mpc_traj = frames[frame_idx]
     title.set_text(label)
 
     if origin not in ("info",):
@@ -650,9 +661,10 @@ def update(frame_idx):
         ax.add_patch(r)
         dynamic_artists.append(r)
 
-    # Current MPC attempt trajectory (lookahead preview)
-    if mpc_traj_data:
-        for b in mpc_traj_data:
+    # Current MPC attempt trajectory (lookahead preview), or stashed committed plan
+    traj_to_draw = mpc_traj_data if mpc_traj_data else stashed_mpc_traj
+    if traj_to_draw:
+        for b in traj_to_draw:
             if b.shape[0] < 2:
                 continue
             x1_lo, x1_hi = float(b[0, 0]), float(b[0, 1])
@@ -729,6 +741,6 @@ ani = animation.FuncAnimation(fig, update, frames=len(frames),
                                interval=600, blit=False, repeat=True)
 
 out_path = "alg7_optimization_mpc.gif"
-ani.save(out_path, writer="pillow", fps=1.2, dpi=130)
+ani.save(out_path, writer="pillow", fps=3, dpi=130)
 print(f"Saved to {out_path}")
 plt.close()
