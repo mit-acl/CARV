@@ -55,7 +55,7 @@ tester             = ReachabilityTester(analyzer, obstacles)
 tester_calibration = ReachabilityTester(analyzer)
 mpc_sf             = make_mpc_safety_filter(tester, obstacles_list=obstacles, t_step=0.1, n_horizon=10)
 
-budget = TimeBudget(timestep_budget=1.0)
+budget = TimeBudget(timestep_budget=0.5)
 print("Calibrating time budget...")
 budget.calibrate(tester_calibration, max_symbolic_horizon=MAX_SYMBOLIC_HORIZON,
                  max_backward_horizon=0)
@@ -101,6 +101,11 @@ mpc_needed           = False
 mpc_started          = False
 _mpc_trail           = []
 _mpc_trail_frame_idx = []
+
+pending_mpc_conflict     = None   # conflict_time queued for MPC (deferred)
+mpc_turn                 = False  # True = MPC gets this timestep when both pending
+mpc_first_run            = True   # first confirmed collision runs MPC immediately
+dynamic_symbolic_horizon = MAX_SYMBOLIC_HORIZON  # updated each timestep
 
 
 def apply_mpc_filter_frames(frames, conflict_time, current_timestep):
@@ -163,6 +168,20 @@ def apply_mpc_filter_frames(frames, conflict_time, current_timestep):
     return conflict_time - 1
 
 
+def trigger_mpc_anim(frames, conflict_time, current_timestep):
+    """First collision: run MPC now and capture frames. Subsequent: queue and alternate."""
+    global mpc_first_run, pending_mpc_conflict
+    if mpc_first_run:
+        push(frames, current_timestep,
+             f"t={current_timestep}  [MPC] first collision — running immediately", "mpc")
+        apply_mpc_filter_frames(frames, conflict_time, current_timestep)
+        mpc_first_run = False
+    else:
+        pending_mpc_conflict = conflict_time
+        push(frames, current_timestep,
+             f"t={current_timestep}  [MPC] queued t_conflict={conflict_time}", "mpc")
+
+
 # ── Instrumented helpers ──
 
 def try_extend_anim(frames, validated_until, max_time, budget,
@@ -193,7 +212,7 @@ def try_extend_anim(frames, validated_until, max_time, budget,
         if not budget.can_afford('symbolic', 1):
             vu = conflict_time - 1
             return vu, VerificationTask(symbolic_start=conflict_time - 1,
-                                        conflict_time=conflict_time)
+                                        conflict_time=conflict_time), None
 
         job       = VerificationTask(symbolic_start=vu, conflict_time=conflict_time)
         sym_start = job.symbolic_start
@@ -205,21 +224,20 @@ def try_extend_anim(frames, validated_until, max_time, budget,
 
         if result_s is None:
             vu = job.symbolic_start
-            return vu, job
+            return vu, job, None
 
         if result_s["collision"]:
             push(frames, current_timestep,
-                 f"t={current_timestep}  [extend] conflict confirmed@{conflict_time} — MPC filter",
+                 f"t={current_timestep}  [extend] conflict confirmed@{conflict_time} — queuing MPC",
                  origin)
             vu = max(vu, conflict_time - 1)
-            apply_mpc_filter_frames(frames, conflict_time, current_timestep)
-            return vu, None
+            return vu, None, conflict_time
         else:
             vu = conflict_time
             push(frames, current_timestep,
                  f"t={current_timestep}  [extend] ✓ deconflicted vu={vu}", origin)
 
-    return vu, None
+    return vu, None, None
 
 
 def optimized_step_anim(frames, validated_until, max_time, budget,
@@ -227,7 +245,7 @@ def optimized_step_anim(frames, validated_until, max_time, budget,
                         ext_optimizer):
     target = validated_until + 1
     if target > max_time:
-        return validated_until, None
+        return validated_until, None, None
 
     current_vol  = _get_volume(tester, current_timestep)
     verified_vol = _get_volume(tester, validated_until)
@@ -267,7 +285,7 @@ def optimized_step_anim(frames, validated_until, max_time, budget,
     if not collision:
         push(frames, current_timestep,
              f"t={current_timestep}  [OPT] clean — vu={target}", "optimizer")
-        return target, None
+        return target, None, None
 
     push(frames, current_timestep,
          f"t={current_timestep}  [OPT] collision@{conflict_time} — deconflicting from t={current_timestep}",
@@ -275,7 +293,7 @@ def optimized_step_anim(frames, validated_until, max_time, budget,
 
     if not budget.can_afford('symbolic', 1):
         return conflict_time - 1, VerificationTask(
-            symbolic_start=conflict_time - 1, conflict_time=conflict_time)
+            symbolic_start=current_timestep, conflict_time=conflict_time), None
 
     job       = VerificationTask(symbolic_start=current_timestep, conflict_time=conflict_time)
     sym_start = job.symbolic_start
@@ -286,18 +304,39 @@ def optimized_step_anim(frames, validated_until, max_time, budget,
          "optimizer")
 
     if result_s is None:
-        return job.symbolic_start, job
+        return conflict_time - 1, job, None
 
     if result_s["collision"]:
         push(frames, current_timestep,
-             f"t={current_timestep}  [OPT] conflict confirmed@{conflict_time} — MPC filter",
+             f"t={current_timestep}  [OPT] conflict confirmed@{conflict_time} — queuing MPC",
              "optimizer")
-        apply_mpc_filter_frames(frames, conflict_time, current_timestep)
-        return conflict_time - 1, None
+        return conflict_time - 1, None, conflict_time
 
     push(frames, current_timestep,
          f"t={current_timestep}  [OPT] deconflicted vu={conflict_time}", "optimizer")
-    return conflict_time, None
+    return conflict_time, None, None
+
+
+def run_opt_loop_anim(frames):
+    """Run the optimizer while loop until budget, margin, or a pending job stops it."""
+    global validated_until, pending_job, dynamic_symbolic_horizon
+    while (validated_until - current_timestep >= MIN_SAFE_HORIZON
+           and validated_until < MAX_TIME
+           and pending_job is None
+           and pending_mpc_conflict is None
+           and budget.remaining > 0):
+        validated_until, pending_job, mpc_c = optimized_step_anim(
+            frames, validated_until, MAX_TIME, budget,
+            dynamic_symbolic_horizon, current_timestep, MIN_LOOKAHEAD,
+            ext_optimizer
+        )
+        if mpc_c is not None:
+            trigger_mpc_anim(frames, mpc_c, current_timestep)
+        dynamic_symbolic_horizon = get_dynamic_symbolic_horizon(
+            validated_until - current_timestep,
+            max_symbolic_horizon=MAX_SYMBOLIC_HORIZON,
+            symbolic_buffer=SYMBOLIC_BUFFER
+        )
 
 
 # ══════════════════════════════════════════════
@@ -309,6 +348,12 @@ frames = []
 current_timestep = 0
 validated_until  = 0
 pending_job: Optional[VerificationTask] = None
+
+# reset alternating-MPC globals for this run
+pending_mpc_conflict     = None
+mpc_turn                 = False
+mpc_first_run            = True
+dynamic_symbolic_horizon = MAX_SYMBOLIC_HORIZON
 
 push(frames, 0, "t=0  initial", "info")
 
@@ -341,156 +386,156 @@ while current_timestep < MAX_TIME:
             break
         continue
 
+    both_pending = pending_job is not None and pending_mpc_conflict is not None
     mode = "OPTIMIZED" if safety_margin >= MIN_SAFE_HORIZON else "BASELINE"
     push(frames, current_timestep,
-         f"t={current_timestep}  vu={validated_until}  margin={safety_margin}  [{mode}]",
+         f"t={current_timestep}  vu={validated_until}  margin={safety_margin}  [{mode}]"
+         + (f"  [MPC queued t_conflict={pending_mpc_conflict}]"
+            if pending_mpc_conflict is not None else ""),
          "info")
 
-    # ── Phase 1: carry-over ────────────────────────────────────────────
-    if pending_job is not None:
-        sym_from = pending_job.symbolic_start
-        pending_job, result = symbolic_step(tester, pending_job,
-                                            dynamic_symbolic_horizon,
-                                            budget.max_affordable_symbolic())
-        push(frames, current_timestep,
-             f"t={current_timestep}  [carry] symbolic {sym_from}→{pending_job.symbolic_start}",
-             "baseline")
+    # ── Decide: MPC this timestep or symbolic? ────────────────────────
+    do_mpc_this_step = (
+        pending_mpc_conflict is not None and
+        (pending_job is None or mpc_turn)
+    )
 
-        if result is not None:
-            conflict_time = pending_job.conflict_time
-            pending_job   = None
-            if result["collision"]:
-                push(frames, current_timestep,
-                     f"t={current_timestep}  [carry] conflict confirmed@{conflict_time} — MPC filter",
-                     "baseline")
-                validated_until = max(validated_until, conflict_time - 1)
-                apply_mpc_filter_frames(frames, conflict_time, current_timestep)
-            else:
-                push(frames, current_timestep,
-                     f"t={current_timestep}  [carry] ✓ deconflicted vu={conflict_time}",
-                     "baseline")
-                validated_until = conflict_time
-                if budget.remaining > 0:
-                    validated_until, pending_job = try_extend_anim(
+    if do_mpc_this_step:
+        push(frames, current_timestep,
+             f"t={current_timestep}  [Alt] MPC turn — conflict_time={pending_mpc_conflict}",
+             "mpc")
+        apply_mpc_filter_frames(frames, pending_mpc_conflict, current_timestep)
+        pending_mpc_conflict = None
+        mpc_turn = False
+
+    else:
+        if both_pending:
+            mpc_turn = True  # MPC gets next timestep
+
+        # ── Phase 1: carry-over ────────────────────────────────────────
+        if pending_job is not None:
+            sym_from = pending_job.symbolic_start
+            pending_job, result = symbolic_step(tester, pending_job,
+                                                dynamic_symbolic_horizon,
+                                                budget.max_affordable_symbolic())
+            push(frames, current_timestep,
+                 f"t={current_timestep}  [carry] symbolic {sym_from}→{pending_job.symbolic_start}",
+                 "baseline")
+
+            if result is not None:
+                conflict_time = pending_job.conflict_time
+                pending_job   = None
+                if result["collision"]:
+                    push(frames, current_timestep,
+                         f"t={current_timestep}  [carry] conflict confirmed@{conflict_time} — triggering MPC",
+                         "baseline")
+                    validated_until = max(validated_until, conflict_time - 1)
+                    trigger_mpc_anim(frames, conflict_time, current_timestep)
+                else:
+                    push(frames, current_timestep,
+                         f"t={current_timestep}  [carry] ✓ deconflicted vu={conflict_time}",
+                         "baseline")
+                    validated_until = conflict_time
+                    if budget.remaining > 0:
+                        validated_until, pending_job, mpc_c = try_extend_anim(
+                            frames, validated_until, MAX_TIME, budget,
+                            dynamic_symbolic_horizon, current_timestep, MIN_LOOKAHEAD,
+                            origin="baseline",
+                            safe_horizon_ceiling=current_timestep + MIN_SAFE_HORIZON
+                        )
+                        if mpc_c is not None:
+                            trigger_mpc_anim(frames, mpc_c, current_timestep)
+                        run_opt_loop_anim(frames)
+
+        # ── Phase 2: optimized or baseline ────────────────────────────
+        else:
+            safety_margin = validated_until - current_timestep
+            dynamic_symbolic_horizon = get_dynamic_symbolic_horizon(
+                safety_margin,
+                max_symbolic_horizon=MAX_SYMBOLIC_HORIZON,
+                symbolic_buffer=SYMBOLIC_BUFFER
+            )
+
+            if safety_margin >= MIN_SAFE_HORIZON:
+                run_opt_loop_anim(frames)
+
+                new_margin = validated_until - current_timestep
+                if new_margin < MIN_SAFE_HORIZON and pending_job is None \
+                        and pending_mpc_conflict is None and budget.remaining > 0:
+                    push(frames, current_timestep,
+                         f"t={current_timestep}  [OPT] margin dropped to {new_margin} — recovering",
+                         "info")
+                    validated_until, pending_job, mpc_c = try_extend_anim(
                         frames, validated_until, MAX_TIME, budget,
                         dynamic_symbolic_horizon, current_timestep, MIN_LOOKAHEAD,
                         origin="baseline",
                         safe_horizon_ceiling=current_timestep + MIN_SAFE_HORIZON
                     )
+                    if mpc_c is not None:
+                        trigger_mpc_anim(frames, mpc_c, current_timestep)
+                    run_opt_loop_anim(frames)
 
-    # ── Phase 2: optimized or baseline ────────────────────────────────
-    else:
-        safety_margin = validated_until - current_timestep
-        dynamic_symbolic_horizon = get_dynamic_symbolic_horizon(
-            safety_margin,
-            max_symbolic_horizon=MAX_SYMBOLIC_HORIZON,
-            symbolic_buffer=SYMBOLIC_BUFFER
-        )
-
-        if safety_margin >= MIN_SAFE_HORIZON:
-            while (validated_until - current_timestep >= MIN_SAFE_HORIZON
-                   and validated_until < MAX_TIME
-                   and pending_job is None
-                   and budget.remaining > 0):
-                validated_until, pending_job = optimized_step_anim(
-                    frames, validated_until, MAX_TIME, budget,
-                    dynamic_symbolic_horizon, current_timestep, MIN_LOOKAHEAD,
-                    ext_optimizer
-                )
-                dynamic_symbolic_horizon = get_dynamic_symbolic_horizon(
-                    validated_until - current_timestep,
-                    max_symbolic_horizon=MAX_SYMBOLIC_HORIZON,
-                    symbolic_buffer=SYMBOLIC_BUFFER
-                )
-
-            new_margin = validated_until - current_timestep
-            if new_margin < MIN_SAFE_HORIZON and pending_job is None \
-                    and budget.remaining > 0:
-                push(frames, current_timestep,
-                     f"t={current_timestep}  [OPT] margin dropped to {new_margin} — recovering",
-                     "info")
-                validated_until, pending_job = try_extend_anim(
-                    frames, validated_until, MAX_TIME, budget,
-                    dynamic_symbolic_horizon, current_timestep, MIN_LOOKAHEAD,
-                    origin="baseline",
-                    safe_horizon_ceiling=current_timestep + MIN_SAFE_HORIZON
-                )
-
-        else:
-            explore_from   = max(validated_until, current_timestep)
-            end_check_time = min(
-                explore_from + budget.max_affordable_concrete(),
-                current_timestep + MIN_SAFE_HORIZON,
-                MAX_TIME
-            )
-            result        = tester.concrete(explore_from, end_check_time)
-            collision     = result["collision"]
-            conflict_time = result.get("collision_timestep")
-            push(frames, current_timestep,
-                 f"t={current_timestep}  [BASE] concrete {explore_from}→{end_check_time}"
-                 + (f"  ⚠ conflict@{conflict_time}" if collision else "  ✓ clear"),
-                 "baseline")
-
-            if not collision:
-                validated_until = end_check_time
-                new_margin      = validated_until - current_timestep
-                if new_margin >= MIN_SAFE_HORIZON and budget.remaining > 0:
-                    push(frames, current_timestep,
-                         f"t={current_timestep}  [BASE→OPT] reached MIN_SAFE_HORIZON",
-                         "info")
-                    validated_until, pending_job = optimized_step_anim(
-                        frames, validated_until, MAX_TIME, budget,
-                        dynamic_symbolic_horizon, current_timestep, MIN_LOOKAHEAD,
-                        ext_optimizer
-                    )
             else:
-                pending_job = VerificationTask(symbolic_start=current_timestep,
-                                               conflict_time=conflict_time)
-                sym_start   = pending_job.symbolic_start
-                pending_job, result_s = symbolic_step(tester, pending_job,
-                                                      dynamic_symbolic_horizon,
-                                                      budget.max_affordable_symbolic())
+                explore_from   = max(validated_until, current_timestep)
+                end_check_time = min(
+                    explore_from + budget.max_affordable_concrete(),
+                    current_timestep + MIN_SAFE_HORIZON,
+                    MAX_TIME
+                )
+                result        = tester.concrete(explore_from, end_check_time)
+                collision     = result["collision"]
+                conflict_time = result.get("collision_timestep")
                 push(frames, current_timestep,
-                     f"t={current_timestep}  [BASE] symbolic {sym_start}→"
-                     f"{pending_job.symbolic_start}",
+                     f"t={current_timestep}  [BASE] concrete {explore_from}→{end_check_time}"
+                     + (f"  ⚠ conflict@{conflict_time}" if collision else "  ✓ clear"),
                      "baseline")
 
-                if result_s is not None:
-                    pending_job = None
-                    if result_s["collision"]:
-                        push(frames, current_timestep,
-                             f"t={current_timestep}  [BASE] conflict confirmed@{conflict_time} — MPC filter",
-                             "baseline")
-                        validated_until = max(validated_until, conflict_time - 1)
-                        apply_mpc_filter_frames(frames, conflict_time, current_timestep)
-                    else:
-                        push(frames, current_timestep,
-                             f"t={current_timestep}  [BASE] ✓ deconflicted vu={conflict_time}",
-                             "baseline")
-                        validated_until = conflict_time
-                        if budget.remaining > 0:
-                            new_margin = validated_until - current_timestep
-                            if new_margin >= MIN_SAFE_HORIZON:
-                                push(frames, current_timestep,
-                                     f"t={current_timestep}  [BASE→OPT] deconflicted past MIN_SAFE_HORIZON",
-                                     "info")
-                                validated_until, pending_job = optimized_step_anim(
-                                    frames, validated_until, MAX_TIME, budget,
-                                    dynamic_symbolic_horizon, current_timestep, MIN_LOOKAHEAD,
-                                    ext_optimizer
-                                )
-                            else:
-                                validated_until, pending_job = try_extend_anim(
-                                    frames, validated_until, MAX_TIME, budget,
-                                    dynamic_symbolic_horizon, current_timestep, MIN_LOOKAHEAD,
-                                    origin="baseline",
-                                    safe_horizon_ceiling=current_timestep + MIN_SAFE_HORIZON
-                                )
+                if not collision:
+                    validated_until = end_check_time
+                    if budget.remaining > 0:
+                        run_opt_loop_anim(frames)
                 else:
-                    validated_until = pending_job.symbolic_start
+                    pending_job = VerificationTask(symbolic_start=current_timestep,
+                                                   conflict_time=conflict_time)
+                    sym_start   = pending_job.symbolic_start
+                    pending_job, result_s = symbolic_step(tester, pending_job,
+                                                          dynamic_symbolic_horizon,
+                                                          budget.max_affordable_symbolic())
                     push(frames, current_timestep,
-                         f"t={current_timestep}  [BASE] budget exhausted@{validated_until}, defer",
+                         f"t={current_timestep}  [BASE] symbolic {sym_start}→"
+                         f"{pending_job.symbolic_start}",
                          "baseline")
+
+                    if result_s is not None:
+                        pending_job = None
+                        if result_s["collision"]:
+                            push(frames, current_timestep,
+                                 f"t={current_timestep}  [BASE] conflict confirmed@{conflict_time} — triggering MPC",
+                                 "baseline")
+                            validated_until = max(validated_until, conflict_time - 1)
+                            trigger_mpc_anim(frames, conflict_time, current_timestep)
+                        else:
+                            push(frames, current_timestep,
+                                 f"t={current_timestep}  [BASE] ✓ deconflicted vu={conflict_time}",
+                                 "baseline")
+                            validated_until = conflict_time
+                            if budget.remaining > 0:
+                                new_margin = validated_until - current_timestep
+                                if new_margin < MIN_SAFE_HORIZON:
+                                    validated_until, pending_job, mpc_c = try_extend_anim(
+                                        frames, validated_until, MAX_TIME, budget,
+                                        dynamic_symbolic_horizon, current_timestep, MIN_LOOKAHEAD,
+                                        origin="baseline",
+                                        safe_horizon_ceiling=current_timestep + MIN_SAFE_HORIZON
+                                    )
+                                    if mpc_c is not None:
+                                        trigger_mpc_anim(frames, mpc_c, current_timestep)
+                                run_opt_loop_anim(frames)
+                    else:
+                        validated_until = pending_job.symbolic_start
+                        push(frames, current_timestep,
+                             f"t={current_timestep}  [BASE] budget exhausted@{validated_until}, defer",
+                             "baseline")
 
     if validated_until >= MAX_TIME:
         push(frames, current_timestep, "Done ✓", "info")
@@ -508,8 +553,9 @@ while current_timestep < MAX_TIME:
                 push(frames, current_timestep,
                      f"t={current_timestep}  [MPC] recomputing for horizon boundary t={validated_until}",
                      "mpc")
-                apply_mpc_filter_frames(frames, validated_until, current_timestep)
+                trigger_mpc_anim(frames, validated_until, current_timestep)
         mpc_needed = False
+        mpc_first_run = True  # next new conflict runs MPC immediately
 
     # ── Advance real state ────────────────────────────────────────────
     if (mpc_committed_at is not None
