@@ -1,24 +1,10 @@
 """
-Adaptive MPC algorithm — copy of alg7 with MPC revert logic.
+Adaptive MPC algorithm
 
 Same as alg7 except that once MPC controls start firing, each timestep
 re-checks whether the conflict is still present (concrete scan from current
 bounds).  If the scan is clean the nominal controller resumes; if the conflict
 persists the queued MPC control is applied.
-
-When validated_until is at least MIN_SAFE_HORIZON ahead of current_timestep,
-the ExtensionOptimizer chooses whether to compute T+1 via:
-  - concrete: tester.concrete(validated_until, T+1)
-  - symbolic: tester.symbolic(current_timestep, T+1)  — tighter bounds
-
-The optimizer loops within each timestep until budget is exhausted, a
-pending job is created, or the margin drops below MIN_SAFE_HORIZON.
-
-The baseline concrete scan is capped at current_timestep + MIN_SAFE_HORIZON
-so the optimizer always gets a turn once the safe margin is reached.
-
-When both symbolic deconfliction and MPC are needed, timesteps alternate
-between the two so neither blocks the other indefinitely.
 """
 
 from REAL_integrated_sim import setup_analyzer, ReachabilityTester
