@@ -20,6 +20,58 @@ from scipy import stats as scipy_stats
 
 import numpy as np
 
+class TimeEstimator:
+    _DEFAULT_TIMING = {
+        "concrete_slope":     0.006311738129818,
+        "concrete_intercept": 0.0035703865687052,
+        "ratio_slope":        0.5341915550605524,
+        "ratio_intercept":   -0.0578267576662421,
+    }
+
+    def __init__(self):
+        self._timing_params = dict(self._DEFAULT_TIMING)
+        self.set_timing_params(self._timing_params)
+
+    def set_timing_params(self, p):
+        self.concrete_slope     = p["concrete_slope"]
+        self.concrete_intercept = p["concrete_intercept"]
+        self.ratio_slope        = p["ratio_slope"]
+        self.ratio_intercept    = p["ratio_intercept"]
+        
+    def concrete_time_from_horizon(self, h_c):
+        return self.concrete_slope * h_c + self.concrete_intercept
+
+    def symbolic_time_from_horizon(self, h_s):
+        base_concrete_k = self.concrete_slope * h_s + self.concrete_intercept
+        ratio           = self.ratio_slope * h_s + self.ratio_intercept
+        comp_time       = ratio * base_concrete_k
+        return comp_time
+
+    def concrete_horizon_from_time(self, t_c):
+        return (t_c - self.concrete_intercept) / self.concrete_slope
+
+    def symbolic_horizon_from_time(self, t_s):
+        a = self.concrete_slope
+        b = self.concrete_intercept
+        alpha = self.ratio_slope
+        beta  = self.ratio_intercept
+
+        coeffs = [
+            alpha * a,                  # h^2
+            alpha * b + beta * a,      # h
+            beta * b - t_s             # constant
+        ]
+
+        raw_roots = np.roots(coeffs)
+
+        # Keep real, positive roots
+        roots = raw_roots[np.isreal(raw_roots)].real
+        roots = roots[roots >= 0]
+
+        if len(roots) == 0:
+            raise ValueError(f"No valid horizon found ({raw_roots=}, {t_s=})")
+
+        return roots.max()
 
 class ExtensionOptimizer:
     """
@@ -52,6 +104,8 @@ class ExtensionOptimizer:
         self._timing_params = dict(self._DEFAULT_TIMING)
         self._volume_params = dict(self._DEFAULT_VOLUME)
         self._build_problem()
+        self.set_timing_params(self._timing_params)
+        self.set_volume_params(self._volume_params)
 
     # ─── Problem ─────────────────────────────────────────────────────────
 
@@ -78,12 +132,14 @@ class ExtensionOptimizer:
                 super().__init__(vars=vars, n_obj=1, n_ieq_constr=1, **kwargs)
 
             def set_inputs(self, k, current_vol, verified_vol,
-                           w_time, w_vol, time_budget):
+                           w_time, w_vol, pow_time, pow_vol, time_budget):
                 self.k            = float(k)
                 self.current_vol  = current_vol
                 self.verified_vol = verified_vol
                 self.w_time       = w_time
                 self.w_vol        = w_vol
+                self.pow_time       = pow_time
+                self.pow_vol        = pow_vol
                 self.time_budget  = time_budget
 
             def set_timing_params(self, p):
@@ -117,7 +173,7 @@ class ExtensionOptimizer:
                     comp_time       = ratio * base_concrete_k
                     final_vol       = self.current_vol * self._symbolic_vol_growth(self.k)
 
-                out["F"] = self.w_time * comp_time + self.w_vol * final_vol
+                out["F"] = self.w_time * comp_time ** self.pow_time + self.w_vol * final_vol ** self.pow_vol
                 out["G"] = [comp_time - self.time_budget]
 
         self.problem = ExtensionProblem()
@@ -136,7 +192,8 @@ class ExtensionOptimizer:
 
     def get_strategy(self, current_timestep, verified_until,
                      current_vol, verified_vol,
-                     time_budget, w_time=1.0, w_vol=1.0):
+                     time_budget, w_time=1.0, w_vol=1.0,
+                     pow_time=1, pow_vol=1):
         """
         Args:
             current_timestep : current real-world timestep
@@ -157,6 +214,8 @@ class ExtensionOptimizer:
             verified_vol = verified_vol,
             w_time       = w_time,
             w_vol        = w_vol,
+            pow_time     = pow_time,
+            pow_vol      = pow_vol,
             time_budget  = time_budget,
         )
 
