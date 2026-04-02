@@ -230,8 +230,11 @@ class ExtensionOptimizer:
         #       f"(F={res.F[0]:.4f}, {'OK' if res.G[0] <= 0 else 'BUDGET VIOLATED'})")
         # return method
 
+        import time as _time
+        _t0 = _time.perf_counter()
         res = minimize(self.problem, self.algorithm,
                termination=('n_gen', 40), seed=1, verbose=False)
+        _strategy_time = _time.perf_counter() - _t0
 
         # res.X is None when pymoo finds no feasible solution (budget constraint
         # eliminates both options). Fall back to concrete — it's cheaper and
@@ -239,13 +242,15 @@ class ExtensionOptimizer:
         if res.X is None:
             method = "concrete"
             print(f"[ExtOpt] t={current_timestep}  T={verified_until}  k={k}  "
-                f"no feasible solution (budget too tight) — defaulting to concrete")
+                f"no feasible solution (budget too tight) — defaulting to concrete  "
+                f"[strategy_time={_strategy_time:.4f}s]")
         else:
             method = res.X["method"]
             print(f"[ExtOpt] t={current_timestep}  T={verified_until}  k={k}  "
                 f"cur_vol={current_vol:.4f}  ver_vol={verified_vol:.4f}  "
                 f"budget={time_budget:.3f}s  "
                 f"→ {method}  "
-                f"(F={res.F[0]:.4f}, {'OK' if res.G[0] <= 0 else 'BUDGET VIOLATED'})")
+                f"(F={res.F[0]:.4f}, {'OK' if res.G[0] <= 0 else 'BUDGET VIOLATED'})  "
+                f"[strategy_time={_strategy_time:.4f}s]")
 
         return method

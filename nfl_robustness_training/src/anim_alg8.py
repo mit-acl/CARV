@@ -1,6 +1,11 @@
 """
-Animation for alg7 — alg6 optimizer with MPC safety filter.
-Saves: alg7_optimization_mpc.gif
+Animation for alg8 — adaptive MPC with per-timestep revert check.
+Saves: alg8_mpc_adaptive.gif
+
+Same as anim_alg7 except that while MPC controls are active, each timestep
+runs a concrete scan from current bounds.  If the scan is clean the nominal
+controller resumes (MPC REVERT); if the conflict persists the queued MPC
+control is applied.
 
 Frame tuple: (rsoa_snap, mpc_traj_bounds, mpc_t_back, current_t, label, origin)
   mpc_traj_bounds: list of bounds arrays for current MPC attempt (empty if not an MPC frame)
@@ -11,7 +16,7 @@ Frame tuple: (rsoa_snap, mpc_traj_bounds, mpc_t_back, current_t, label, origin)
 from REAL_integrated_sim import setup_analyzer, ReachabilityTester
 from mpc_safety_filter import make_mpc_safety_filter
 import time
-from alg7_optimization_w_mpc import (
+from alg8_mpc_adaptive import (
     concrete_scan, symbolic_step, VerificationTask,
     _get_volume, get_dynamic_symbolic_horizon
 )
@@ -26,36 +31,44 @@ from matplotlib.lines import Line2D
 from typing import Optional
 
 # ── Config ──
-MAX_TIME             = 40
+MAX_TIME             = 50
 MIN_SAFE_HORIZON     = 6
 MIN_LOOKAHEAD        = 4
 MAX_SYMBOLIC_HORIZON = 10
 SYMBOLIC_BUFFER      = 5
 
-obstacles = [
-    np.array([[-np.inf, np.inf], [-np.inf, -1.0]]),
-    np.array([[-np.inf, 0.3],    [-np.inf, np.inf]]),
-]
+# obstacles = [
+#     np.array([[-np.inf, np.inf], [-np.inf, -1.0]]),
+#     np.array([[-np.inf, 0.3],    [-np.inf, np.inf]]),
+# ]
 
 # obstacles = [
 #     np.array([[-5.5, -5], [2, 2.2 ], [-np.inf, np.inf]]),
+#     np.array([[-4, -3.4], [1.1, 1.3], [-np.inf, np.inf]]),
+#     np.array([[-2, -1.8], [0, 0.5], [-np.inf, np.inf]])
 # ]
 
 # ── Setup ──
 print("Setting up analyzer...")
 
+
+# analyzer           = setup_analyzer('DoubleIntegrator', 'constraint_default_more_data_5hz')
+# tester             = ReachabilityTester(analyzer, obstacles)
+# tester_calibration = ReachabilityTester(analyzer)
+# mpc_sf             = make_mpc_safety_filter(tester, obstacles_list=obstacles, t_step=0.1, n_horizon=8)
+
 # analyzer           = setup_analyzer('Unicycle_NL', 'natural_none_default')
 # tester             = ReachabilityTester(analyzer, obstacles)
 # tester_calibration = ReachabilityTester(analyzer)
-# mpc_sf             = make_mpc_safety_filter(tester, obstacles_list=obstacles, t_step=0.1)
+# mpc_sf             = make_mpc_safety_filter(tester, obstacles_list=obstacles, t_step=0.1, n_horizon=15)
 
-
-analyzer           = setup_analyzer('DoubleIntegrator', 'constraint_default_more_data_5hz')
-tester             = ReachabilityTester(analyzer, obstacles)
+analyzer           = setup_analyzer('Unicycle_NL', 'natural_none_default')
+tester             = ReachabilityTester(analyzer)
 tester_calibration = ReachabilityTester(analyzer)
-mpc_sf             = make_mpc_safety_filter(tester, obstacles_list=obstacles, t_step=0.1, n_horizon=10)
+mpc_sf             = make_mpc_safety_filter(tester, t_step=0.1, n_horizon=15)
+obstacles = tester.obstacles.obstacle_list or []
 
-budget = TimeBudget(timestep_budget=0.5)
+budget = TimeBudget(timestep_budget=0.4)
 print("Calibrating time budget...")
 budget.calibrate(tester_calibration, max_symbolic_horizon=MAX_SYMBOLIC_HORIZON,
                  max_backward_horizon=0)
@@ -342,7 +355,7 @@ def run_opt_loop_anim(frames):
 # ══════════════════════════════════════════════
 # Run alg7, capturing frames
 # ══════════════════════════════════════════════
-print("Running alg7...")
+print("Running alg8...")
 frames = []
 
 current_timestep = 0
@@ -367,18 +380,54 @@ while current_timestep < MAX_TIME:
         symbolic_buffer=SYMBOLIC_BUFFER
     )
 
-    # ── MPC locked ────────────────────────────────────────────────────
+    # ── MPC active: re-check each timestep whether conflict persists ──
     if mpc_started:
-        ctrl_idx = current_timestep - mpc_committed_at
-        queue    = mpc_control_queue
-        if ctrl_idx < len(queue):
+        ctrl_idx  = current_timestep - mpc_committed_at
+        queue     = mpc_control_queue
+        check_end = min(current_timestep + MIN_SAFE_HORIZON, MAX_TIME)
+
+        # Clear future horizons so the concrete check scan stores fresh
+        # nominal-from-MPC-position bounds without intersecting stale data.
+        for _t in list(tester.horizons.keys()):
+            if _t > current_timestep:
+                del tester.horizons[_t]
+
+        result_check           = tester.concrete(current_timestep, check_end)
+        conflict_still_present = result_check["collision"]
+        push(frames, current_timestep,
+             f"t={current_timestep}  [MPC check] concrete {current_timestep}→{check_end}"
+             + ("  ⚠ conflict persists" if conflict_still_present else "  ✓ clear — reverting"),
+             "mpc")
+
+        if not conflict_still_present:
+            mpc_started         = False
+            mpc_needed          = False
+            mpc_committed_at    = None
+            mpc_conflict_time    = None
+            mpc_traj_bounds_all  = []
+            mpc_first_run        = True
+            validated_until      = check_end
+            pending_job          = None   # stale — conflict resolved by MPC
+            pending_mpc_conflict = None
+            push(frames, current_timestep,
+                 f"t={current_timestep}  [MPC REVERT] reverting to nominal  vu={check_end}",
+                 "info")
+            tester.real_state_empirical(current_timestep, current_timestep + 1)
+            current_timestep += 1
+            push(frames, current_timestep,
+                 f"t={current_timestep}  empirical step (post-revert)  vu={validated_until}",
+                 "info")
+        elif ctrl_idx < len(queue):
             ctrl = queue[ctrl_idx]
-            _mpc_trail.append(mpc_traj_bounds_all[ctrl_idx].copy())
+            mpc_bound = mpc_traj_bounds_all[ctrl_idx + 1]
+            _mpc_trail.append(mpc_bound.copy())
             _mpc_trail_frame_idx.append(len(frames))
             push(frames, current_timestep,
                  f"t={current_timestep}  [MPC] idx={ctrl_idx}  u={np.round(ctrl, 4)}"
                  f"  (plan from t={mpc_committed_at})",
                  "mpc", mpc_t_back=mpc_committed_at)
+            tester.real_state_mpc(current_timestep, ctrl, mpc_bound)
+            tester.horizons[current_timestep + 1].tight_bound = mpc_bound.copy()
             current_timestep += 1
         else:
             push(frames, current_timestep,
@@ -564,13 +613,16 @@ while current_timestep < MAX_TIME:
         ctrl_idx = current_timestep - mpc_committed_at
         if ctrl_idx < len(mpc_control_queue):
             mpc_started = True
-            ctrl        = mpc_control_queue[ctrl_idx]
-            _mpc_trail.append(mpc_traj_bounds_all[ctrl_idx].copy())
+            ctrl      = mpc_control_queue[ctrl_idx]
+            mpc_bound = mpc_traj_bounds_all[ctrl_idx + 1]
+            _mpc_trail.append(mpc_bound.copy())
             _mpc_trail_frame_idx.append(len(frames))
             push(frames, current_timestep,
                  f"t={current_timestep}  [MPC FIRST FIRE] idx={ctrl_idx}"
                  f"  u={np.round(ctrl, 4)}  (plan from t={mpc_committed_at})",
                  "mpc", mpc_t_back=mpc_committed_at)
+            tester.real_state_mpc(current_timestep, ctrl, mpc_bound)
+            tester.horizons[current_timestep + 1].tight_bound = mpc_bound.copy()
             current_timestep += 1
         else:
             push(frames, current_timestep,
@@ -601,7 +653,7 @@ ORIGIN_BORDER = {
     "mpc":       {"lw": 1.5,  "ls": "-",  "hatch": None, "alpha_boost": 0.10},
     "info":      {"lw": 0.8,  "ls": "-",  "hatch": None, "alpha_boost": 0.0},
 }
-MPC_TRAJ_COLOR = {"fc": "#f97316", "fa": 0.35, "ec": "#f97316"}
+MPC_TRAJ_COLOR = {"fc": "#f97416be", "fa": 0.35, "ec": "#f97316"}
 _BOUND_LIMIT   = 1e6
 
 t_origin: dict = {}
@@ -786,7 +838,17 @@ plt.tight_layout()
 ani = animation.FuncAnimation(fig, update, frames=len(frames),
                                interval=600, blit=False, repeat=True)
 
-out_path = "alg7_optimization_mpc.gif"
-ani.save(out_path, writer="pillow", fps=3, dpi=130)
+import io, imageio
+
+out_path = "alg8_mpc_adaptive_un.gif"
+print(f"Rendering {len(frames)} frames...")
+images = []
+for i in range(len(frames)):
+    update(i)
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=100)
+    buf.seek(0)
+    images.append(imageio.v2.imread(buf))
+imageio.mimsave(out_path, images, duration=100, loop=0)  # 333ms = ~3fps
 print(f"Saved to {out_path}")
 plt.close()

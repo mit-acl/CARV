@@ -1,19 +1,10 @@
 """
-Optimized extension algorithm matching anim_alg5_optimization.py.
+Adaptive MPC algorithm
 
-When validated_until is at least MIN_SAFE_HORIZON ahead of current_timestep,
-the ExtensionOptimizer chooses whether to compute T+1 via:
-  - concrete: tester.concrete(validated_until, T+1)
-  - symbolic: tester.symbolic(current_timestep, T+1)  — tighter bounds
-
-The optimizer loops within each timestep until budget is exhausted, a
-pending job is created, or the margin drops below MIN_SAFE_HORIZON.
-
-The baseline concrete scan is capped at current_timestep + MIN_SAFE_HORIZON
-so the optimizer always gets a turn once the safe margin is reached.
-
-When both symbolic deconfliction and MPC are needed, timesteps alternate
-between the two so neither blocks the other indefinitely.
+Same as alg7 except that once MPC controls start firing, each timestep
+re-checks whether the conflict is still present (concrete scan from current
+bounds).  If the scan is clean the nominal controller resumes; if the conflict
+persists the queued MPC control is applied.
 """
 
 from REAL_integrated_sim import setup_analyzer, ReachabilityTester
@@ -69,7 +60,7 @@ def apply_mpc_filter(mpc_sf, conflict_time, tester, mpc_state: dict):
     Updates mpc_state with the committed plan and sets mpc_needed=True.
     """
     t0 = time.perf_counter()
-    stopping_t, controls = mpc_sf.find_stopping_timestep(conflict_time, tester.horizons)
+    stopping_t, controls, traj_bounds = mpc_sf.find_stopping_timestep(conflict_time, tester.horizons)
     print(f"  [MPC timing] find_stopping_timestep took {time.perf_counter() - t0:.3f}s")
 
     if stopping_t is not None:
@@ -78,6 +69,7 @@ def apply_mpc_filter(mpc_sf, conflict_time, tester, mpc_state: dict):
             mpc_state['committed_at']  = stopping_t
             mpc_state['conflict_time'] = conflict_time
             mpc_state['controls']      = controls
+            mpc_state['traj_bounds']   = traj_bounds  # traj_bounds[i+1] = bounds at committed_at+i+1
             mpc_state['needed']        = True
             print(f"  [MPC COMMIT] t_back={stopping_t}  {len(controls)} controls: "
                   f"{[round(float(c[0]), 4) for c in controls]}")
@@ -190,7 +182,7 @@ def optimized_step(tester, validated_until, max_time, budget, max_symbolic_horiz
 
     if not budget.can_afford('symbolic', 1):
         return conflict_time - 1, VerificationTask(
-            symbolic_start=conflict_time - 1,
+            symbolic_start=current_timestep,
             conflict_time=conflict_time
         ), None
 
@@ -219,14 +211,22 @@ def _get_volume(tester, timestep):
 ####  simulation loop  ####
 
 def get_dynamic_symbolic_horizon(safety_margin, max_symbolic_horizon=10, symbolic_buffer=5):
-    return max(max_symbolic_horizon, safety_margin - symbolic_buffer)
+    return max_symbolic_horizon
+    return min(max_symbolic_horizon, max(1, safety_margin-symbolic_buffer))
+    return max_symbolic_horizon
 
-def test1():
+def test():
     analyzer = setup_analyzer('DoubleIntegrator', 'constraint_default_more_data_5hz')
+    analyzer = setup_analyzer('Unicycle_NL', 'natural_none_default')
+
 
     obstacles = [
         np.array([[-np.inf, np.inf], [-np.inf, -1.0]]),
         np.array([[-np.inf, 0.3],    [-np.inf, np.inf]]),
+    ]
+    obstacles = [
+    np.array([[-5.5, -5], [2, 2.2 ], [-np.inf, np.inf]]),
+    # np.array([[]])
     ]
 
     tester             = ReachabilityTester(analyzer, obstacles)
@@ -264,6 +264,7 @@ def test1():
         'committed_at':  None,
         'conflict_time': None,
         'controls':      [],
+        'traj_bounds':   [],   # traj_bounds[i+1] = MPC bounds at committed_at + i + 1
         'needed':        False,
     }
     mpc_started = False
@@ -309,14 +310,42 @@ def test1():
             symbolic_buffer=SYMBOLIC_BUFFER
         )
 
-        #  MPC locked: skip all verification, just apply controls
+        #  MPC active: re-check each timestep whether conflict persists.
+        #  If concrete scan is clean  → revert to nominal controller.
+        #  If conflict still present  → apply the queued MPC control.
         if mpc_started:
-            ctrl_idx = current_timestep - mpc_state['committed_at']
-            queue    = mpc_state['controls']
-            if ctrl_idx < len(queue):
-                ctrl = queue[ctrl_idx]
+            ctrl_idx  = current_timestep - mpc_state['committed_at']
+            queue     = mpc_state['controls']
+            check_end = min(current_timestep + MIN_SAFE_HORIZON, MAX_TIME)
+
+            for _t in list(tester.horizons.keys()):
+                if _t > current_timestep:
+                    del tester.horizons[_t]
+
+            print(f"[MPC check] t={current_timestep}  Scanning concrete t={current_timestep}→{check_end}")
+            conflict_still_present, _ = concrete_scan(tester, current_timestep, check_end)
+
+            if not conflict_still_present:
+                # Safe to hand back to nominal controller
+                print(f"[MPC REVERT] t={current_timestep}  No conflict in horizon — reverting to nominal")
+                mpc_started           = False
+                mpc_state['needed']   = False
+                mpc_state['committed_at'] = None
+                mpc_first_run         = True
+                validated_until       = check_end
+                pending_job           = None   # stale — conflict resolved by MPC
+                pending_mpc_conflict  = None
+                tester.real_state_empirical(current_timestep, current_timestep + 1)
+                print(f"Safety margin: {validated_until - current_timestep} steps ahead"
+                      f"  |  Budget: {budget.elapsed:.3f}s / {budget.timestep_budget:.3f}s")
+                current_timestep += 1
+            elif ctrl_idx < len(queue):
+                ctrl        = queue[ctrl_idx]
+                mpc_bound   = mpc_state['traj_bounds'][ctrl_idx + 1]
                 print(f"[MPC] t={current_timestep}  idx={ctrl_idx}/{len(queue)-1}"
                       f"  u={np.round(ctrl, 4)}  (plan from t={mpc_state['committed_at']})")
+                tester.real_state_mpc(current_timestep, ctrl, mpc_bound)
+                tester.horizons[current_timestep + 1].tight_bound = mpc_bound.copy()
                 current_timestep += 1
             else:
                 print(f"[MPC] Queue exhausted at t={current_timestep}")
@@ -377,7 +406,7 @@ def test1():
                                 trigger_mpc(mpc_c)
                             run_opt_loop()
 
-            #  Phase 2: main decision when no carry-over pending 
+            #  Phase 2: main decision when no carry-over pending
             else:
                 safety_margin = validated_until - current_timestep
                 dynamic_symbolic_horizon = get_dynamic_symbolic_horizon(
@@ -468,20 +497,25 @@ def test1():
         if (mpc_state['committed_at'] is not None
                 and current_timestep >= mpc_state['committed_at']
                 and mpc_state['needed']):
+            #MPC Control
 
             ctrl_idx = current_timestep - mpc_state['committed_at']
             queue    = mpc_state['controls']
             if ctrl_idx < len(queue):
                 mpc_started = True
-                ctrl = queue[ctrl_idx]
+                ctrl      = queue[ctrl_idx]
+                mpc_bound = mpc_state['traj_bounds'][ctrl_idx + 1]
                 print(f"[MPC FIRST FIRE] t={current_timestep}  idx={ctrl_idx}/{len(queue)-1}"
                       f"  u={np.round(ctrl, 4)}  (plan from t={mpc_state['committed_at']},"
                       f" {len(queue)} controls total)")
+                tester.real_state_mpc(current_timestep, ctrl, mpc_bound)
+                tester.horizons[current_timestep + 1].tight_bound = mpc_bound.copy()
                 current_timestep += 1
             else:
                 print(f"[MPC] Queue exhausted immediately at t={current_timestep}. ERROR???")
                 break
         else:
+            # Nominal Controller
             tester.real_state_empirical(current_timestep, current_timestep + 1)
             print(f"Safety margin: {validated_until - current_timestep} steps ahead"
                   f"  |  Budget: {budget.elapsed:.3f}s / {budget.timestep_budget:.3f}s")
@@ -492,4 +526,4 @@ def test1():
 
 
 if __name__ == "__main__":
-    test1()
+    test()

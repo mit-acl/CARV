@@ -606,6 +606,131 @@ class ReachabilityTester:
                 'estimated_state': estimated_state
             }
 
+    def real_state_mpc(self, start: int, control: np.ndarray,
+                       mpc_bounds: Optional[np.ndarray] = None):
+        """
+        Propagate actual state one step using a provided MPC control instead of
+        the NN controller.
+        Otherwise identical to real_state_empirical(start, start+1).
+
+        Args:
+            start:      Starting timestep
+            control:    MPC control input as a 1-D numpy array
+            mpc_bounds: Pre-computed MPC trajectory bounds for the next timestep.
+                        When provided, these replace the KF-derived bounds stored
+                        in the horizon (the KF still runs to track the true state).
+
+        Returns:
+            Result dict
+        """
+        end = start + 1
+        print("=" * 20 + " MPC Step (Kalman) " + "=" * 20)
+        if start not in self.horizons:
+            print(f"Error: No horizon exists at timestep {start}")
+            return False
+
+        parent_horizon = self.horizons[start]
+        parent_real_state = None
+        parent_bounds = None
+        for calc_data in parent_horizon.calculations.values():
+            if (calc_data['calc_type'] == CalculationType.EMPIRICAL and
+                    'real_state' in calc_data):
+                parent_real_state = calc_data['real_state']
+                parent_bounds = calc_data['bounds']
+                break
+
+        if parent_real_state is None:
+            print(f"Error: No empirical calculation with real_state at timestep {start}")
+            return False
+
+        num_states = parent_real_state.shape[0]
+        self.estimator.reset(parent_real_state, parent_bounds)
+
+        t_start = time.time()
+
+        xt_true = parent_real_state.reshape(1, -1)
+
+        u_mpc_np = control.reshape(1, -1)
+        u_mpc = torch.tensor(u_mpc_np, dtype=torch.float32)
+
+        # Propagate TRUE state with MPC control (numpy branch in dynamics_step requires numpy u)
+        xt1_true = self.analyzer.cl_system.dynamics.dynamics_step(xt_true, u_mpc_np)
+        xt_true = xt1_true
+
+        # KF Predict using MPC control
+        predicted_state, predicted_bounds = self.estimator.predict(control_input=u_mpc)
+
+        # KF Update with noisy measurement of true state
+        if isinstance(xt_true, torch.Tensor):
+            true_state_np = xt_true.squeeze().cpu().numpy()
+        else:
+            true_state_np = xt_true.squeeze() if isinstance(xt_true, np.ndarray) else xt_true
+
+        measurement_noise = np.random.normal(0, self.measurement_noise_std, size=num_states)
+        noisy_measurement = true_state_np + measurement_noise
+        self.estimator.update(noisy_measurement)
+
+        # Final states
+        if isinstance(xt_true, torch.Tensor):
+            real_state = xt_true.squeeze().cpu().numpy()
+        else:
+            real_state = xt_true.squeeze() if isinstance(xt_true, np.ndarray) else xt_true
+
+        estimated_state = self.estimator.state.copy()
+        kf_bounds = self.estimator.bounds.copy()
+
+        # Use MPC-planned bounds if provided; otherwise fall back to KF bounds
+        stored_bounds = mpc_bounds if mpc_bounds is not None else kf_bounds
+
+        t_elapsed = time.time() - t_start
+
+        # When MPC bounds are provided, reset the horizon so the MPC bounds are
+        # the sole calculation — avoids the empty-intersection warning that fires
+        # inside add_calculation when nominal bounds are already present.
+        if mpc_bounds is not None or end not in self.horizons:
+            self.horizons[end] = ReachableSetHorizon(end, device=self.analyzer.device)
+
+        self.horizons[end].add_calculation(
+            bounds=stored_bounds,
+            calc_type=CalculationType.EMPIRICAL,
+            origin_timestep=end,
+            computation_time=t_elapsed,
+            step_size=1,
+            num_samples=None,
+            notes=f'MPC step from t={start}',
+            real_state=real_state,
+        )
+
+        # When MPC bounds are provided they must become the tight bound exactly 
+        # not the intersection with pre-existing concrete/symbolic calculations.
+        if mpc_bounds is not None:
+            self.horizons[end].tight_bound = stored_bounds.copy()
+            self.horizons[end].reachable_set.set_range(
+                torch.tensor(stored_bounds, dtype=torch.float32,
+                              device=self.analyzer.device)
+            )
+
+        self.time += t_elapsed
+        collisions, intersections = self.obstacles.check_collision(stored_bounds)
+        if collisions is not None:
+            print(f" Warning: Collision detected at t={end}")
+            print(f" Bounds: {stored_bounds}")
+            return {
+                'success': False, 'time': t_elapsed, 'completed_steps': 1,
+                'collision': True, 'collision_timestep': end,
+                'collision_obstacles': collisions, 'intersections': intersections,
+                'final_bounds': stored_bounds, 'real_state': real_state,
+                'estimated_state': estimated_state,
+            }
+        else:
+            print(f"  MPC step t={start}→t={end}  u={np.round(control, 4)}")
+            print(f"  Tightest overlapped volume at t = {end}: {self.horizons[end].get_tight_volume():.6f}\n")
+            return {
+                'success': True, 'time': t_elapsed, 'completed_steps': 1,
+                'collision': False, 'final_bounds': stored_bounds,
+                'real_state': real_state, 'estimated_state': estimated_state,
+            }
+
     def symbolic(self, start: int, end: int):
         """
         Compute symbolic reachable set
