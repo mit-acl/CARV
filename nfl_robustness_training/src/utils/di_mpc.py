@@ -46,7 +46,7 @@ def di_mpc(model: do_mpc.model.Model,
     v_goal = DM([0])
 
     #lterm is per timstep
-    lterm = (p-p_goal).T @ (p-p_goal) + 5*v**2
+    lterm = (p-p_goal).T @ (p-p_goal) 
 
     #mterm is final objective
     mterm = 100 * (p-p_goal).T @ (p-p_goal) + 100* (v-v_goal).T @ (v-v_goal)

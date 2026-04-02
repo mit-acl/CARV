@@ -46,7 +46,6 @@ def unicycle_mpc(model: do_mpc.model.Model,
     mterm = (p-p_goal).T @ (p-p_goal)
 
     mpc.set_objective(mterm=mterm, lterm=lterm)
-    mpc.set_rterm(omega**2)
 
     mpc.bounds['lower', '_u', 'omega'] = -1.0
     mpc.bounds['upper', '_u', 'omega'] = 1.0
@@ -74,8 +73,13 @@ def unicycle_mpc(model: do_mpc.model.Model,
                 # Bounded box: ellipse fitted to box shape + conservative buffer
                 cx = (x_lo + x_hi) / 2.0
                 cy = (y_lo + y_hi) / 2.0
-                a  = (x_hi - x_lo) / 2.0 + 0.1
-                b  = (y_hi - y_lo) / 2.0 + 0.15
+                a  = (x_hi - x_lo) / 2.0 + 0.2
+                b  = (y_hi - y_lo) / 2.0 + 0.2
+
+                a = 0.45
+                b =0.3
+
+                print(f"center {cx},{cy}  a={a}  b={b}")
                 ellipse = (p[0] - cx)**2 / a**2 + (p[1] - cy)**2 / b**2
                 mpc.set_nl_cons(f'obs{i_obs}_ellipse', -ellipse, ub=-1.0)
             else:
