@@ -22,9 +22,39 @@ class MPCSafetyFilter:
     Subclasses implement specific linear/nonlinear dynamics
     """
 
-    def __init__(self, obstacles, max_lookback: int = 10):
+    def __init__(self, obstacles, tester, max_lookback: int = 10):
         self.obstacles    = obstacles if obstacles is not None else []
         self.max_lookback = max_lookback
+        self.tester = tester
+
+    def _fill_nom_ctrl_buf(self, x0: np.ndarray):
+        """
+        Bootstrap: roll out the NN from x0 for n_horizon steps to get
+        per-step nominals. Used only on the first MPC solve when no
+        predicted trajectory is available yet.
+        """
+        cl_sys = self.tester.analyzer.cl_system
+        xt = x0.flatten().reshape(1, -1)  # (1, state_dim) numpy
+        for k in range(self.n_horizon + 1):
+            u = cl_sys.dynamics.control_nn(xt, cl_sys.controller.cpu())  # numpy (1, ctrl_dim)
+            self._mpc._nom_ctrl_buf[k] = u.flatten()[:1]
+            xt = cl_sys.dynamics.dynamics_step(xt, u)
+
+    def _fill_nom_ctrl_buf_from_states(self, states: list):
+        """
+        Query the NN at each MPC-predicted state to get per-step nominal control.
+        states: MPC predicted trajectory from previous solve, shifted by 1.
+        Remaining buffer entries are padded with the last computed value.
+        """
+        cl_sys = self.tester.analyzer.cl_system
+        buf_len = len(self._mpc._nom_ctrl_buf)
+        filled = min(len(states), buf_len)
+
+        batch = np.array([np.array(states[k]).flatten() for k in range(filled)])  # (filled, state_dim)
+        us = cl_sys.dynamics.control_nn(batch, cl_sys.controller.cpu())            # (filled, ctrl_dim)
+        self._mpc._nom_ctrl_buf[:filled] = us[:, :1]
+        if filled < buf_len:
+            self._mpc._nom_ctrl_buf[filled:] = us[-1, :1]
 
     def _collides(self, bounds: np.ndarray) -> bool:
         for obs in self.obstacles:
@@ -32,13 +62,15 @@ class MPCSafetyFilter:
                 return True
         return False
 
-    def find_stopping_timestep(self, collision_timestep: int, horizons: dict):
+    def find_stopping_timestep(self, collision_timestep: int, horizons: dict,
+                               current_t: int = 0):
         """
         Find the safe stopping timestep closest to collision.
 
         Args:
             collision_timestep
             horizons:           dict mapping int timestep -> ReachableSetHorizon
+            current_t:          current real timestep — t_back will not go before this
 
         Returns:
             safe stopping timestep or None
@@ -46,7 +78,7 @@ class MPCSafetyFilter:
         for lookback in range(2, self.max_lookback + 1):
             t_back = collision_timestep - lookback
 
-            if t_back < 0:
+            if t_back < max(0, current_t):
                 break
 
             bounds_at_back = horizons[t_back].get_tight_bound()
@@ -73,25 +105,23 @@ class MPCSafetyFilter:
 
             if not collision_found:
                 print(f"  [MPC filter] Safe. Stopping timestep = {t_back}")
-                return t_back, controls
+                return t_back, controls, traj_bounds
             else:
                 print(f"  [MPC filter] Collision at step {mpc_collision_step} "
                       f"from t_back={t_back}, going further back.")
 
-        print(f"  [MPC filter] No safe stopping timestep found within "
-              f"{self.max_lookback} lookback steps.")
-        return collision_timestep-1, []
+        print(f"  [MPC filter] No safe stopping timestep found at or after t={current_t}.")
+        return None, [], []
 
 
 class LinearMPCSafetyFilter(MPCSafetyFilter):
     """
     Safety filter for linear DI dynamics.
-
     """
 
-    def __init__(self, estimator: LinearKalmanEstimator, obstacles,
-                 t_step: float = 0.1, n_horizon: int = 8, max_lookback: int = 10):
-        super().__init__(obstacles, max_lookback)
+    def __init__(self, estimator: LinearKalmanEstimator, obstacles, tester,
+                 t_step: float = 0.1, n_horizon: int = 10, max_lookback: int = 10):
+        super().__init__(obstacles, tester, max_lookback)
         self._estimator = estimator
         self.t_step     = t_step
         self.n_horizon  = n_horizon
@@ -99,7 +129,8 @@ class LinearMPCSafetyFilter(MPCSafetyFilter):
         self.B          = estimator.B
 
         self._model     = di_model(self.A, self.B, t_step=t_step)
-        self._mpc       = di_mpc(self._model, obstacles=obstacles, t_step=t_step, n_horizon=n_horizon)
+        self._mpc       = di_mpc(self._model, obstacles=obstacles, t_step=t_step,
+                                 n_horizon=n_horizon, nominal_tracking=True)
         self._simulator = di_simulator(self._model, t_step=t_step)
 
     def _run_mpc_from_bounds(self, initial_bounds: np.ndarray, center: np.ndarray) -> list:
@@ -122,11 +153,22 @@ class LinearMPCSafetyFilter(MPCSafetyFilter):
             trajectory_bounds = [initial_bounds.copy()]
             points   = []
             controls = []
+            prev_predicted_states = None
 
             for _ in range(self.n_horizon):
                 x = estimator.x.reshape(2, 1)
+                if prev_predicted_states is None:
+                    self._fill_nom_ctrl_buf(x.flatten())
+                else:
+                    self._fill_nom_ctrl_buf_from_states(prev_predicted_states[1:])
                 u = self._mpc.make_step(x)
+                prev_predicted_states = [
+                    np.array(self._mpc.opt_x_num['_x', k, 0]).flatten()
+                    for k in range(self.n_horizon + 1)
+                ]
                 _, bounds = estimator.predict(np.array(u).flatten())
+                estimator.update(estimator.x)  # synthetic measurement update to keep bounds realistic
+                bounds = estimator.bounds.copy()
                 trajectory_bounds.append(bounds.copy())
                 points.append(x)
                 controls.append(np.array(u).flatten().copy())
@@ -145,16 +187,28 @@ class UniycleMPCSafetyFilter(MPCSafetyFilter):
     Uses Unicycle MPC + EKF
     """
 
-    def __init__(self, estimator: ExtendedKalmanEstimator, obstacles,
+    def __init__(self, estimator: ExtendedKalmanEstimator, obstacles, tester,
                  dt: float = 0.1, v: float = 1.0,
-                 n_horizon: int = 8, max_lookback: int = 10):
-        super().__init__(obstacles, max_lookback)
+                 n_horizon: int = 10, max_lookback: int = 10, nominal_tracking=True):
+        super().__init__(obstacles, tester, max_lookback)
         self._estimator = estimator
         self.dt         = dt
         self.n_horizon  = n_horizon
+        self.v          = v
 
+        self._nominal_tracking = nominal_tracking
         self._model = unicycle_model(dt=dt, v=v)
-        self._mpc   = unicycle_mpc(self._model, obstacles=obstacles, dt=dt, n_horizon=n_horizon)
+
+        # Relaxed IPOPT tolerances — faster convergence
+        _fast_opts = {
+            'ipopt.tol':        1e-4,
+            'ipopt.max_iter':   50,
+            'ipopt.warm_start_init_point': 'yes',
+        }
+
+        self._mpc   = unicycle_mpc(self._model, obstacles=obstacles, dt=dt,
+                                   n_horizon=n_horizon, nominal_tracking=nominal_tracking,
+                                   solver_opts=_fast_opts)
 
     def _run_mpc_from_bounds(self, initial_bounds: np.ndarray, center: np.ndarray) -> list:
         """
@@ -175,11 +229,23 @@ class UniycleMPCSafetyFilter(MPCSafetyFilter):
             trajectory_bounds = [initial_bounds.copy()]
             points   = []
             controls = []
+            prev_predicted_states = None
 
             for _ in range(self.n_horizon):
                 x = estimator.x.reshape(-1, 1)
+                if self._nominal_tracking:
+                    if prev_predicted_states is None:
+                        self._fill_nom_ctrl_buf(x.flatten())
+                    else:
+                        self._fill_nom_ctrl_buf_from_states(prev_predicted_states[1:])
                 u = self._mpc.make_step(x)
+                prev_predicted_states = [
+                    np.array(self._mpc.opt_x_num['_x', k, 0]).flatten()
+                    for k in range(self.n_horizon + 1)
+                ]
                 _, bounds = estimator.predict(np.array(u).flatten())
+                estimator.update(estimator.x)  # measurement update to keep mpc bounds realistic
+                bounds = estimator.bounds.copy()
                 trajectory_bounds.append(bounds.copy())
                 points.append(x)
                 controls.append(np.array(u).flatten().copy())
@@ -192,7 +258,7 @@ class UniycleMPCSafetyFilter(MPCSafetyFilter):
 
 
 def make_mpc_safety_filter(tester, obstacles_list=None, t_step: float = 0.1,
-                            n_horizon: int = 10, max_lookback: int = 10):
+                            n_horizon: int = 10, max_lookback: int = 10, nominal_tracking=True):
     """
     Build the MPCSafetyFilter subclass from a tester object.
     """
@@ -205,6 +271,7 @@ def make_mpc_safety_filter(tester, obstacles_list=None, t_step: float = 0.1,
         return LinearMPCSafetyFilter(
             estimator=tester.estimator,
             obstacles=obstacles_list,
+            tester=tester,
             t_step=t_step,
             n_horizon=n_horizon,
             max_lookback=max_lookback,
@@ -214,10 +281,12 @@ def make_mpc_safety_filter(tester, obstacles_list=None, t_step: float = 0.1,
         return UniycleMPCSafetyFilter(
             estimator=tester.estimator,
             obstacles=obstacles_list,
+            tester=tester,
             dt=t_step,
             v=tester.analyzer.cl_system.dynamics.vt,
             n_horizon=n_horizon,
             max_lookback=max_lookback,
+            nominal_tracking=nominal_tracking
         )
 
     return None

@@ -171,7 +171,7 @@ class ReachabilityTester:
     """
     Reachability calculations using ReachableSetHorizon.
     """
-    def __init__(self, analyzer, obstacles_list=None, process_noise_std=0.01, measurement_noise_std=0.05, backward_analyzer=None):
+    def __init__(self, analyzer, obstacles_list=None, process_noise_std=0.01, measurement_noise_std=0.05, backward_analyzer=None, seed=None):
         self.analyzer = analyzer
         self.backward_analyzer = backward_analyzer
 
@@ -188,11 +188,12 @@ class ReachabilityTester:
         self.horizons[0] = ReachableSetHorizon(0, device=analyzer.device)
 
         self.time = 0.0
+        self.seed = seed
+        self._rng = np.random.RandomState(seed)
 
         # Sample random initial state
         num_states = init_bounds.shape[0]
-        np.random.seed(None)
-        initial_state = np.random.uniform(
+        initial_state = self._rng.uniform(
             low=init_bounds[:, 0],
             high=init_bounds[:, 1],
             size=num_states
@@ -403,8 +404,7 @@ class ReachabilityTester:
         print(f"Using {num_samples} samples")
 
         # Initialize samples from parent bounds
-        np.random.seed(None)
-        xt = np.random.uniform(
+        xt = self._rng.uniform(
             low=init_bounds[:, 0],
             high=init_bounds[:, 1],
             size=(num_samples, num_states)
@@ -534,7 +534,7 @@ class ReachabilityTester:
                 true_state_np = xt_true.squeeze() if isinstance(xt_true, np.ndarray) else xt_true
 
             # Simulate noisy measurement of TRUE state
-            measurement_noise = np.random.normal(0, self.measurement_noise_std, size=num_states)
+            measurement_noise = self._rng.normal(0, self.measurement_noise_std, size=num_states)
             noisy_measurement = true_state_np + measurement_noise
 
             # Update KF estimate with noisy measurement
@@ -666,7 +666,7 @@ class ReachabilityTester:
         else:
             true_state_np = xt_true.squeeze() if isinstance(xt_true, np.ndarray) else xt_true
 
-        measurement_noise = np.random.normal(0, self.measurement_noise_std, size=num_states)
+        measurement_noise = self._rng.normal(0, self.measurement_noise_std, size=num_states)
         noisy_measurement = true_state_np + measurement_noise
         self.estimator.update(noisy_measurement)
 

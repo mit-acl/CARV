@@ -24,28 +24,53 @@ def unicycle_model(dt: float = 0.1, v: float = 1.0):
     model.set_rhs('p', p_next)
     model.set_rhs('theta', th_next)
 
-    model.setup()
+    # NOTE: do NOT call model.setup() here — unicycle_mpc must add TVPs before setup
     return model
 
 def unicycle_mpc(model: do_mpc.model.Model,
                  obstacles: list = None,
                  dt: float = 0.1,
-                 n_horizon: int = 8) -> do_mpc.controller.MPC:
+                 n_horizon: int = 8,
+                 nominal_tracking: bool = False,
+                 solver_opts: dict = None) -> do_mpc.controller.MPC:
+
+    # TVP variables must be added to the model BEFORE model.setup(),
+    # which in turn must be called before MPC(model) is instantiated.
+    if nominal_tracking:
+        omega_nom = model.set_variable('_tvp', 'omega_nom', shape=(1, 1))
+
+    model.setup()
 
     mpc = do_mpc.controller.MPC(model)
     mpc.settings.t_step = dt
     mpc.settings.n_horizon = n_horizon
     mpc.settings.supress_ipopt_output()
     mpc.settings.store_full_solution = True
+    if solver_opts:
+        mpc.settings.nlpsol_opts.update(solver_opts)
 
     p = model.x['p']
     omega = model.u["omega"]
-    p_goal = DM([2,0])
 
-    lterm = (p-p_goal).T @ (p-p_goal) + 0.1 * omega**2
-    mterm = (p-p_goal).T @ (p-p_goal)
+    if nominal_tracking:
+        lterm = (omega - omega_nom)**2
+        mterm = DM(0)
+        
+        mpc.set_objective(mterm=mterm, lterm=lterm)
 
-    mpc.set_objective(mterm=mterm, lterm=lterm)
+        # TVP buffer: updated externally before each make_step call
+        mpc._nom_ctrl_buf = np.zeros((n_horizon + 1, 1))
+        tvp_template = mpc.get_tvp_template()
+        def tvp_fun(t_now):
+            for k in range(n_horizon + 1):
+                tvp_template['_tvp', k, 'omega_nom'] = mpc._nom_ctrl_buf[k]
+            return tvp_template
+        mpc.set_tvp_fun(tvp_fun)
+    else:
+        p_goal = DM([2, 0])
+        lterm = (p - p_goal).T @ (p - p_goal) + omega**2
+        mterm = (p - p_goal).T @ (p - p_goal)
+        mpc.set_objective(mterm=mterm, lterm=lterm)
 
     mpc.bounds['lower', '_u', 'omega'] = -1.0
     mpc.bounds['upper', '_u', 'omega'] = 1.0
@@ -70,14 +95,13 @@ def unicycle_mpc(model: do_mpc.model.Model,
             y_bounded  = np.isfinite(y_lo) and np.isfinite(y_hi)
 
             if x_bounded and y_bounded:
-                # Bounded box: ellipse fitted to box shape + conservative buffer
                 cx = (x_lo + x_hi) / 2.0
                 cy = (y_lo + y_hi) / 2.0
-                a  = (x_hi - x_lo) / 2.0 + 0.2
-                b  = (y_hi - y_lo) / 2.0 + 0.2
-
-                a = 0.45
-                b =0.3
+                # sqrt(2): circumscribe the box (corners on ellipse boundary)
+                # + robot half-widths (Minkowski sum with robot bounding box 0.2 x 0.4)
+                robot_half_x, robot_half_y = 0.1, 0.2
+                a  = (x_hi - x_lo) / 2.0 * np.sqrt(2) + robot_half_x
+                b  = (y_hi - y_lo) / 2.0 * np.sqrt(2) + robot_half_y
 
                 print(f"center {cx},{cy}  a={a}  b={b}")
                 ellipse = (p[0] - cx)**2 / a**2 + (p[1] - cy)**2 / b**2

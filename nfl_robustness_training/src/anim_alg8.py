@@ -16,6 +16,7 @@ Frame tuple: (rsoa_snap, mpc_traj_bounds, mpc_t_back, current_t, label, origin)
 from REAL_integrated_sim import setup_analyzer, ReachabilityTester
 from mpc_safety_filter import make_mpc_safety_filter
 import time
+# from utils.obstacle_utils import circle_to_rect_obs
 from alg8_mpc_adaptive import (
     concrete_scan, symbolic_step, VerificationTask,
     _get_volume, get_dynamic_symbolic_horizon
@@ -31,7 +32,7 @@ from matplotlib.lines import Line2D
 from typing import Optional
 
 # ── Config ──
-MAX_TIME             = 50
+MAX_TIME             = 70
 MIN_SAFE_HORIZON     = 6
 MIN_LOOKAHEAD        = 4
 MAX_SYMBOLIC_HORIZON = 10
@@ -42,14 +43,21 @@ SYMBOLIC_BUFFER      = 5
 #     np.array([[-np.inf, 0.3],    [-np.inf, np.inf]]),
 # ]
 
-# obstacles = [
-#     np.array([[-5.5, -5], [2, 2.2 ], [-np.inf, np.inf]]),
-#     np.array([[-4, -3.4], [1.1, 1.3], [-np.inf, np.inf]]),
-#     np.array([[-2, -1.8], [0, 0.5], [-np.inf, np.inf]])
-# ]
+obstacles = [
+    np.array([[-5.5, -5], [2, 2.2 ], [-np.inf, np.inf]]),
+    np.array([[-4, -3.2], [1.1, 1.3], [-np.inf, np.inf]]),
+    np.array([[-2, -1.8], [0, 0.5], [-np.inf, np.inf]])
+]
+obstacles = [
+        np.array([[-5.5, -5], [2, 2.2 ], [-np.inf, np.inf]]),
+        np.array([[-3.5, -2.5], [1.1, 1.3], [-np.inf, np.inf]]),
+        np.array([[-2, -1.8], [1, 1.5],   [-np.inf, np.inf]])
+    ]
 
 # ── Setup ──
-print("Setting up analyzer...")
+import sys
+_seed = int(sys.argv[1]) if len(sys.argv) > 1 else 1401830092
+print(f"Setting up analyzer...  seed={_seed}")
 
 
 # analyzer           = setup_analyzer('DoubleIntegrator', 'constraint_default_more_data_5hz')
@@ -57,21 +65,18 @@ print("Setting up analyzer...")
 # tester_calibration = ReachabilityTester(analyzer)
 # mpc_sf             = make_mpc_safety_filter(tester, obstacles_list=obstacles, t_step=0.1, n_horizon=8)
 
-# analyzer           = setup_analyzer('Unicycle_NL', 'natural_none_default')
-# tester             = ReachabilityTester(analyzer, obstacles)
-# tester_calibration = ReachabilityTester(analyzer)
-# mpc_sf             = make_mpc_safety_filter(tester, obstacles_list=obstacles, t_step=0.1, n_horizon=15)
-
 analyzer           = setup_analyzer('Unicycle_NL', 'natural_none_default')
-tester             = ReachabilityTester(analyzer)
+tester             = ReachabilityTester(analyzer, obstacles, seed=_seed)
 tester_calibration = ReachabilityTester(analyzer)
-mpc_sf             = make_mpc_safety_filter(tester, t_step=0.1, n_horizon=15)
-obstacles = tester.obstacles.obstacle_list or []
+mpc_sf             = make_mpc_safety_filter(tester, obstacles_list=obstacles, t_step=0.1, n_horizon=10, nominal_tracking=True)
 
-budget = TimeBudget(timestep_budget=0.4)
+
+budget = TimeBudget(timestep_budget=0.5)
 print("Calibrating time budget...")
-budget.calibrate(tester_calibration, max_symbolic_horizon=MAX_SYMBOLIC_HORIZON,
-                 max_backward_horizon=0)
+# budget.calibrate(tester_calibration, max_symbolic_horizon=MAX_SYMBOLIC_HORIZON,
+#                  max_backward_horizon=0)
+budget.symbolic_costs = {1: 0.05942702293395996, 2: 0.0532071590423584, 3: 0.12308859825134277, 4: 0.2227306365966797, 5: 0.3548123836517334, 6: 0.5160810947418213, 7: 0.7076215744018555, 8: 1.046485185623169, 9: 1.189185619354248, 10: 1.4745268821716309}
+budget.concrete_cost = 0.012865893046061198
 
 ext_optimizer = ExtensionOptimizer()
 ext_optimizer.set_timing_params({
@@ -126,9 +131,10 @@ def apply_mpc_filter_frames(frames, conflict_time, current_timestep):
     global mpc_committed_at, mpc_conflict_time, mpc_control_queue
     global mpc_traj_bounds_all, mpc_needed
 
+    _mpc_total_t0 = time.perf_counter()
     for lookback in range(2, mpc_sf.max_lookback + 1):
         t_back = conflict_time - lookback
-        if t_back < 0:
+        if t_back < current_timestep:
             break
         if t_back not in tester.horizons:
             continue
@@ -170,15 +176,17 @@ def apply_mpc_filter_frames(frames, conflict_time, current_timestep):
                 mpc_control_queue   = controls
                 mpc_traj_bounds_all = traj_bounds
                 mpc_needed          = True
-                print(f"  [MPC COMMIT] t_back={t_back}")
+                print(f"  [MPC COMMIT] t_back={t_back}  controls={[np.round(c, 4).tolist() for c in controls]}")
             else:
                 print(f"  [MPC] Keeping existing plan at t={mpc_committed_at}")
+            print(f"  [MPC total] apply_mpc_filter_frames took {time.perf_counter() - _mpc_total_t0:.3f}s")
             return t_back
 
+    print(f"  [MPC total] apply_mpc_filter_frames took {time.perf_counter() - _mpc_total_t0:.3f}s")
     push(frames, current_timestep,
-         f"t={current_timestep}  [MPC] no safe timestep — fallback to t={conflict_time - 1}",
+         f"t={current_timestep}  [MPC] no safe timestep at or after t={current_timestep} — continuing nominal",
          "mpc")
-    return conflict_time - 1
+    return None
 
 
 def trigger_mpc_anim(frames, conflict_time, current_timestep):
@@ -230,7 +238,7 @@ def try_extend_anim(frames, validated_until, max_time, budget,
         job       = VerificationTask(symbolic_start=vu, conflict_time=conflict_time)
         sym_start = job.symbolic_start
         job, result_s = symbolic_step(tester, job, max_symbolic_horizon,
-                                      budget.max_affordable_symbolic())
+                                      budget)
         push(frames, current_timestep,
              f"t={current_timestep}  [extend] symbolic {sym_start}→{job.symbolic_start}",
              origin)
@@ -311,7 +319,7 @@ def optimized_step_anim(frames, validated_until, max_time, budget,
     job       = VerificationTask(symbolic_start=current_timestep, conflict_time=conflict_time)
     sym_start = job.symbolic_start
     job, result_s = symbolic_step(tester, job, max_symbolic_horizon,
-                                  budget.max_affordable_symbolic())
+                                  budget)
     push(frames, current_timestep,
          f"t={current_timestep}  [OPT] deconflict symbolic {sym_start}→{job.symbolic_start}",
          "optimizer")
@@ -444,9 +452,11 @@ while current_timestep < MAX_TIME:
          "info")
 
     # ── Decide: MPC this timestep or symbolic? ────────────────────────
+    # Only alternate once a commit has been found; before that keep retrying MPC.
+    has_commit = mpc_committed_at is not None and mpc_needed
     do_mpc_this_step = (
         pending_mpc_conflict is not None and
-        (pending_job is None or mpc_turn)
+        (pending_job is None or not has_commit or mpc_turn)
     )
 
     if do_mpc_this_step:
@@ -466,7 +476,7 @@ while current_timestep < MAX_TIME:
             sym_from = pending_job.symbolic_start
             pending_job, result = symbolic_step(tester, pending_job,
                                                 dynamic_symbolic_horizon,
-                                                budget.max_affordable_symbolic())
+                                                budget)
             push(frames, current_timestep,
                  f"t={current_timestep}  [carry] symbolic {sym_from}→{pending_job.symbolic_start}",
                  "baseline")
@@ -524,7 +534,7 @@ while current_timestep < MAX_TIME:
                         trigger_mpc_anim(frames, mpc_c, current_timestep)
                     run_opt_loop_anim(frames)
 
-            else:
+            elif validated_until < MAX_TIME:
                 explore_from   = max(validated_until, current_timestep)
                 end_check_time = min(
                     explore_from + budget.max_affordable_concrete(),
@@ -549,7 +559,7 @@ while current_timestep < MAX_TIME:
                     sym_start   = pending_job.symbolic_start
                     pending_job, result_s = symbolic_step(tester, pending_job,
                                                           dynamic_symbolic_horizon,
-                                                          budget.max_affordable_symbolic())
+                                                          budget)
                     push(frames, current_timestep,
                          f"t={current_timestep}  [BASE] symbolic {sym_start}→"
                          f"{pending_job.symbolic_start}",
@@ -586,13 +596,9 @@ while current_timestep < MAX_TIME:
                              f"t={current_timestep}  [BASE] budget exhausted@{validated_until}, defer",
                              "baseline")
 
-    if validated_until >= MAX_TIME:
-        push(frames, current_timestep, "Done ✓", "info")
-        break
-
     # ── Cancel + recompute MPC if deconflicted past conflict ──────────
     if (mpc_conflict_time is not None
-            and validated_until >= mpc_conflict_time):
+            and validated_until >= mpc_conflict_time + MIN_SAFE_HORIZON):
         if mpc_needed:
             push(frames, current_timestep,
                  f"t={current_timestep}  [MPC] deconflicted past t={mpc_conflict_time}, "
@@ -664,8 +670,8 @@ ax.set_facecolor("#0e1117")
 ax.tick_params(colors="#888")
 for spine in ax.spines.values():
     spine.set_color("#333")
-ax.set_xlabel("position (p)", color="#ccc", fontsize=13)
-ax.set_ylabel("velocity (v)", color="#ccc", fontsize=13)
+ax.set_xlabel("position (x)", color="#ccc", fontsize=13)
+ax.set_ylabel("position (y)", color="#ccc", fontsize=13)
 title = ax.set_title("", color="#eee", fontsize=11, fontfamily="monospace", pad=12)
 
 # Axis limits
@@ -840,7 +846,7 @@ ani = animation.FuncAnimation(fig, update, frames=len(frames),
 
 import io, imageio
 
-out_path = "alg8_mpc_adaptive_un.gif"
+out_path = "alg8_mpc_adaptive_u.gif"
 print(f"Rendering {len(frames)} frames...")
 images = []
 for i in range(len(frames)):
@@ -849,6 +855,6 @@ for i in range(len(frames)):
     fig.savefig(buf, format='png', dpi=100)
     buf.seek(0)
     images.append(imageio.v2.imread(buf))
-imageio.mimsave(out_path, images, duration=100, loop=0)  # 333ms = ~3fps
+imageio.mimsave(out_path, images, duration=150, loop=0)  # 333ms = ~3fps
 print(f"Saved to {out_path}")
 plt.close()
