@@ -1,6 +1,8 @@
 """
 Adaptive MPC algorithm — silent version for batch trials.
 Identical logic to alg8_mpc_adaptive.py.
+Obstacles are in the form: [center_x, center_y, radius]
+
 """
 
 from REAL_integrated_sim import setup_analyzer, ReachabilityTester

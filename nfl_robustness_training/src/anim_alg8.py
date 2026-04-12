@@ -2,21 +2,15 @@
 Animation for alg8 — adaptive MPC with per-timestep revert check.
 Saves: alg8_mpc_adaptive.gif
 
-Same as anim_alg7 except that while MPC controls are active, each timestep
-runs a concrete scan from current bounds.  If the scan is clean the nominal
-controller resumes (MPC REVERT); if the conflict persists the queued MPC
-control is applied.
+Obstacles are in the form: [center_x, center_y, radius]
 
-Frame tuple: (rsoa_snap, mpc_traj_bounds, mpc_t_back, current_t, label, origin)
-  mpc_traj_bounds: list of bounds arrays for current MPC attempt (empty if not an MPC frame)
-  mpc_t_back:      the lookback timestep being attempted (None if not an MPC frame)
-  origin:          "baseline" | "optimizer" | "mpc" | "info"
+To call with a specific np seed, do /anim_alg8.py <seed_number>
+
 """
 
 from REAL_integrated_sim import setup_analyzer, ReachabilityTester
 from mpc_safety_filter import make_mpc_safety_filter
 import time
-# from utils.obstacle_utils import circle_to_rect_obs
 from alg8_mpc_adaptive import (
     concrete_scan, symbolic_step, VerificationTask,
     _get_volume, get_dynamic_symbolic_horizon
@@ -43,17 +37,17 @@ SYMBOLIC_BUFFER      = 5
 #     np.array([[-np.inf, 0.3],    [-np.inf, np.inf]]),
 # ]
 
-obstacles = [
-    np.array([-5.25, 2.1,  0.27]),
-    np.array([-3.6,  1.2,  0.41]),
-    np.array([-1.9,  0.25, 0.27]),
-]
+# obstacles = [
+#     np.array([-5.25, 2.1,  0.27]),
+#     np.array([-3.6,  1.2,  0.41]),
+#     np.array([-1.9,  0.25, 0.27]),
+# ]
 
-obstacles = [
-        np.array([-5.25, 2.1,  0.27]),
-        np.array([-3.2,  1.6,  0.41]),
-        np.array([-1.9,  -0.5, 0.27]),
-    ]
+# obstacles = [
+#         np.array([-5.25, 2.1,  0.27]),
+#         np.array([-3.2,  1.6,  0.41]),
+#         np.array([-1.9,  -0.5, 0.27]),
+#     ]
 
 # 1960480399 this combo breaks
 obstacles = [

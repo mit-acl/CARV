@@ -1,10 +1,11 @@
 """
 Adaptive MPC algorithm
 
-Same as alg7 except that once MPC controls start firing, each timestep
-re-checks whether the conflict is still present (concrete scan from current
-bounds).  If the scan is clean the nominal controller resumes; if the conflict
-persists the queued MPC control is applied.
+
+Obstacles are in the form: [center_x, center_y, radius]
+
+To call with a specific np seed, do /alg8_mpc_adaptive.py <seed_number>
+
 """
 
 from REAL_integrated_sim import setup_analyzer, ReachabilityTester

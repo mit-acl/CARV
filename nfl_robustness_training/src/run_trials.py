@@ -1,5 +1,7 @@
 """
 Run alg8 N times with random initial states and plot all trajectories.
+Obstacles are in the form: [center_x, center_y, radius]
+
 """
 
 import numpy as np
