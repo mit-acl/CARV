@@ -45,26 +45,25 @@ class Obstacles:
         self.obstacle_list = obstacle_list
 
     def check_collision(self, state: np.ndarray):
-        """ Check if state collides with any obstacle"""
+        """ Check if state (bounding box) collides with any circular obstacle.
+        obs format: np.array([cx, cy, r])
+        """
         if self.obstacle_list is None:
             return None, None
 
         collisions = []
-        intersections = []
 
         for obs in self.obstacle_list:
-            # Check for overlap in all dimensions
-            if np.all(state[:, 0] <= obs[:, 1]) and np.all(state[:, 1] >= obs[:, 0]):
+            cx, cy, r = obs[0], obs[1], obs[2]
+            # Closest point in the x,y bounding box to the circle center
+            closest_x = np.clip(cx, state[0, 0], state[0, 1])
+            closest_y = np.clip(cy, state[1, 0], state[1, 1])
+            dist_sq = (cx - closest_x)**2 + (cy - closest_y)**2
+            if dist_sq <= r**2:
                 collisions.append(obs)
 
-                intersection = np.column_stack((
-                    np.maximum(state[:, 0], obs[:, 0]),  # max of lower bounds
-                    np.minimum(state[:, 1], obs[:, 1])   # min of upper bounds
-                ))
-                intersections.append(intersection)
-
-        if len(collisions) > 0 and len(intersections) > 0:
-            return collisions, intersections
+        if len(collisions) > 0:
+            return collisions, []
         else:
             return None, None
 
@@ -590,6 +589,15 @@ class ReachabilityTester:
             }
         else:
             print(f"  From t={start} to t={end}")
+            # print(f'kf bounds: {kf_bounds}')
+            # print(f'control: {u_nn_true}')
+            # print(f"    prev state: x={np.round(parent_real_state[0], 4)}  "
+            #   f"y={np.round(parent_real_state[1], 4)}"
+            #   + (f"  theta={np.round(parent_real_state[2], 4)}" if parent_bounds.shape[0] > 2 else ""))
+            # print(f"    new  bounds: x={np.round(real_state[0], 4)}  "
+            #   f"y={np.round(real_state[1], 4)}"
+            #   + (f"  theta={np.round(real_state[2], 4)}" if real_state.shape[0] > 2 else ""))
+
             # print(f"  True State: {real_state}")
             # print(f"  KF Estimate: {estimated_state}")
             # print(f"  Estimation Error: {np.linalg.norm(real_state - estimated_state):.6f}")
@@ -606,8 +614,7 @@ class ReachabilityTester:
                 'estimated_state': estimated_state
             }
 
-    def real_state_mpc(self, start: int, control: np.ndarray,
-                       mpc_bounds: Optional[np.ndarray] = None):
+    def real_state_mpc(self, start: int, control: np.ndarray):
         """
         Propagate actual state one step using a provided MPC control instead of
         the NN controller.
@@ -616,7 +623,6 @@ class ReachabilityTester:
         Args:
             start:      Starting timestep
             control:    MPC control input as a 1-D numpy array
-            mpc_bounds: Pre-computed MPC trajectory bounds for the next timestep.
                         When provided, these replace the KF-derived bounds stored
                         in the horizon (the KF still runs to track the true state).
 
@@ -644,6 +650,8 @@ class ReachabilityTester:
             return False
 
         num_states = parent_real_state.shape[0]
+        # print(f"  [real_state_mpc] t={start}  true_state={np.round(parent_real_state, 4)}"
+        #       f"  (theta={np.round(parent_real_state[2], 4) if len(parent_real_state) > 2 else 'N/A'})")
         self.estimator.reset(parent_real_state, parent_bounds)
 
         t_start = time.time()
@@ -677,18 +685,24 @@ class ReachabilityTester:
             real_state = xt_true.squeeze() if isinstance(xt_true, np.ndarray) else xt_true
 
         estimated_state = self.estimator.state.copy()
-        kf_bounds = self.estimator.bounds.copy()
+        kf_bounds       = self.estimator.bounds.copy()
 
-        # Use MPC-planned bounds if provided; otherwise fall back to KF bounds
-        stored_bounds = mpc_bounds if mpc_bounds is not None else kf_bounds
+        # Use Kalman-filtered bounds so the tight bound tracks the actual state
+        # with realistic uncertainty (not the MPC unicycle-model planned point).
+        stored_bounds = kf_bounds
+
+        print(f"  [MPC KF step] t={start} → t={end}")
+        print(f"    prev state: x={np.round(parent_real_state[0], 4)}  "
+              f"y={np.round(parent_real_state[1], 4)}"
+              + (f"  theta={np.round(parent_real_state[2], 4)}" if parent_bounds.shape[0] > 2 else ""))
+        print(f"    new  bounds: x={np.round(real_state[0], 4)}  "
+              f"y={np.round(real_state[1], 4)}"
+              + (f"  theta={np.round(real_state[2], 4)}" if stored_bounds.shape[0] > 2 else ""))
 
         t_elapsed = time.time() - t_start
 
-        # When MPC bounds are provided, reset the horizon so the MPC bounds are
-        # the sole calculation — avoids the empty-intersection warning that fires
-        # inside add_calculation when nominal bounds are already present.
-        if mpc_bounds is not None or end not in self.horizons:
-            self.horizons[end] = ReachableSetHorizon(end, device=self.analyzer.device)
+        # Reset horizon for a clean MPC-controlled step.
+        self.horizons[end] = ReachableSetHorizon(end, device=self.analyzer.device)
 
         self.horizons[end].add_calculation(
             bounds=stored_bounds,
@@ -701,14 +715,11 @@ class ReachabilityTester:
             real_state=real_state,
         )
 
-        # When MPC bounds are provided they must become the tight bound exactly 
-        # not the intersection with pre-existing concrete/symbolic calculations.
-        if mpc_bounds is not None:
-            self.horizons[end].tight_bound = stored_bounds.copy()
-            self.horizons[end].reachable_set.set_range(
-                torch.tensor(stored_bounds, dtype=torch.float32,
-                              device=self.analyzer.device)
-            )
+        self.horizons[end].tight_bound = stored_bounds.copy()
+        self.horizons[end].reachable_set.set_range(
+            torch.tensor(stored_bounds, dtype=torch.float32,
+                          device=self.analyzer.device)
+        )
 
         self.time += t_elapsed
         collisions, intersections = self.obstacles.check_collision(stored_bounds)
