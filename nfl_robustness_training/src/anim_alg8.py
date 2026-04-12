@@ -32,7 +32,7 @@ from matplotlib.lines import Line2D
 from typing import Optional
 
 # ── Config ──
-MAX_TIME             = 70
+MAX_TIME             = 60
 MIN_SAFE_HORIZON     = 6
 MIN_LOOKAHEAD        = 4
 MAX_SYMBOLIC_HORIZON = 10
@@ -44,15 +44,25 @@ SYMBOLIC_BUFFER      = 5
 # ]
 
 obstacles = [
-    np.array([[-5.5, -5], [2, 2.2 ], [-np.inf, np.inf]]),
-    np.array([[-4, -3.2], [1.1, 1.3], [-np.inf, np.inf]]),
-    np.array([[-2, -1.8], [0, 0.5], [-np.inf, np.inf]])
+    np.array([-5.25, 2.1,  0.27]),
+    np.array([-3.6,  1.2,  0.41]),
+    np.array([-1.9,  0.25, 0.27]),
 ]
+
 obstacles = [
-        np.array([[-5.5, -5], [2, 2.2 ], [-np.inf, np.inf]]),
-        np.array([[-3.5, -2.5], [1.1, 1.3], [-np.inf, np.inf]]),
-        np.array([[-2, -1.8], [1, 1.5],   [-np.inf, np.inf]])
+        np.array([-5.25, 2.1,  0.27]),
+        np.array([-3.2,  1.6,  0.41]),
+        np.array([-1.9,  -0.5, 0.27]),
     ]
+
+# 1960480399 this combo breaks
+obstacles = [
+        np.array([-6.5, 2.02,  0.5]),
+        np.array([-3.2,  1.21,  0.5]),
+        np.array([-1.5,  -0.85, 0.45]),
+    ]
+
+
 
 # ── Setup ──
 import sys
@@ -68,7 +78,7 @@ print(f"Setting up analyzer...  seed={_seed}")
 analyzer           = setup_analyzer('Unicycle_NL', 'natural_none_default')
 tester             = ReachabilityTester(analyzer, obstacles, seed=_seed)
 tester_calibration = ReachabilityTester(analyzer)
-mpc_sf             = make_mpc_safety_filter(tester, obstacles_list=obstacles, t_step=0.1, n_horizon=10, nominal_tracking=True)
+mpc_sf             = make_mpc_safety_filter(tester, obstacles_list=obstacles, n_horizon=10, nominal_tracking=True)
 
 
 budget = TimeBudget(timestep_budget=0.5)
@@ -132,7 +142,7 @@ def apply_mpc_filter_frames(frames, conflict_time, current_timestep):
     global mpc_traj_bounds_all, mpc_needed
 
     _mpc_total_t0 = time.perf_counter()
-    for lookback in range(2, mpc_sf.max_lookback + 1):
+    for lookback in range(3, mpc_sf.max_lookback + 1):
         t_back = conflict_time - lookback
         if t_back < current_timestep:
             break
@@ -143,10 +153,20 @@ def apply_mpc_filter_frames(frames, conflict_time, current_timestep):
             continue
 
         center = (bounds_at_back[:, 0] + bounds_at_back[:, 1]) / 2.0
+        print(f"center: {center}")
+        cur_h = tester.horizons.get(current_timestep)
+        if cur_h is not None:
+            cb   = cur_h.get_tight_bound()
+            dx_c = cb[0, 1] - cb[0, 0]
+            dy_c = cb[1, 1] - cb[1, 0]
+            current_inflation = float(np.sqrt((dx_c / 2) ** 2 + (dy_c / 2) ** 2))
+        else:
+            current_inflation = 0.0
 
         try:
             t0 = time.perf_counter()
-            traj_bounds, _, controls = mpc_sf._run_mpc_from_bounds(bounds_at_back, center)
+            traj_bounds, _, controls = mpc_sf._run_mpc_from_bounds(
+                bounds_at_back, center, extra_inflation=current_inflation)
             print(f"  [MPC timing] t_back={t_back} _run_mpc_from_bounds took {time.perf_counter() - t0:.3f}s")
         except Exception as e:
             push(frames, current_timestep,
@@ -434,8 +454,7 @@ while current_timestep < MAX_TIME:
                  f"t={current_timestep}  [MPC] idx={ctrl_idx}  u={np.round(ctrl, 4)}"
                  f"  (plan from t={mpc_committed_at})",
                  "mpc", mpc_t_back=mpc_committed_at)
-            tester.real_state_mpc(current_timestep, ctrl, mpc_bound)
-            tester.horizons[current_timestep + 1].tight_bound = mpc_bound.copy()
+            tester.real_state_mpc(current_timestep, ctrl)
             current_timestep += 1
         else:
             push(frames, current_timestep,
@@ -627,8 +646,7 @@ while current_timestep < MAX_TIME:
                  f"t={current_timestep}  [MPC FIRST FIRE] idx={ctrl_idx}"
                  f"  u={np.round(ctrl, 4)}  (plan from t={mpc_committed_at})",
                  "mpc", mpc_t_back=mpc_committed_at)
-            tester.real_state_mpc(current_timestep, ctrl, mpc_bound)
-            tester.horizons[current_timestep + 1].tight_bound = mpc_bound.copy()
+            tester.real_state_mpc(current_timestep, ctrl)
             current_timestep += 1
         else:
             push(frames, current_timestep,
@@ -648,31 +666,31 @@ print(f"Generated {len(frames)} frames")
 # ══════════════════════════════════════════════
 
 RSOA_FILL = {
-    "concrete":  {"fc": "#f59e0b", "fa": 0.18, "ec": "#f59e0b"},
-    "symbolic":  {"fc": "#8b5cf6", "fa": 0.25, "ec": "#8b5cf6"},
-    "sampled":   {"fc": "#06b6d4", "fa": 0.18, "ec": "#06b6d4"},
-    "empirical": {"fc": "#10b981", "fa": 0.18, "ec": "#10b981"},
+    "concrete":  {"fc": "#f59e0b", "fa": 0.45, "ec": "#d97706"},
+    "symbolic":  {"fc": "#7c3aed", "fa": 0.45, "ec": "#5b21b6"},
+    "sampled":   {"fc": "#0891b2", "fa": 0.45, "ec": "#0e7490"},
+    "empirical": {"fc": "#059669", "fa": 0.45, "ec": "#047857"},
 }
 ORIGIN_BORDER = {
-    "baseline":  {"lw": 0.8,  "ls": "--", "hatch": None, "alpha_boost": 0.0},
-    "optimizer": {"lw": 2.0,  "ls": "-",  "hatch": "//", "alpha_boost": 0.12},
-    "mpc":       {"lw": 1.5,  "ls": "-",  "hatch": None, "alpha_boost": 0.10},
-    "info":      {"lw": 0.8,  "ls": "-",  "hatch": None, "alpha_boost": 0.0},
+    "baseline":  {"lw": 1.2,  "ls": "--", "hatch": None, "alpha_boost": 0.0},
+    "optimizer": {"lw": 2.5,  "ls": "-",  "hatch": "//", "alpha_boost": 0.15},
+    "mpc":       {"lw": 2.0,  "ls": "-",  "hatch": None, "alpha_boost": 0.12},
+    "info":      {"lw": 1.2,  "ls": "-",  "hatch": None, "alpha_boost": 0.0},
 }
-MPC_TRAJ_COLOR = {"fc": "#f97416be", "fa": 0.35, "ec": "#f97316"}
+MPC_TRAJ_COLOR = {"fc": "#ec4899", "fa": 0.50, "ec": "#be185d"}
 _BOUND_LIMIT   = 1e6
 
 t_origin: dict = {}
 
 fig, ax = plt.subplots(figsize=(11, 7))
-fig.patch.set_facecolor("#0e1117")
-ax.set_facecolor("#0e1117")
-ax.tick_params(colors="#888")
+fig.patch.set_facecolor("white")
+ax.set_facecolor("white")
+ax.tick_params(colors="#333")
 for spine in ax.spines.values():
-    spine.set_color("#333")
-ax.set_xlabel("position (x)", color="#ccc", fontsize=13)
-ax.set_ylabel("position (y)", color="#ccc", fontsize=13)
-title = ax.set_title("", color="#eee", fontsize=11, fontfamily="monospace", pad=12)
+    spine.set_color("#aaa")
+ax.set_xlabel("position (x)", color="#222", fontsize=13)
+ax.set_ylabel("position (y)", color="#222", fontsize=13)
+title = ax.set_title("", fontsize=0)
 
 # Axis limits
 all_x1, all_x2 = [], []
@@ -681,8 +699,9 @@ for snap, _, _, _, _, _, _ in frames:
         all_x1.extend([v for v in entry["x1"] if np.isfinite(v) and abs(v) < _BOUND_LIMIT])
         all_x2.extend([v for v in entry["x2"] if np.isfinite(v) and abs(v) < _BOUND_LIMIT])
 for obs in obstacles:
-    all_x1.extend([v for v in [obs[0, 0], obs[0, 1]] if np.isfinite(v)])
-    all_x2.extend([v for v in [obs[1, 0], obs[1, 1]] if np.isfinite(v)])
+    cx, cy, r = obs[0], obs[1], obs[2]
+    all_x1.extend([cx - r, cx + r])
+    all_x2.extend([cy - r, cy + r])
 
 mg = 0.3
 x1_min = min(all_x1) - mg; x1_max = max(all_x1) + mg
@@ -691,14 +710,11 @@ ax.set_xlim(x1_min, x1_max)
 ax.set_ylim(x2_min, x2_max)
 
 for i, obs in enumerate(obstacles):
-    x_lo = float(np.clip(obs[0, 0], x1_min, x1_max))
-    x_hi = float(np.clip(obs[0, 1], x1_min, x1_max))
-    y_lo = float(np.clip(obs[1, 0], x2_min, x2_max))
-    y_hi = float(np.clip(obs[1, 1], x2_min, x2_max))
-    ax.add_patch(patches.Rectangle(
-        (x_lo, y_lo), x_hi - x_lo, y_hi - y_lo,
-        linewidth=1.5, edgecolor="#ef4444", facecolor="#ef4444",
-        alpha=0.5, zorder=5, label="Obstacle" if i == 0 else None
+    cx, cy, r = float(obs[0]), float(obs[1]), float(obs[2])
+    ax.add_patch(patches.Circle(
+        (cx, cy), r,
+        linewidth=2.0, edgecolor="#b91c1c", facecolor="#ef4444",
+        alpha=0.75, zorder=5, label="Obstacle" if i == 0 else None
     ))
 
 dynamic_artists = []
@@ -789,7 +805,7 @@ def update(frame_idx):
         entry = snap[mpc_t_back]
         if all(np.isfinite(v) for v in [*entry["x1"], *entry["x2"]]):
             cx = sum(entry["x1"]) / 2; cy = sum(entry["x2"]) / 2
-            star = ax.plot(cx, cy, "*", color="#f97316", markersize=12, zorder=7)[0]
+            star = ax.plot(cx, cy, "*", color="#ec4899", markersize=12, zorder=7)[0]
             dynamic_artists.append(star)
 
     # Blue dot at current timestep
@@ -807,7 +823,7 @@ def update(frame_idx):
     if origin == "optimizer":
         badge_color, badge_text = "#22c55e", "● OPT"
     elif origin == "mpc":
-        badge_color, badge_text = "#f97316", "● MPC"
+        badge_color, badge_text = "#ec4899", "● MPC"
     elif label and "BASE→OPT" in label:
         badge_color, badge_text = "#f59e0b", "⇒ BASE→OPT"
     else:
@@ -816,7 +832,7 @@ def update(frame_idx):
         0.01, 0.97, badge_text,
         transform=ax.transAxes, fontsize=9, fontfamily="monospace",
         color=badge_color, va="top", zorder=8,
-        bbox=dict(boxstyle="round,pad=0.3", fc="#0e1117", ec=badge_color, lw=1.2)
+        bbox=dict(boxstyle="round,pad=0.3", fc="white", ec=badge_color, lw=1.2)
     )
     dynamic_artists.append(badge)
 
@@ -827,17 +843,17 @@ legend_els = [
     Patch(facecolor="#f59e0b", alpha=0.3, edgecolor="#f59e0b", label="Concrete RSOA"),
     Patch(facecolor="#8b5cf6", alpha=0.3, edgecolor="#8b5cf6", label="Symbolic RSOA"),
     Patch(facecolor="#10b981", alpha=0.3, edgecolor="#10b981", label="Empirical (Kalman)"),
-    Patch(facecolor="#f97316", alpha=0.35, edgecolor="#f97316", label="MPC Kalman bounds"),
+    Patch(facecolor="#ec4899", alpha=0.35, edgecolor="#ec4899", label="MPC Kalman bounds"),
     Patch(facecolor="#ef4444", alpha=0.5,  edgecolor="#ef4444", label="Obstacle"),
     Line2D([0], [0], marker="o", color="#3b82f6", ls="", markersize=6, label="Current t"),
-    Line2D([0], [0], marker="*", color="#f97316", ls="", markersize=8, label="MPC t_back"),
+    Line2D([0], [0], marker="*", color="#ec4899", ls="", markersize=8, label="MPC t_back"),
     Patch(facecolor="#888", alpha=0.2, edgecolor="#888",
           linewidth=0.8, linestyle="--", label="Baseline calc"),
     Patch(facecolor="#888", alpha=0.3, edgecolor="#22c55e",
           linewidth=2.0, hatch="//", label="Optimizer calc"),
 ]
 ax.legend(handles=legend_els, loc="upper right", fontsize=8,
-          facecolor="#1a1e28", edgecolor="#333", labelcolor="#aaa")
+          facecolor="white", edgecolor="#aaa", labelcolor="#222")
 
 plt.tight_layout()
 
