@@ -17,6 +17,7 @@ from pymoo.termination import get_termination
 from pymoo.optimize import minimize
 from pymoo.core.mixed import MixedVariableGA
 from scipy import stats as scipy_stats
+import time as _time
 
 import numpy as np
 
@@ -230,7 +231,6 @@ class ExtensionOptimizer:
         #       f"(F={res.F[0]:.4f}, {'OK' if res.G[0] <= 0 else 'BUDGET VIOLATED'})")
         # return method
 
-        import time as _time
         _t0 = _time.perf_counter()
         res = minimize(self.problem, self.algorithm,
                termination=('n_gen', 40), seed=1, verbose=False)
@@ -254,3 +254,62 @@ class ExtensionOptimizer:
                 f"[strategy_time={_strategy_time:.4f}s]")
 
         return method
+
+    def get_strategy_opt_free(self, current_timestep, verified_until,
+                            current_vol, verified_vol,
+                            time_budget, w_time=1.0, w_vol=1.0,
+                            pow_time=1, pow_vol=1):
+        _t0 = _time.perf_counter()
+        k = verified_until + 1 - current_timestep
+
+        concrete_time, concrete_cost = self._eval_concrete(verified_vol, w_time, w_vol, pow_time, pow_vol)
+        symbolic_time, symbolic_cost = self._eval_symbolic(k, current_vol, w_time, w_vol, pow_time, pow_vol)
+
+        concrete_feasible = concrete_time <= time_budget
+        symbolic_feasible = symbolic_time <= time_budget
+
+        if not concrete_feasible and not symbolic_feasible:
+            method = "concrete"
+            print(f"[ExtOpt] t={current_timestep}  T={verified_until}  k={k}  "
+                f"no feasible solution (budget too tight) — defaulting to concrete")
+        elif not symbolic_feasible:
+            method = "concrete"
+        elif not concrete_feasible:
+            method = "symbolic"
+        else:
+            method = "concrete" if concrete_cost <= symbolic_cost else "symbolic"
+
+        _strategy_time = _time.perf_counter() - _t0
+
+        print(f"[ExtOpt] t={current_timestep}  T={verified_until}  k={k}  "
+            f"cur_vol={current_vol:.4f}  ver_vol={verified_vol:.4f}  "
+            f"budget={time_budget:.3f}s  → {method}  "
+            f"(concrete F={concrete_cost:.4f}/t={concrete_time:.4f}  "
+            f"symbolic F={symbolic_cost:.4f}/t={symbolic_time:.4f})"
+            f"[strategy_time={_strategy_time:.4f}s]")
+        return method
+
+    def _cost_fn(self, w_time, comp_time, pow_time, w_vol, final_vol, pow_vol):
+        return w_time * comp_time ** pow_time + w_vol * final_vol ** pow_vol
+
+    def _cost_fn_log(self, w_time, comp_time, pow_time, w_vol, final_vol, pow_vol):
+        return w_time * np.log(1 + comp_time) + w_vol * (final_vol) ** pow_vol
+
+    def _eval_concrete(self, verified_vol, w_time, w_vol, pow_time, pow_vol):
+        p = self._timing_params
+        comp_time = p["concrete_slope"] * 1 + p["concrete_intercept"]
+        final_vol = verified_vol * self.problem._concrete_vol_growth(1)
+        # cost = w_time * comp_time ** pow_time + w_vol * final_vol ** pow_vol
+        cost = self._cost_fn_log(w_time, comp_time, pow_time, w_vol, final_vol, pow_vol)
+        return comp_time, cost
+
+
+    def _eval_symbolic(self, k, current_vol, w_time, w_vol, pow_time, pow_vol):
+        p = self._timing_params
+        base_concrete_k = p["concrete_slope"] * k + p["concrete_intercept"]
+        ratio           = p["ratio_slope"] * k + p["ratio_intercept"]
+        comp_time       = ratio * base_concrete_k
+        final_vol       = current_vol * self.problem._symbolic_vol_growth(k)
+        # cost = w_time * comp_time ** pow_time + w_vol * final_vol ** pow_vol
+        cost = self._cost_fn_log(w_time, comp_time, pow_time, w_vol, final_vol, pow_vol)
+        return comp_time, cost
