@@ -28,7 +28,7 @@ from matplotlib.lines import Line2D
 from typing import Optional
 
 # ── Config ──
-MAX_TIME             = 60
+MAX_TIME             = 70
 MIN_SAFE_HORIZON     = 12
 # MIN_SAFE_HORIZON     = 12
 MIN_LOOKAHEAD        = 4
@@ -39,7 +39,8 @@ obstacles = [
         np.array([-6.5, 2.02,  0.5]),
         np.array([-3.2,  1.21,  0.5]),
         np.array([-2,  -0.3, 0.45]),
-        np.array([-2, -1.3, 0.5])
+        np.array([-2, -1.3, 0.5]),
+        np.array([-4, -1, 0.5]),
     ]
 
 
@@ -54,7 +55,7 @@ tester_calibration = ReachabilityTester(analyzer)
 mpc_sf             = make_mpc_safety_filter(tester, obstacles_list=obstacles, n_horizon=10, nominal_tracking=True)
 
 
-budget = TimeBudget(timestep_budget=0.3)
+budget = TimeBudget(timestep_budget=0.2)
 print("Calibrating time budget...")
 budget.symbolic_costs = {1: 0.05942702293395996, 2: 0.0532071590423584, 3: 0.12308859825134277, 4: 0.2227306365966797, 5: 0.3548123836517334, 6: 0.5160810947418213, 7: 0.7076215744018555, 8: 1.046485185623169, 9: 1.189185619354248, 10: 1.4745268821716309}
 budget.concrete_cost = 0.012865893046061198

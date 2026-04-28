@@ -70,17 +70,26 @@ class MPCSafetyFilter:
         return False
 
     def find_stopping_timestep(self, collision_timestep: int, horizons: dict,
-                               current_t: int = 0):
+                               current_t: int = 0, budget=None,
+                               start_lookback: int = 3):
         """
         Find the safe stopping timestep closest to collision.
 
-        Returns (t_back, controls, traj_bounds) or (None, [], []).
+        Returns (t_back, controls, traj_bounds, deferred_lookback).
+        deferred_lookback is non-None when the search was interrupted by budget
+        exhaustion and should be resumed next timestep with that lookback value.
         """
-        for lookback in range(3, self.max_lookback + 1):
+        for lookback in range(start_lookback, self.max_lookback + 1):
             t_back = collision_timestep - lookback
 
             if t_back < max(0, current_t):
                 break
+
+            # Budget check before MPC solve
+            if budget is not None and budget.remaining < budget.mpc_cost:
+                print(f"  [MPC filter] Budget exhausted at lookback={lookback}, "
+                      f"deferring to next timestep")
+                return None, [], [], lookback
 
             bounds_at_back = horizons[t_back].get_tight_bound()
             center         = (bounds_at_back[:, 0] + bounds_at_back[:, 1]) / 2.0
@@ -103,9 +112,9 @@ class MPCSafetyFilter:
                               f"  theta_bounds=[{np.round(bounds_at_back[2, 0], 4)}, "
                               f"{np.round(bounds_at_back[2, 1], 4)}]"
                               if len(center) > 2 else "")
-                print(f"  [MPC parent bounds] p={np.round(bounds_at_back[0], 4)}  "
-                      f"center={np.round(center[:2], 4)}  cur_inflation={current_inflation:.4f}"
-                      f"{theta_info}")
+                # print(f"  [MPC parent bounds] p={np.round(bounds_at_back[0], 4)}  "
+                #       f"center={np.round(center[:2], 4)}  cur_inflation={current_inflation:.4f}"
+                #       f"{theta_info}")
 
                 traj_bounds, _, controls = self._run_mpc_from_bounds(
                     bounds_at_back, center, extra_inflation=current_inflation)
@@ -123,14 +132,14 @@ class MPCSafetyFilter:
 
             if not collision_found:
                 print(f"  [MPC filter] Safe. Stopping timestep = {t_back}")
-                return t_back, controls, traj_bounds
+                return t_back, controls, traj_bounds, None
             else:
                 print(f"  [MPC filter] Collision at step {mpc_collision_step} "
                       f"from t_back={t_back}, going further back.")
                 print(f"controls were {controls}")
 
         print(f"  [MPC filter] No safe stopping timestep found at or after t={current_t}.")
-        return None, [], []
+        return None, [], [], None
 
 
 class LinearMPCSafetyFilter(MPCSafetyFilter):

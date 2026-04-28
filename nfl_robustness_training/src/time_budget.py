@@ -13,6 +13,7 @@ class TimeBudget:
         self.symbolic_costs = {}   # horizon -> seconds
         self.backward_costs = {}   # horizon -> seconds
         self.concrete_cost = 0.0   # per-step cost (seconds per concrete step)
+        self.mpc_cost = 0.040      # conservative estimate per MPC solve (seconds)
         self._start = None
         self._log = []             # [(operation_name, elapsed)] for current timestep
 

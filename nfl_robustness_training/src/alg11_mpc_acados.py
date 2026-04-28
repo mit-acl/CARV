@@ -87,11 +87,12 @@ def symbolic_step(tester, job: VerificationTask, chunk_size: int, budget):
 
 
 def extend_mpc_sequence(mpc_sf, mpc_state: dict, min_safe_horizon: int,
-                        max_time: int, ctrl_idx: int = 0):
+                        max_time: int, ctrl_idx: int = 0, budget=None):
     """
     Extend the MPC control queue from the end of the current trajectory.
     If extension from the endpoint fails, works backwards along the existing
     trajectory (like find_stopping_timestep) to find a viable extension point.
+    Each MPC solve attempt is checked against the time budget.
     """
     committed_at = mpc_state['committed_at']
     controls     = mpc_state['controls']
@@ -108,6 +109,11 @@ def extend_mpc_sequence(mpc_sf, mpc_state: dict, min_safe_horizon: int,
     max_lb = max(max_lb, 0)
 
     for lb in range(max_lb + 1):
+        # Budget check before MPC solve
+        if budget is not None and budget.remaining < budget.mpc_cost:
+            print(f"  [MPC extend] Budget exhausted, will retry next timestep")
+            return
+
         # lb=0 → extend from the very end; lb>0 → lb steps back
         # traj_bounds has n_controls+1 entries (initial + one per control)
         try_idx = len(traj_bounds) - 1 - lb
@@ -133,7 +139,7 @@ def extend_mpc_sequence(mpc_sf, mpc_state: dict, min_safe_horizon: int,
 
         if safe_count <= lb:
             print(f"  [MPC extend] lookback={lb}: only {safe_count} safe "
-                  f"(need >{lb}), going further back")
+                  f", going further back")
             continue
 
         # Replace tail (lb controls) with new safe path
@@ -156,15 +162,27 @@ def extend_mpc_sequence(mpc_sf, mpc_state: dict, min_safe_horizon: int,
 
 
 def apply_mpc_filter(mpc_sf, conflict_time, tester, mpc_state: dict, current_t: int = 0,
-                     min_safe_horizon: int = 0, max_time: int = 60):
+                     min_safe_horizon: int = 0, max_time: int = 60, budget=None,
+                     start_lookback: int = 3):
     """
     Run MPC safety filter for a collision at conflict_time.
     Updates mpc_state with the committed plan and sets mpc_needed=True.
     If min_safe_horizon > 0, recursively extends the control queue.
+    If budget runs out mid-search, stores deferral info in mpc_state['deferred_search'].
     """
     t0 = time.perf_counter()
-    stopping_t, controls, traj_bounds = mpc_sf.find_stopping_timestep(conflict_time, tester.horizons, current_t)
+    stopping_t, controls, traj_bounds, deferred_lb = mpc_sf.find_stopping_timestep(
+        conflict_time, tester.horizons, current_t, budget=budget,
+        start_lookback=start_lookback)
     print(f"  [MPC timing] find_stopping_timestep took {time.perf_counter() - t0:.3f}s")
+
+    if deferred_lb is not None:
+        mpc_state['deferred_search'] = (conflict_time, deferred_lb)
+        print(f"  [MPC] Search deferred at lookback={deferred_lb}, will resume next timestep")
+        return None
+
+    # Clear any previous deferral since search completed
+    mpc_state.pop('deferred_search', None)
 
     if stopping_t is None:
         print(f"  [MPC] No safe stopping timestep — continuing nominal.")
@@ -185,7 +203,7 @@ def apply_mpc_filter(mpc_sf, conflict_time, tester, mpc_state: dict, current_t: 
 
 
 def try_extend(tester, validated_until, max_time, budget, max_symbolic_horizon,
-               current_timestep, min_lookahead, mpc_sf, mpc_state, safe_horizon_ceiling=None):
+               current_timestep, mpc_sf, mpc_state, safe_horizon_ceiling=None):
     """
     Greedily push validated_until toward max_time (or safe_horizon_ceiling).
 
@@ -214,7 +232,8 @@ def try_extend(tester, validated_until, max_time, budget, max_symbolic_horizon,
         print(f"[extend] Conflict at t={conflict_time}, attempting symbolic verification")
 
         # Pre-compute MPC as backup before symbolic verification
-        apply_mpc_filter(mpc_sf, conflict_time, tester, mpc_state, current_timestep)
+        apply_mpc_filter(mpc_sf, conflict_time, tester, mpc_state, current_timestep,
+                         budget=budget)
 
         if not budget.can_afford('symbolic', 1):
             print(f"[extend] No budget for symbolic — stopping before conflict")
@@ -243,74 +262,8 @@ def try_extend(tester, validated_until, max_time, budget, max_symbolic_horizon,
     return validated_until, None, None
 
 
-def old_optimized_step(tester, validated_until, max_time, budget, max_symbolic_horizon,
-                   current_timestep, min_lookahead, ext_optimizer, mpc_sf, mpc_state):
-    """
-    Extend the verified horizon by one step to T+1, using the method chosen
-    by the optimizer.
-
-    Returns (new_validated_until, pending_job | None, mpc_conflict | None).
-    mpc_conflict is set when a confirmed collision needs MPC to be run.
-    """
-    target = validated_until + 1
-    if target > max_time:
-        return validated_until, None, None
-
-    current_vol  = _get_volume(tester, current_timestep)
-    verified_vol = _get_volume(tester, validated_until)
-
-    method = ext_optimizer.get_strategy_opt_free(
-        current_timestep = current_timestep,
-        verified_until   = validated_until,
-        current_vol      = current_vol,
-        verified_vol     = verified_vol,
-        # time_budget      = budget.remaining,
-        time_budget      = budget.remaining + budget.timestep_budget * (max_symbolic_horizon - 1),
-        w_vol            = 50.0,
-        pow_vol          = 3, # 2,
-    )
-
-    if method == "concrete":
-        print(f"[opt_step] Concrete: t={validated_until} -> t={target}")
-        # print(f"{RED}[opt_step] Concrete: t={validated_until} -> t={target}{RESET}")
-        result        = tester.concrete(validated_until, target)
-        conflict_time = result.get("collision_timestep")
-    else:
-        full_span     = target - current_timestep
-        actual_k      = min(full_span, max_symbolic_horizon)
-        target        = current_timestep + actual_k
-        print(f"[opt_step] Symbolic: t={current_timestep} -> t={target} (span={actual_k})")
-        # print(f"{BLUE}[opt_step] Symbolic: t={current_timestep} -> t={target} (span={actual_k}){RESET}")
-        result        = tester.symbolic(current_timestep, target)
-        conflict_time = result.get("collision_timestep")
-
-    if not result["collision"]:
-        print(f"[opt_step] Clean — validated until t={target}")
-        return target, None, None
-
-    print(f"[opt_step] Collision at t={conflict_time} — deconflicting from t={current_timestep}")
-
-    if not budget.can_afford('symbolic', 1):
-        return conflict_time - 1, VerificationTask(
-            symbolic_start=current_timestep,
-            conflict_time=conflict_time
-        ), None
-
-    job = VerificationTask(symbolic_start=current_timestep, conflict_time=conflict_time)
-    job, result = symbolic_step(tester, job, max_symbolic_horizon, budget)
-
-    if result is None:
-        return conflict_time - 1, job, None
-
-    if result["collision"]:
-        print(f"[opt_step] Conflict confirmed at t={conflict_time} — queuing MPC")
-        return conflict_time - 1, None, conflict_time
-
-    print(f"[opt_step] Deconflicted — validated until t={conflict_time}")
-    return conflict_time, None, None
-
 def optimized_step(tester, validated_until, max_time, budget, max_symbolic_horizon,
-                   current_timestep, min_lookahead, ext_optimizer, mpc_sf, mpc_state):
+                   current_timestep, ext_optimizer, mpc_sf, mpc_state):
     """
     Extend the verified horizon by one step to T+1, using the method chosen
     by the optimizer.
@@ -330,67 +283,48 @@ def optimized_step(tester, validated_until, max_time, budget, max_symbolic_horiz
         verified_until   = validated_until,
         current_vol      = current_vol,
         verified_vol     = verified_vol,
-        # time_budget      = budget.remaining,
         time_budget      = budget.remaining + budget.timestep_budget * (max_symbolic_horizon - 1),
         w_vol            = 50.0,
         pow_vol          = 3, # 2,
     )
 
-    # concrete
     if method == "concrete":
         print(f"[opt_step] Concrete: t={validated_until} -> t={target}")
-        # print(f"{RED}[opt_step] Concrete: t={validated_until} -> t={target}{RESET}")
         result        = tester.concrete(validated_until, target)
         conflict_time = result.get("collision_timestep")
-    # else:
-    #     full_span     = target - current_timestep
-    #     actual_k      = min(full_span, max_symbolic_horizon)
-    #     target        = current_timestep + actual_k
-    #     print(f"[opt_step] Symbolic: t={current_timestep} -> t={target} (span={actual_k})")
-    #     # print(f"{BLUE}[opt_step] Symbolic: t={current_timestep} -> t={target} (span={actual_k}){RESET}")
-    #     result        = tester.symbolic(current_timestep, target)
-    #     conflict_time = result.get("collision_timestep")
 
         if not result["collision"]:
             print(f"[opt_step] Clean — validated until t={target}")
             return target, None, None
-        else:
-            print(f"[opt_step] Collision at t={conflict_time} — deconflicting from t={current_timestep}")
 
-            # Pre-compute MPC as backup before symbolic verification
-            apply_mpc_filter(mpc_sf, conflict_time, tester, mpc_state, current_timestep)
+        print(f"[opt_step] Collision at t={conflict_time} — deconflicting from t={current_timestep}")
 
-            if not budget.can_afford('symbolic', 1):
-                return conflict_time - 1, VerificationTask(
-                    symbolic_start=current_timestep,
-                    conflict_time=conflict_time
-                ), conflict_time
+        apply_mpc_filter(mpc_sf, conflict_time, tester, mpc_state, current_timestep,
+                         budget=budget)
 
-            job = VerificationTask(symbolic_start=current_timestep, conflict_time=conflict_time)
-            job, result = symbolic_step(tester, job, max_symbolic_horizon, budget)
+        if not budget.can_afford('symbolic', 1):
+            return conflict_time - 1, VerificationTask(
+                symbolic_start=current_timestep,
+                conflict_time=conflict_time
+            ), conflict_time
 
-            if result is None:
-                print(f"[opt_step] Symbolic incomplete at t={job.symbolic_start}, carrying over")
-                return conflict_time - 1, job, None
+        job = VerificationTask(symbolic_start=current_timestep, conflict_time=conflict_time)
+        job, result = symbolic_step(tester, job, max_symbolic_horizon, budget)
 
-            if result["collision"]:
-                print(f"[opt_step] Conflict confirmed at t={conflict_time} — recomputing MPC with tighter bounds")
-                validated_until = max(validated_until, conflict_time - 1)
-                return validated_until, None, conflict_time
+        if result is None:
+            print(f"[opt_step] Symbolic incomplete at t={job.symbolic_start}, carrying over")
+            return conflict_time - 1, job, None
 
-            validated_until = conflict_time+1
-            print(f"[opt_step] Validated until t={validated_until}")
-            return validated_until, None, None
-    # symbolic
+        if result["collision"]:
+            print(f"[opt_step] Conflict confirmed at t={conflict_time} — recomputing MPC with tighter bounds")
+            validated_until = max(validated_until, conflict_time - 1)
+            return validated_until, None, conflict_time
+
+        validated_until = conflict_time + 1
+        print(f"[opt_step] Validated until t={validated_until}")
+        return validated_until, None, None
+
     else:
-        # full_span     = target - current_timestep
-        # actual_k      = min(full_span, max_symbolic_horizon)
-        # target        = current_timestep + actual_k
-        # print(f"[opt_step] Symbolic: t={current_timestep} -> t={target} (span={actual_k})")
-        # # print(f"{BLUE}[opt_step] Symbolic: t={current_timestep} -> t={target} (span={actual_k}){RESET}")
-        # result        = tester.symbolic(current_timestep, target)
-        # conflict_time = result.get("collision_timestep")
-
         job = VerificationTask(symbolic_start=current_timestep, conflict_time=target)
         job, result = symbolic_step(tester, job, max_symbolic_horizon, budget)
 
@@ -402,7 +336,7 @@ def optimized_step(tester, validated_until, max_time, budget, max_symbolic_horiz
             print(f"[opt_step] Conflict confirmed at t={conflict_time} — queuing MPC")
             return conflict_time - 1, None, conflict_time
 
-        validated_until = target+1
+        validated_until = target + 1
         print(f"[opt_step] Validated until t={validated_until}")
         return validated_until, None, None
 
@@ -420,7 +354,6 @@ def _get_volume(tester, timestep):
 def get_dynamic_symbolic_horizon(safety_margin, max_symbolic_horizon=10, symbolic_buffer=5):
     return max_symbolic_horizon
     return min(max_symbolic_horizon, max(1, safety_margin-symbolic_buffer))
-    return max_symbolic_horizon
 
 def test(seed=None, analyzer=None):
     if analyzer is None:
@@ -436,18 +369,15 @@ def test(seed=None, analyzer=None):
         np.array([-2, -1.3, 0.5])
     ]
 
-    tester             = ReachabilityTester(analyzer, obstacles, seed=seed)
-    tester_calibration = ReachabilityTester(analyzer)
-    mpc_sf             = make_mpc_safety_filter(tester, obstacles_list=obstacles, n_horizon=10, nominal_tracking=True)
+    tester = ReachabilityTester(analyzer, obstacles, seed=seed)
+    mpc_sf = make_mpc_safety_filter(tester, obstacles_list=obstacles, n_horizon=10, nominal_tracking=True)
 
-    MIN_LOOKAHEAD        = 4
     MIN_SAFE_HORIZON     = 12
-    # MIN_SAFE_HORIZON     = 12
     MAX_SYMBOLIC_HORIZON = 10
     SYMBOLIC_BUFFER      = 5
     MAX_TIME             = 60
 
-    budget = TimeBudget(timestep_budget=0.30)
+    budget = TimeBudget(timestep_budget=0.20)
     # budget.calibrate(tester_calibration, max_symbolic_horizon=MAX_SYMBOLIC_HORIZON,
     #                  max_backward_horizon=0)
 
@@ -488,11 +418,11 @@ def test(seed=None, analyzer=None):
         nonlocal mpc_first_run, pending_mpc_conflict, mpc_calls, mpc_over_budget
         print(f"{RED}Triggered MPC calculation with conflict time {conflict_time}{RESET}")
         if mpc_first_run:
-            _t0 = time.perf_counter()
             apply_mpc_filter(mpc_sf, conflict_time, tester, mpc_state, current_timestep,
-                             min_safe_horizon=MIN_SAFE_HORIZON, max_time=MAX_TIME)
+                             min_safe_horizon=MIN_SAFE_HORIZON, max_time=MAX_TIME,
+                             budget=budget)
             mpc_calls += 1
-            if time.perf_counter() - _t0 + budget.elapsed > budget.timestep_budget:
+            if budget.elapsed > budget.timestep_budget:
                 mpc_over_budget += 1
             mpc_first_run = False
         else:
@@ -503,12 +433,11 @@ def test(seed=None, analyzer=None):
         nonlocal validated_until, pending_job, dynamic_symbolic_horizon
         while (validated_until - current_timestep >= MIN_SAFE_HORIZON
                and validated_until < MAX_TIME
-            #    and pending_job is None
                and pending_mpc_conflict is None
                and budget.remaining > 0):
             validated_until, pending_job, mpc_c = optimized_step(
                 tester, validated_until, MAX_TIME, budget,
-                dynamic_symbolic_horizon, current_timestep, MIN_LOOKAHEAD,
+                dynamic_symbolic_horizon, current_timestep,
                 ext_optimizer, mpc_sf, mpc_state
             )
             if pending_job is not None:
@@ -527,6 +456,18 @@ def test(seed=None, analyzer=None):
     while current_timestep < MAX_TIME:
         budget.start_timestep()
 
+        # Resume deferred MPC search from previous timestep
+        ds = mpc_state.pop('deferred_search', None)
+        if ds is not None:
+            ds_conflict, ds_lb = ds
+            print(f"[MPC deferred] Resuming search for conflict_time={ds_conflict} "
+                  f"from lookback={ds_lb}")
+            apply_mpc_filter(mpc_sf, ds_conflict, tester, mpc_state,
+                             current_timestep, min_safe_horizon=MIN_SAFE_HORIZON,
+                             max_time=MAX_TIME, budget=budget,
+                             start_lookback=ds_lb)
+            mpc_calls += 1
+
         safety_margin = validated_until - current_timestep
         dynamic_symbolic_horizon = get_dynamic_symbolic_horizon(
             safety_margin,
@@ -544,10 +485,9 @@ def test(seed=None, analyzer=None):
 
             # Extend when remaining controls <= n_horizon
             # Retries each step if previous extend failed
-            n_h = mpc_sf.n_horizon
-            if len(queue) - ctrl_idx <= n_h:
+            if len(queue) - ctrl_idx <= mpc_sf.n_horizon:
                 extend_mpc_sequence(mpc_sf, mpc_state, MIN_SAFE_HORIZON, MAX_TIME,
-                                    ctrl_idx=ctrl_idx)
+                                    ctrl_idx=ctrl_idx, budget=budget)
                 queue = mpc_state['controls']
 
             for _t in list(tester.horizons.keys()):
@@ -584,7 +524,7 @@ def test(seed=None, analyzer=None):
             else:
                 print(f"[MPC] Queue nearly exhausted at t={current_timestep}, attempting extension")
                 extend_mpc_sequence(mpc_sf, mpc_state, MIN_SAFE_HORIZON, MAX_TIME,
-                                    ctrl_idx=ctrl_idx)
+                                    ctrl_idx=ctrl_idx, budget=budget)
                 queue = mpc_state['controls']
                 if ctrl_idx < len(queue):
                     ctrl = queue[ctrl_idx]
@@ -599,10 +539,6 @@ def test(seed=None, analyzer=None):
                     break
             continue
 
-
-
-
-        both_pending = pending_job is not None and pending_mpc_conflict is not None
         mode = "OPTIMIZED" if safety_margin >= MIN_SAFE_HORIZON else "BASELINE"
         color = GREEN if mode == "OPTIMIZED" else BLUE
         print(f"\n{color}CURRENT TIMESTEP ==== {current_timestep}  "
@@ -621,17 +557,17 @@ def test(seed=None, analyzer=None):
 
         if do_mpc_this_step:
             print(f"[Alt] MPC turn — running filter for conflict_time={pending_mpc_conflict}")
-            _t0 = time.perf_counter()
             apply_mpc_filter(mpc_sf, pending_mpc_conflict, tester, mpc_state, current_timestep,
-                             min_safe_horizon=MIN_SAFE_HORIZON, max_time=MAX_TIME)
+                             min_safe_horizon=MIN_SAFE_HORIZON, max_time=MAX_TIME,
+                             budget=budget)
             mpc_calls += 1
-            if time.perf_counter() - _t0 + budget.elapsed > budget.timestep_budget:
+            if budget.elapsed > budget.timestep_budget:
                 mpc_over_budget += 1
             pending_mpc_conflict = None
             mpc_turn = False
 
         else:
-            if both_pending:
+            if pending_job is not None and pending_mpc_conflict is not None:
                 # symbolic gets this timestep; MPC gets the next
                 mpc_turn = True
 
@@ -656,7 +592,7 @@ def test(seed=None, analyzer=None):
                         if budget.remaining > 0:
                             validated_until, pending_job, mpc_c = try_extend(
                                 tester, validated_until, MAX_TIME, budget,
-                                dynamic_symbolic_horizon, current_timestep, MIN_LOOKAHEAD,
+                                dynamic_symbolic_horizon, current_timestep,
                                 mpc_sf, mpc_state,
                                 safe_horizon_ceiling=current_timestep + MIN_SAFE_HORIZON,
                             )
@@ -677,11 +613,11 @@ def test(seed=None, analyzer=None):
                     pending_job, result = run_opt_loop()
                     if pending_job is None:
                         new_margin = validated_until - current_timestep
-                        if new_margin < MIN_SAFE_HORIZON and pending_job is None and pending_mpc_conflict is None and budget.remaining > 0:
+                        if new_margin < MIN_SAFE_HORIZON and pending_mpc_conflict is None and budget.remaining > 0:
                             print(f"[opt] Margin dropped — recovering with baseline extend")
                             validated_until, pending_job, mpc_c = try_extend(
                                 tester, validated_until, MAX_TIME, budget,
-                                dynamic_symbolic_horizon, current_timestep, MIN_LOOKAHEAD,
+                                dynamic_symbolic_horizon, current_timestep,
                                 mpc_sf, mpc_state,
                                 safe_horizon_ceiling=current_timestep + MIN_SAFE_HORIZON,
                             )
@@ -727,7 +663,7 @@ def test(seed=None, analyzer=None):
                                     if new_margin < MIN_SAFE_HORIZON:
                                         validated_until, pending_job, mpc_c = try_extend(
                                             tester, validated_until, MAX_TIME, budget,
-                                            dynamic_symbolic_horizon, current_timestep, MIN_LOOKAHEAD,
+                                            dynamic_symbolic_horizon, current_timestep,
                                             mpc_sf, mpc_state,
                                             safe_horizon_ceiling=current_timestep + MIN_SAFE_HORIZON,
                                         )
