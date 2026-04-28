@@ -244,17 +244,8 @@ def optimized_step(tester, validated_until, max_time, budget, max_symbolic_horiz
     # concrete
     if method == "concrete":
         print(f"[opt_step] Concrete: t={validated_until} -> t={target}")
-        # print(f"{RED}[opt_step] Concrete: t={validated_until} -> t={target}{RESET}")
         result        = tester.concrete(validated_until, target)
         conflict_time = result.get("collision_timestep")
-    # else:
-    #     full_span     = target - current_timestep
-    #     actual_k      = min(full_span, max_symbolic_horizon)
-    #     target        = current_timestep + actual_k
-    #     print(f"[opt_step] Symbolic: t={current_timestep} -> t={target} (span={actual_k})")
-    #     # print(f"{BLUE}[opt_step] Symbolic: t={current_timestep} -> t={target} (span={actual_k}){RESET}")
-    #     result        = tester.symbolic(current_timestep, target)
-    #     conflict_time = result.get("collision_timestep")
 
         if not result["collision"]:
             print(f"[opt_step] Clean — validated until t={target}")
@@ -285,14 +276,6 @@ def optimized_step(tester, validated_until, max_time, budget, max_symbolic_horiz
             return validated_until, None, None
     # symbolic
     else:
-        # full_span     = target - current_timestep
-        # actual_k      = min(full_span, max_symbolic_horizon)
-        # target        = current_timestep + actual_k
-        # print(f"[opt_step] Symbolic: t={current_timestep} -> t={target} (span={actual_k})")
-        # # print(f"{BLUE}[opt_step] Symbolic: t={current_timestep} -> t={target} (span={actual_k}){RESET}")
-        # result        = tester.symbolic(current_timestep, target)
-        # conflict_time = result.get("collision_timestep")
-
         job = VerificationTask(symbolic_start=current_timestep, conflict_time=target)
         job, result = symbolic_step(tester, job, max_symbolic_horizon, budget)
 
@@ -331,7 +314,7 @@ def test(seed=None):
 
     obstacles = [
         np.array([-6.5, 2.02,  0.5]),
-        # np.array([-3.2,  1.21,  0.5]),
+        np.array([-3.2,  1.21,  0.5]),
         np.array([-1.5,  -0.85, 0.45]),
     ]
 
