@@ -13,7 +13,7 @@ from matplotlib.colors import Normalize
 import multiprocessing as mp
 import os, sys
 
-N_TRIALS  = 20
+N_TRIALS  = 100
 N_WORKERS = 16
 
 
@@ -27,7 +27,8 @@ N_WORKERS = 16
 obstacles = [
         np.array([-6.5, 2.02,  0.5]),
         np.array([-3.2,  1.21,  0.5]),
-        np.array([-1.5,  -0.85, 0.45]),
+        np.array([-2,  -0.3, 0.45]),
+        np.array([-2, -1.3, 0.5])
     ]
 
 
@@ -54,7 +55,7 @@ def _run_trial(args):
     """Worker function: run one trial with a fresh analyzer, return results."""
     i, seed = args
     from REAL_integrated_sim import setup_analyzer
-    from alg8_for_run_trial import test
+    from alg11_mpc_acados import test
     analyzer = setup_analyzer('Unicycle_NL', 'natural_none_default')
     traj, _, u_diffs, mpc_calls, mpc_over = test(seed=seed, analyzer=analyzer)
     had_collision = point_collision(traj, obstacles)
