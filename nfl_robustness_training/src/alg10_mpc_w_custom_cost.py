@@ -65,13 +65,84 @@ def symbolic_step(tester, job: VerificationTask, chunk_size: int, budget):
         return job, None
 
 
-def apply_mpc_filter(mpc_sf, conflict_time, tester, mpc_state: dict, current_t: int = 0):
+def extend_mpc_sequence(mpc_sf, mpc_state: dict, min_safe_horizon: int,
+                        max_time: int, ctrl_idx: int = 0):
+    """
+    Extend the MPC control queue from the end of the current trajectory.
+    If extension from the endpoint fails, works backwards along the existing
+    trajectory (like find_stopping_timestep) to find a viable extension point.
+    """
+    committed_at = mpc_state['committed_at']
+    controls     = mpc_state['controls']
+    traj_bounds  = mpc_state['traj_bounds']
+    n_controls   = len(controls)
+    mpc_end      = committed_at + n_controls
+
+    if mpc_end >= max_time:
+        print(f"  [MPC extend] Reached MAX_TIME, done")
+        return
+
+    # Don't look back past current execution point
+    max_lb = min(n_controls - ctrl_idx - 1, mpc_sf.n_horizon)
+    max_lb = max(max_lb, 0)
+
+    for lb in range(max_lb + 1):
+        # lb=0 → extend from the very end; lb>0 → lb steps back
+        # traj_bounds has n_controls+1 entries (initial + one per control)
+        try_idx = len(traj_bounds) - 1 - lb
+        if try_idx < 1:
+            break
+
+        try_bounds = traj_bounds[try_idx]
+        center     = (try_bounds[:, 0] + try_bounds[:, 1]) / 2.0
+
+        try:
+            new_traj_bounds, _, new_controls = mpc_sf._run_mpc_from_bounds(
+                try_bounds, center, extra_inflation=0.0)
+        except Exception as e:
+            print(f"  [MPC extend] Failed at lookback={lb}: {e}")
+            continue
+
+        # Keep only the collision-free prefix
+        safe_count = 0
+        for b in new_traj_bounds[1:]:
+            if mpc_sf._collides(b):
+                break
+            safe_count += 1
+
+        if safe_count <= lb:
+            print(f"  [MPC extend] lookback={lb}: only {safe_count} safe "
+                  f"(need >{lb}), going further back")
+            continue
+
+        # Replace tail (lb controls) with new safe path
+        keep = n_controls - lb
+        mpc_state['controls']    = list(controls[:keep]) + list(new_controls[:safe_count])
+        mpc_state['traj_bounds'] = list(traj_bounds[:try_idx + 1]) + list(new_traj_bounds[1:safe_count + 1])
+
+        net_gain  = safe_count - lb
+        new_total = len(mpc_state['controls'])
+        new_end   = committed_at + new_total
+        if lb > 0:
+            print(f"  [MPC extend] lookback={lb}: +{safe_count} safe, "
+                  f"-{lb} replaced, net +{net_gain}")
+        print(f"  [MPC extend] +{net_gain} controls → {new_total} total "
+              f"(t={committed_at} to t={new_end})")
+        return
+
+    print(f"  [MPC extend] No safe extension found after {max_lb + 1} "
+          f"lookback attempts")
+
+
+def apply_mpc_filter(mpc_sf, conflict_time, tester, mpc_state: dict, current_t: int = 0,
+                     min_safe_horizon: int = 0, max_time: int = 60):
     """
     Run MPC safety filter for a collision at conflict_time.
     Updates mpc_state with the committed plan and sets mpc_needed=True.
+    If min_safe_horizon > 0, recursively extends the control queue.
     """
     t0 = time.perf_counter()
-    stopping_t, controls, traj_bounds = mpc_sf.find_stopping_timestep(conflict_time, tester.horizons, current_t)
+    stopping_t, controls, traj_bounds, _ = mpc_sf.find_stopping_timestep(conflict_time, tester.horizons, current_t)
     print(f"  [MPC timing] find_stopping_timestep took {time.perf_counter() - t0:.3f}s")
 
     if stopping_t is None:
@@ -121,13 +192,16 @@ def try_extend(tester, validated_until, max_time, budget, max_symbolic_horizon,
 
         print(f"[extend] Conflict at t={conflict_time}, attempting symbolic verification")
 
+        # Pre-compute MPC as backup before symbolic verification
+        apply_mpc_filter(mpc_sf, conflict_time, tester, mpc_state, current_timestep)
+
         if not budget.can_afford('symbolic', 1):
             print(f"[extend] No budget for symbolic — stopping before conflict")
             validated_until = conflict_time - 1
             return validated_until, VerificationTask(
                 symbolic_start=conflict_time - 1,
                 conflict_time=conflict_time
-            ), None
+            ), conflict_time
 
         job = VerificationTask(symbolic_start=validated_until, conflict_time=conflict_time)
         job, result = symbolic_step(tester, job, max_symbolic_horizon, budget)
@@ -138,7 +212,7 @@ def try_extend(tester, validated_until, max_time, budget, max_symbolic_horizon,
             return validated_until, job, None
 
         if result["collision"]:
-            print(f"[extend] Conflict confirmed at t={conflict_time} — queuing MPC")
+            print(f"[extend] Conflict confirmed at t={conflict_time} — recomputing MPC with tighter bounds")
             validated_until = max(validated_until, conflict_time - 1)
             return validated_until, None, conflict_time
         else:
@@ -253,11 +327,14 @@ def optimized_step(tester, validated_until, max_time, budget, max_symbolic_horiz
         else:
             print(f"[opt_step] Collision at t={conflict_time} — deconflicting from t={current_timestep}")
 
+            # Pre-compute MPC as backup before symbolic verification
+            apply_mpc_filter(mpc_sf, conflict_time, tester, mpc_state, current_timestep)
+
             if not budget.can_afford('symbolic', 1):
                 return conflict_time - 1, VerificationTask(
                     symbolic_start=current_timestep,
                     conflict_time=conflict_time
-                ), None
+                ), conflict_time
 
             job = VerificationTask(symbolic_start=current_timestep, conflict_time=conflict_time)
             job, result = symbolic_step(tester, job, max_symbolic_horizon, budget)
@@ -267,7 +344,7 @@ def optimized_step(tester, validated_until, max_time, budget, max_symbolic_horiz
                 return conflict_time - 1, job, None
 
             if result["collision"]:
-                print(f"[opt_step] Conflict confirmed at t={conflict_time} — queuing MPC")
+                print(f"[opt_step] Conflict confirmed at t={conflict_time} — recomputing MPC with tighter bounds")
                 validated_until = max(validated_until, conflict_time - 1)
                 return validated_until, None, conflict_time
 
@@ -367,7 +444,8 @@ def test(seed=None):
         print(f"{RED}Triggered MPC calculation with conflict time {conflict_time}{RESET}")
         nonlocal mpc_first_run, pending_mpc_conflict
         if mpc_first_run:
-            apply_mpc_filter(mpc_sf, conflict_time, tester, mpc_state, current_timestep)
+            apply_mpc_filter(mpc_sf, conflict_time, tester, mpc_state, current_timestep,
+                             min_safe_horizon=MIN_SAFE_HORIZON, max_time=MAX_TIME)
             mpc_first_run = False
         else:
             pending_mpc_conflict = conflict_time
@@ -416,6 +494,14 @@ def test(seed=None):
             queue     = mpc_state['controls']
             check_end = min(current_timestep + MIN_SAFE_HORIZON, MAX_TIME)
 
+            # Extend when remaining controls <= n_horizon
+            # Retries each step if previous extend failed
+            n_h = mpc_sf.n_horizon
+            if len(queue) - ctrl_idx <= n_h:
+                extend_mpc_sequence(mpc_sf, mpc_state, MIN_SAFE_HORIZON, MAX_TIME,
+                                    ctrl_idx=ctrl_idx)
+                queue = mpc_state['controls']
+
             for _t in list(tester.horizons.keys()):
                 if _t > current_timestep:
                     del tester.horizons[_t]
@@ -445,8 +531,19 @@ def test(seed=None):
                 tester.real_state_mpc(current_timestep, ctrl)
                 current_timestep += 1
             else:
-                print(f"[MPC] Queue exhausted at t={current_timestep}")
-                break
+                print(f"[MPC] Queue nearly exhausted at t={current_timestep}, attempting extension")
+                extend_mpc_sequence(mpc_sf, mpc_state, MIN_SAFE_HORIZON, MAX_TIME,
+                                    ctrl_idx=ctrl_idx)
+                queue = mpc_state['controls']
+                if ctrl_idx < len(queue):
+                    ctrl = queue[ctrl_idx]
+                    print(f"[MPC EXTENDED] t={current_timestep}  idx={ctrl_idx}/{len(queue)-1}"
+                          f"  u={np.round(ctrl, 4)}")
+                    tester.real_state_mpc(current_timestep, ctrl)
+                    current_timestep += 1
+                else:
+                    print(f"[MPC] Queue exhausted even after extension at t={current_timestep}")
+                    break
             continue
 
 
@@ -471,7 +568,8 @@ def test(seed=None):
 
         if do_mpc_this_step:
             print(f"[Alt] MPC turn — running filter for conflict_time={pending_mpc_conflict}")
-            apply_mpc_filter(mpc_sf, pending_mpc_conflict, tester, mpc_state, current_timestep)
+            apply_mpc_filter(mpc_sf, pending_mpc_conflict, tester, mpc_state, current_timestep,
+                             min_safe_horizon=MIN_SAFE_HORIZON, max_time=MAX_TIME)
             pending_mpc_conflict = None
             mpc_turn = False
 
@@ -549,6 +647,8 @@ def test(seed=None):
                             pending_job, result = run_opt_loop()
                     else:
                         print(f"Conflict detected at t={conflict_time}")
+                        # Pre-compute MPC as backup before symbolic verification
+                        trigger_mpc(conflict_time)
                         pending_job = VerificationTask(
                             symbolic_start=current_timestep,
                             conflict_time=conflict_time
@@ -559,7 +659,7 @@ def test(seed=None):
                         if result is not None:
                             pending_job = None
                             if result["collision"]:
-                                print(f"Conflict confirmed at t={conflict_time} — triggering MPC")
+                                print(f"Conflict confirmed at t={conflict_time} — recomputing MPC with tighter bounds")
                                 validated_until = max(validated_until, conflict_time - 1)
                                 trigger_mpc(conflict_time)
                             else:
