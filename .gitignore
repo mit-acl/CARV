@@ -4,16 +4,3 @@ nfl_robustness_training/src/conservativeness_tester.py
 nfl_robustness_training/src/overapprox_test.py
 animation_output
 timing_analysis
-
-# === Generated media (DO NOT COMMIT) ===
-*.gif
-*.mp4
-*.png
-
-# === Local folders ===
-.claude/
-Unused/
-
-# === Optional: Python junk ===
-__pycache__/
-*.pyc
