@@ -78,10 +78,6 @@ class AcadosUnicycleMPC:
         Fixed forward speed.
     n_horizon : int
         MPC prediction horizon (steps).
-    nominal_tracking : bool
-        If True, stage cost is (omega - omega_nom)^2 with omega_nom fed
-        through _nom_ctrl_buf → yref per stage (NONLINEAR_LS + GAUSS_NEWTON).
-        If False, a goal-reaching EXTERNAL cost is used instead.
     solver_name : str
         Base name for generated C code and JSON file.
     """
@@ -89,11 +85,12 @@ class AcadosUnicycleMPC:
     def __init__(self, obstacles: list, dt: float = 0.2, v: float = 1.0,
                  n_horizon: int = 10, nominal_tracking: bool = True,
                  solver_name: str = 'unicycle_acados'):
-        self.n_horizon        = n_horizon
-        self.dt               = dt
-        self.v                = v
-        self.nominal_tracking = nominal_tracking
-        self.obstacles        = obstacles if obstacles is not None else []
+        # nominal_tracking kept as parameter for call-site compatibility but
+        # non-nominal path is removed — always uses NONLINEAR_LS tracking cost.
+        self.n_horizon = n_horizon
+        self.dt        = dt
+        self.v         = v
+        self.obstacles = obstacles if obstacles is not None else []
 
         # Buffers — same attribute names as the do_mpc version
         self._obs_inflation_buf = np.zeros(1)
@@ -160,29 +157,17 @@ class AcadosUnicycleMPC:
         ocp.dims.N = self.n_horizon
 
         # ── Cost ──────────────────────────────────────────────────────
-        if self.nominal_tracking:
-            # NONLINEAR_LS: residual y = omega, reference = omega_nom (set via yref)
-            # Gauss-Newton hessian is always PSD → HPIPM always succeeds
-            model.cost_y_expr   = u_sym               # shape (1,)
-            model.cost_y_expr_e = ca.SX.zeros(1)      # no terminal cost residual
-            ocp.cost.cost_type   = 'NONLINEAR_LS'
-            ocp.cost.cost_type_e = 'NONLINEAR_LS'
-            ocp.cost.W           = np.array([[1.0]])   # weight on (omega - yref)^2
-            ocp.cost.W_e         = np.array([[0.0]])   # zero terminal weight
-            ocp.cost.yref        = np.array([0.0])     # placeholder; overwritten each solve
-            ocp.cost.yref_e      = np.array([0.0])
-            ocp.solver_options.hessian_approx = 'GAUSS_NEWTON'
-        else:
-            p_goal = ca.SX([2.0, 0.0])
-            model.cost_expr_ext_cost   = (
-                (x_sym[:2] - p_goal).T @ (x_sym[:2] - p_goal) + u_sym[0] ** 2
-            )
-            model.cost_expr_ext_cost_e = (
-                (x_sym[:2] - p_goal).T @ (x_sym[:2] - p_goal)
-            )
-            ocp.cost.cost_type   = 'EXTERNAL'
-            ocp.cost.cost_type_e = 'EXTERNAL'
-            ocp.solver_options.hessian_approx = 'EXACT'
+        # NONLINEAR_LS: residual y = omega, reference = omega_nom (set via yref).
+        # Gauss-Newton hessian is always PSD → HPIPM always succeeds.
+        model.cost_y_expr   = u_sym               # shape (1,)
+        model.cost_y_expr_e = ca.SX.zeros(1)      # no terminal cost residual
+        ocp.cost.cost_type   = 'NONLINEAR_LS'
+        ocp.cost.cost_type_e = 'NONLINEAR_LS'
+        ocp.cost.W           = np.array([[1.0]])   # weight on (omega - yref)^2
+        ocp.cost.W_e         = np.array([[0.0]])   # zero terminal weight
+        ocp.cost.yref        = np.array([0.0])     # placeholder; overwritten each solve
+        ocp.cost.yref_e      = np.array([0.0])
+        ocp.solver_options.hessian_approx = 'GAUSS_NEWTON'
 
         # ── Solver options ─────────────────────────────────────────────
         ocp.solver_options.tf                  = self.n_horizon * self.dt
@@ -252,7 +237,7 @@ class AcadosUnicycleMPC:
         for k in range(self.n_horizon + 1):
             self._solver.set(k, 'x', x)
             if k < self.n_horizon:
-                u_k = float(self._nom_ctrl_buf[k]) if self.nominal_tracking else 0.0
+                u_k = float(self._nom_ctrl_buf[k])
                 self._solver.set(k, 'u', np.array([u_k]))
                 x = np.array([
                     x[0] + self.v * np.cos(x[2]) * self.dt,
@@ -266,12 +251,9 @@ class AcadosUnicycleMPC:
         inflation = float(self._obs_inflation_buf[0])
         for k in range(self.n_horizon):
             self._solver.set(k, 'p', np.array([inflation]))
-            if self.nominal_tracking:
-                omega_nom_k = float(self._nom_ctrl_buf[k])
-                self._solver.set(k, 'yref', np.array([omega_nom_k]))
+            self._solver.set(k, 'yref', np.array([float(self._nom_ctrl_buf[k])]))
         self._solver.set(self.n_horizon, 'p', np.array([inflation]))
-        if self.nominal_tracking:
-            self._solver.set(self.n_horizon, 'yref', np.array([0.0]))
+        self._solver.set(self.n_horizon, 'yref', np.array([0.0]))
 
     # Number of RTI iterations for the first cold-start solve.
     # Subsequent solves are warm-started and need only 1 RTI iteration.

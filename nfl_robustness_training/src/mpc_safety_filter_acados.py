@@ -37,23 +37,51 @@ class UniycleMPCSafetyFilterAcados(MPCSafetyFilter):
     def __init__(self, obstacles, tester,
                  dt: float = 0.1, v: float = 1.0,
                  n_horizon: int = 10, max_lookback: int = 10,
-                 nominal_tracking: bool = True):
+                 use_safety_radius: bool = True):
         super().__init__(obstacles, tester, max_lookback)
-        self.dt               = dt
-        self.n_horizon        = n_horizon
-        self.v                = v
-        self.buffer_init_heading = 0.2
-        self._nominal_tracking   = nominal_tracking
+        self.dt        = dt
+        self.n_horizon = n_horizon
+        self.v         = v
+
+        # Kinematic safety radius: worst-case heading into obstacle at min turning radius.
+        # For turning radius R = v / u_max (u_max = 1.0), the vehicle can guarantee
+        # avoidance only if it stays outside S = sqrt(r² + 2rR) of each obstacle center.
+        # Set use_safety_radius=False to revert to the raw obstacle radii.
+        u_max = 1.0  # omega bounds [-1, 1]
+        R     = v / u_max
+        if use_safety_radius:
+            self.safety_obstacles    = [
+                np.array([obs[0], obs[1], float(np.sqrt(obs[2] ** 2 + 2 * obs[2] * R))])
+                for obs in obstacles
+            ]
+            self.buffer_init_heading = 0.0
+            for obs, sobs in zip(obstacles, self.safety_obstacles):
+                print(f"  [safety radius] r={obs[2]:.3f} → S={sobs[2]:.4f}  (R={R:.3f})")
+        else:
+            self.safety_obstacles    = [np.array(obs, dtype=float) for obs in obstacles]
+            self.buffer_init_heading = 0.4
+            print(f"  [safety radius] disabled — using raw obstacle radii + heading buffer={self.buffer_init_heading}")
 
         # Build the acados MPC (solver is compiled on first call)
         self._mpc = AcadosUnicycleMPC(
-            obstacles=obstacles,
+            obstacles=self.safety_obstacles,
             dt=dt,
             v=v,
             n_horizon=n_horizon,
-            nominal_tracking=nominal_tracking,
+            nominal_tracking=True,
             solver_name=f'unicycle_acados_sf_{os.getpid()}',
         )
+
+    def _collides(self, bounds: np.ndarray) -> bool:
+        """Circle-box overlap test against kinematic safety radii (expanded obstacles)."""
+        for obs in self.safety_obstacles:
+            cx, cy, r = obs[0], obs[1], obs[2]
+            closest_x = np.clip(cx, bounds[0, 0], bounds[0, 1])
+            closest_y = np.clip(cy, bounds[1, 0], bounds[1, 1])
+            dist_sq   = (cx - closest_x) ** 2 + (cy - closest_y) ** 2
+            if dist_sq <= r ** 2:
+                return True
+        return False
 
     def _run_mpc_from_bounds(self, initial_bounds: np.ndarray,
                              center: np.ndarray,
@@ -61,25 +89,19 @@ class UniycleMPCSafetyFilterAcados(MPCSafetyFilter):
         """
         Receding-horizon unicycle MPC with constant-size bounds.
 
-        Identical to UniycleMPCSafetyFilter._run_mpc_from_bounds except
-        that self._mpc is an AcadosUnicycleMPC instance.
+        Inflates obstacle radii by the x-y bounding box diagonal (positional
+        uncertainty) plus any extra_inflation (e.g. current-timestep bounds
+        diagonal from find_stopping_timestep). Plans from the bounds center.
+        At each step produces a constant-size box [point ± hw] for _collides.
 
-        Returns
-        -------
-        (trajectory_bounds, points, controls)
+        Returns (trajectory_bounds, points, controls).
         """
         half_widths = (initial_bounds[:, 1] - initial_bounds[:, 0]) / 2.0
         hw_x = half_widths[0]
         hw_y = half_widths[1]
 
-        inflation = (float(np.sqrt(hw_x ** 2 + hw_y ** 2))
-                     + extra_inflation
-                     + self.buffer_init_heading)
-        print(f'  [acados MPC bounds] hw=({hw_x:.4f},{hw_y:.4f})  '
-              f't_back_inf={inflation - extra_inflation:.4f}  '
-              f'cur_inf={extra_inflation:.4f}  total={inflation:.4f}')
+        inflation = float(np.sqrt(hw_x ** 2 + hw_y ** 2)) + extra_inflation + self.buffer_init_heading
 
-        # Update obstacle inflation (parameter updated before each solve)
         self._mpc._obs_inflation_buf[0] = inflation
 
         x = center.reshape(-1, 1)
@@ -91,11 +113,10 @@ class UniycleMPCSafetyFilterAcados(MPCSafetyFilter):
         prev_predicted_states = None
 
         for _ in range(self.n_horizon):
-            if self._nominal_tracking:
-                if prev_predicted_states is None:
-                    self._fill_nom_ctrl_buf(x.flatten())
-                else:
-                    self._fill_nom_ctrl_buf_from_states(prev_predicted_states[1:])
+            if prev_predicted_states is None:
+                self._fill_nom_ctrl_buf(x.flatten())
+            else:
+                self._fill_nom_ctrl_buf_from_states(prev_predicted_states[1:])
 
             u = self._mpc.make_step(x)
 
@@ -131,7 +152,7 @@ def make_mpc_safety_filter_acados(tester, obstacles_list=None,
                                    t_step: float = None,
                                    n_horizon: int = 10,
                                    max_lookback: int = 10,
-                                   nominal_tracking: bool = True):
+                                   **kwargs):
     """
     Build the acados-based MPCSafetyFilter subclass from a tester object.
 
@@ -167,7 +188,7 @@ def make_mpc_safety_filter_acados(tester, obstacles_list=None,
             v=tester.analyzer.cl_system.dynamics.vt,
             n_horizon=n_horizon,
             max_lookback=max_lookback,
-            nominal_tracking=nominal_tracking,
+            use_safety_radius=kwargs.get('use_safety_radius', True),
         )
 
     return None
