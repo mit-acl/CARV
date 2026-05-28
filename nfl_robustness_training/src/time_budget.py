@@ -16,6 +16,7 @@ class TimeBudget:
         self.mpc_cost = 0.040      # conservative estimate per MPC solve (seconds)
         self._start = None
         self._log = []             # [(operation_name, elapsed)] for current timestep
+        self._excluded = 0.0       # time excluded from budget (non-algorithmic overhead)
 
     def calibrate(self, tester, max_symbolic_horizon=10, max_backward_horizon=10, num_repeats=1):
         """Run once at startup with a throwaway tester."""
@@ -55,8 +56,13 @@ class TimeBudget:
 
     # ─── Timestep tracking ───────────────────────────────────────────
 
+    def exclude_elapsed(self, seconds: float):
+        """Exclude time from budget — for non-algorithmic overhead (e.g. frame capture)."""
+        self._excluded += seconds
+
     def start_timestep(self):
         self._start = time.perf_counter()
+        self._excluded = 0.0
         self._log = []
 
     def record(self, name):
@@ -68,7 +74,7 @@ class TimeBudget:
     def elapsed(self):
         if self._start is None:
             return 0.0
-        return time.perf_counter() - self._start
+        return max(0.0, time.perf_counter() - self._start - self._excluded)
 
     @property
     def remaining(self):

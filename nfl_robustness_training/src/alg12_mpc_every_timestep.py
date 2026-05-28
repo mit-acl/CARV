@@ -1,31 +1,17 @@
 """
 Algorithm 12 — Predictive Safety Filter (PSF) with Forward MPC Buffer
 
-Safety principle (PSF): apply nominal control at time t if and only if
-mpc_buffer[t+1] contains a feasible, collision-free MPC trajectory.
-Otherwise, activate the precomputed backup from t_diverge — the last τ
-where the buffer was valid.
-
-Key differences from alg11:
-  - No backward search (find_stopping_timestep removed).
-  - Forward buffer: build_mpc_backup fills mpc_buffer[τ] proactively.
-  - t_diverge updated lazily as the forward buffer loop succeeds/fails.
-  - Concrete propagation stops at conflict_time (no point going further).
-  - Symbolic runs continuously even after confirmation — tighter RSOA
-    bounds may push t_diverge later or deconflict entirely.
-  - Reversion: re-check PSF condition from MPC-propagated state each step.
-
 States:
-  NOMINAL      — no conflict; PSF buffer maintained as 1-step lookahead.
-  PRE_CONFLICT — conflict known; buffer fills toward it; nominal applied
+  NOMINAL      — no conflict found. PSF buffer maintained as 1 step lookahead.
+  PRE_CONFLICT — RSOA collides with obstacle. PSF buffer filled towards it. nominal applied
                  while mpc_buffer[t+1] is valid.
   MPC_ACTIVE   — PSF condition failed; executing precomputed backup;
                  revert when mpc_buffer[t+1] becomes valid again.
 
-Budget priorities (each sim timestep, outside MPC_ACTIVE):
-  P1 — Ensure mpc_buffer[t+1] exists (safety-critical PSF check).
+Budget priorities:
+  P1 — Ensure mpc_buffer[t+1] exists (PSF check).
   P2 — Concrete scan forward (feeds MPC buffer with real bounds).
-  P3 — MPC buffer forward toward conflict_time (lazily find t_diverge).
+  P3 — Propagate MPC buffer forward toward conflict_time.
   P4 — Symbolic verification (continuous; deconflict or tighten bounds).
 
 Obstacles are in the form: [center_x, center_y, radius]
@@ -56,13 +42,12 @@ def _get_nn_control(tester, timestep):
     h = tester.horizons.get(timestep)
     if h is None:
         return None
-    for calc_data in h.calculations.values():
-        if 'real_state' in calc_data:
-            state  = np.asarray(calc_data['real_state']).reshape(1, -1)
-            cl_sys = tester.analyzer.cl_system
-            u      = cl_sys.dynamics.control_nn(state, cl_sys.controller.cpu())
-            return np.asarray(u).flatten()
-    return None
+    calc = next((c for c in h.calculations.values() if 'real_state' in c), None)
+    if calc is None:
+        return None
+    state  = np.asarray(calc['real_state']).reshape(1, -1)
+    cl_sys = tester.analyzer.cl_system
+    return np.asarray(cl_sys.dynamics.control_nn(state, cl_sys.controller.cpu())).flatten()
 
 
 class VerificationTask:
@@ -81,11 +66,9 @@ def concrete_scan(tester, from_t, to_t):
     if from_t >= to_t:
         return False, None
     result = tester.concrete(from_t, to_t)
-    if result is False:
+    if not result or not result["collision"]:
         return False, None
-    if result["collision"]:
-        return True, result["collision_timestep"]
-    return False, None
+    return True, result["collision_timestep"]
 
 
 def symbolic_step(tester, job: VerificationTask, chunk_size: int, budget):
@@ -114,7 +97,7 @@ def extend_mpc_sequence(mpc_sf, mpc_state: dict, min_safe_horizon: int,
     """
     Extend the MPC control queue from the end of the current trajectory.
     Falls back along the existing trajectory if extension from endpoint fails.
-    Identical to alg11.
+    Same as alg11.
     """
     committed_at = mpc_state['committed_at']
     controls     = mpc_state['controls']
@@ -126,8 +109,7 @@ def extend_mpc_sequence(mpc_sf, mpc_state: dict, min_safe_horizon: int,
         print(f"  [MPC extend] Reached MAX_TIME, done")
         return
 
-    max_lb = min(n_controls - ctrl_idx - 1, mpc_sf.n_horizon)
-    max_lb = max(max_lb, 0)
+    max_lb = max(min(n_controls - ctrl_idx - 1, mpc_sf.n_horizon), 0)
 
     for lb in range(max_lb + 1):
         if budget is not None and budget.remaining < budget.mpc_cost:
@@ -177,11 +159,11 @@ def extend_mpc_sequence(mpc_sf, mpc_state: dict, min_safe_horizon: int,
     print(f"  [MPC extend] No safe extension found after {max_lb + 1} lookback attempts")
 
 
-# ── PSF-specific helpers ───────────────────────────────────────────────────
+# PSF helpers
 
 def psf_valid(mpc_buffer: dict, t: int):
     """ Returns true if mpc_buffer at time t exists and is collision free."""
-    return t in mpc_buffer and mpc_buffer[t] is not None
+    return mpc_buffer.get(t) is not None
 
 
 def build_mpc_backup(mpc_sf, tester, mpc_buffer: dict, tau: int):
@@ -212,25 +194,84 @@ def build_mpc_backup(mpc_sf, tester, mpc_buffer: dict, tau: int):
         mpc_buffer[tau] = None
         return False
 
-# ── Helpers ────────────────────────────────────────────────────
+#  Helpers
 
-def collides_invariant(bounds: np.ndarray, obstacles: list) -> bool:
+def _box_circle_overlap(bounds: np.ndarray, cx: float, cy: float, r: float) -> bool:
+    dx = cx - np.clip(cx, bounds[0, 0], bounds[0, 1]) #center of circle to bound distance
+    dy = cy - np.clip(cy, bounds[1, 0], bounds[1, 1])
+    return dx * dx + dy * dy <= r * r
+
+
+def _bounds_at(tester, t):
+    """Return tight bound at timestep t, or None if missing."""
+    h = tester.horizons.get(t)
+    return h.get_tight_bound() if h is not None else None
+
+
+def collides_invariant(bounds: np.ndarray, obstacles: list,
+                       R: float = 1.0) -> bool:
+    """Overlap against the invariant safe set S = sqrt(r^2 + 2rR).
+    r is radius of obstacle, R is curvature radius. R = 1 for current dynamics
     """
-    Circle-box overlap test against the invariant safe set.
-    Calculate Invariant safe set from obstacle list. Assume v = 1, umax = 1.
+    return any(_box_circle_overlap(bounds, obs[0], obs[1],
+                                   np.sqrt(obs[2]**2 + 2 * obs[2] * R))
+               for obs in obstacles)
+
+
+def collides_raw(bounds: np.ndarray, obstacles: list) -> bool:
+    """Overlap against raw obstacle radius."""
+    return any(_box_circle_overlap(bounds, obs[0], obs[1], obs[2])
+               for obs in obstacles)
+
+
+def scan_window(tester, mpc_sf, mpc_buffer: dict, obstacles: list,
+                     wall_tau: int, scan_limit: int, budget,
+                     R: float = 1.0) -> Optional[int]:
     """
+    Scan beyond an MPC INFEASIBLE "wall" to find a window otuside of invariant set S.
+    Returns new t_diverge if a valid MPC backup is found outside S, else None.
 
+    scan limit is either
+    conflict_time: no point scanning past the collision timestep
+    furthest concrete rsoa + 1: RSOA bounds dont exist beyond this
+    """
+    for tau in range(wall_tau + 1, scan_limit):
+        if tau not in tester.horizons:
+            break
+        bounds = tester.horizons[tau].get_tight_bound()
+        if bounds is None:
+            break
+        if collides_raw(bounds, obstacles):
+            print(f"  [Scan window] tau={tau} collides with raw obstacle — abort")
+            return None
+        if not collides_invariant(bounds, obstacles, R):
+            if tau in mpc_buffer:
+                if mpc_buffer[tau] is not None:
+                    print(f"  [Scan window] tau={tau} already VALID in buffer")
+                    return tau
+                continue
+            if budget.remaining < budget.mpc_cost:
+                print(f"  [Scan window] Budget exhausted at tau={tau}")
+                return None
+            valid = build_mpc_backup(mpc_sf, tester, mpc_buffer, tau)
+            if valid:
+                print(f"  [Scan window] tau={tau} VALID — passthrough t_diverge found")
+                return tau
+            else:
+                print(f"  [Scan window] tau={tau} outside S but MPC INFEASIBLE — continue")
+    return None
 
-    for obs in obstacles:
-        r = obs[2]
-        inf_r = np.sqrt(r**2 + 2*r*1)
+def _purge_infeasible(mpc_buffer: dict, after_t: int):
+    """Delete INFEASIBLE (None) entries with key > after_t."""
+    for k in list(mpc_buffer):
+        if k > after_t and mpc_buffer[k] is None:
+            del mpc_buffer[k]
 
-        cx, cy, r = obs[0], obs[1], inf_r
-        closest_x = np.clip(cx, bounds[0, 0], bounds[0, 1])
-        closest_y = np.clip(cy, bounds[1, 0], bounds[1, 1])
-        if (cx - closest_x) ** 2 + (cy - closest_y) ** 2 <= r ** 2:
-            return True
-    return False
+def _max_valid_diverge(mpc_buffer: dict, from_t: int) -> Optional[int]:
+    """Return the largest key >= from_t with a valid (non-None) buffer entry."""
+    keys = [k for k, v in mpc_buffer.items() if k >= from_t and v is not None]
+    return max(keys) if keys else None
+
 
 # ── Simulation loop ────────────────────────────────────────────────────────
 
@@ -243,14 +284,18 @@ def test(seed=None, analyzer=None, obstacles=None):
 
     if obstacles is None:
         obstacles = [
-            np.array([-6.5,  2.02,  0.5]),
-            np.array([-3.2,  1.21,  0.5]),
-            np.array([-2.0, -0.3,  0.45]),
-            np.array([-2.0, -1.3,  0.5]),
+            np.array([-4.3,  1,   0.5]),
+            np.array([-2,   -2,   0.5]),
+            np.array([-1,    0.5, 0.5]),
+            np.array([-3.5,  0,   0.5]),
         ]
 
     tester = ReachabilityTester(analyzer, obstacles, seed=seed)
-    mpc_sf = make_mpc_safety_filter(tester, obstacles_list=obstacles, n_horizon=10, use_safety_radius=True)
+    mpc_sf = make_mpc_safety_filter(tester, obstacles_list=obstacles, n_horizon=12, use_safety_radius=True)
+
+    v_nom = tester.analyzer.cl_system.dynamics.vt
+    u_max = 1.0
+    turning_radius = v_nom / u_max
 
     MAX_SYMBOLIC_HORIZON = 5
     MAX_TIME             = 60
@@ -275,7 +320,7 @@ def test(seed=None, analyzer=None, obstacles=None):
     conflict_time:     Optional[int]             = None
     t_diverge:         Optional[int]             = None
     pending_job:       Optional[VerificationTask] = None
-    mpc_wall_found:    bool                      = False  # True once P3 hits first INFEASIBLE
+    wall_tau:          Optional[int]             = None   # first INFEASIBLE τ hit in P3; reset each iteration
 
     # ── MPC execution state (mirrors alg11) ───────────────────────────────
     mpc_state = {
@@ -294,7 +339,8 @@ def test(seed=None, analyzer=None, obstacles=None):
 
     while current_timestep < MAX_TIME:
         budget.start_timestep()
-        t_next = current_timestep + 1
+        t_next   = current_timestep + 1
+        wall_tau = None  # reset each iteration; P3 sets it if it hits INFEASIBLE
 
         # ══════════════════════════════════════════════════════════════════
         #  MPC ACTIVE PHASE
@@ -306,21 +352,21 @@ def test(seed=None, analyzer=None, obstacles=None):
             ctrl_idx = current_timestep - mpc_state['committed_at']
             queue    = mpc_state['controls']
 
-            # Extend queue whenever ≤ n_horizon controls remain (mirrors alg11)
+            # Extend queue whenever ≤ n_horizon mpc controls remain (mirrors alg11)
             if len(queue) - ctrl_idx <= mpc_sf.n_horizon:
                 extend_mpc_sequence(mpc_sf, mpc_state, mpc_sf.n_horizon, MAX_TIME,
                                     ctrl_idx=ctrl_idx, budget=budget)
                 queue = mpc_state['controls']
 
-            # Clear future horizons; then interleave: one concrete step →
-            # one MPC build, repeat while budget allows.
+            # Clear future horizons; then interleave: one concrete step -> one MPC build, repeat while budget allows.
+            # This is to check if we can revert to nominal.
+            # If we apply concrete now and mpc build is valid in the next timestep, we are safe to revert
+
             for _t in list(tester.horizons.keys()):
                 if _t > current_timestep:
                     del tester.horizons[_t]
             concrete_until = current_timestep
-            _first = True
-            while _first or budget.can_afford('concrete'):
-                _first = False
+            while budget.can_afford('concrete'):
                 if concrete_until >= MAX_TIME:
                     break
                 # One concrete step
@@ -337,15 +383,13 @@ def test(seed=None, analyzer=None, obstacles=None):
                     print(f"  [MPC PSF] τ={concrete_until} {'VALID' if valid else 'INFEASIBLE'}"
                           f"  t_diverge={t_diverge}")
                     if not valid:
-                        break  # infeasible wall — no point going further
+                        break  # infeasible wall. no point going further
                 else:
                     break  # no MPC budget remaining
 
-            # Build forward buffer with remaining budget so reversion has lookahead
+            # Build forward buffer with remaining budget so we have lookahead buffer if we revert
             mpc_horizon_until = max(mpc_horizon_until, t_next)
-            # PSF reversion: if backup from t+1 is now valid, return to nominal.
-            # Keep mpc_buffer — entries built from MPC-propagated bounds are still
-            # valid and give immediate lookahead after reversion.
+            # PSF reversion: if backup from t+1 (from the concrete RSOA) is valid, return to nominal.
             if psf_valid(mpc_buffer, t_next):
                 print(f"{CYAN}[PSF REVERT] t={current_timestep}  mpc_buffer[{t_next}] valid"
                       f"  mpc_hz={mpc_horizon_until} — reverting to nominal{RESET}")
@@ -353,18 +397,17 @@ def test(seed=None, analyzer=None, obstacles=None):
                 mpc_state['needed']        = False
                 mpc_state['committed_at']  = None
                 mpc_state['conflict_time'] = None
-                # Keep conflict_time and pending_job — conflict is still real;
-                # only P4 symbolic deconfliction should clear them.
+
+                # Reset pending_job to start from the new post-MPC position.
+                # The mpc changed trajectory so prev symbolic propagation is now inaccurate
+                # conflict_time is kept. P4 will re-verify from here.
+                pending_job = (VerificationTask(t_next, conflict_time)
+                               if conflict_time is not None else None)
+
                 # Only clear INFEASIBLE (None) entries beyond t_next. VALID entries
-                # were built from nominal-trajectory concrete bounds (concrete_scan
-                # always uses nominal dynamics) so they remain valid safety backups
-                # now that we are reverting to nominal control.
-                for _k in list(mpc_buffer.keys()):
-                    if _k > t_next and mpc_buffer[_k] is None:
-                        del mpc_buffer[_k]
-                valid_keys = [k for k, v in mpc_buffer.items()
-                              if k >= current_timestep and v is not None]
-                t_diverge         = max(valid_keys) if valid_keys else None
+                # were built in section above and remain valid backup buffers
+                _purge_infeasible(mpc_buffer, t_next)
+                t_diverge         = _max_valid_diverge(mpc_buffer, current_timestep)
                 mpc_horizon_until = t_diverge if t_diverge is not None else t_next
                 concrete_until    = t_next
                 u_diffs.append(0.0)
@@ -373,10 +416,12 @@ def test(seed=None, analyzer=None, obstacles=None):
                 current_timestep += 1
                 continue
 
-            # Apply queued MPC control (extend above guarantees ctrl_idx < len(queue))
+            # Apply queued MPC control
             if ctrl_idx >= len(queue):
+                #shouldnt run if everything is working
                 print(f"[MPC] ERROR: queue still exhausted after extend — ABORT")
                 break
+
             ctrl = queue[ctrl_idx]
             print(f"{MAGENTA}[MPC] t={current_timestep}  idx={ctrl_idx}/{len(queue)-1}"
                   f"  u={np.round(ctrl, 4)}  (plan from t={mpc_state['committed_at']})"
@@ -387,9 +432,9 @@ def test(seed=None, analyzer=None, obstacles=None):
             current_timestep += 1
             continue
 
-        # ══════════════════════════════════════════════════════════════════
+        # ═════════════════════════════════════════════════════════════════
         #  NOMINAL / PRE_CONFLICT PHASE
-        # ══════════════════════════════════════════════════════════════════
+        # ═════════════════════════════════════════════════════════════════
 
         # Stale conflict check — if we've already navigated past conflict_time
         # safely, clear it so we don't stay in PRE_CONFLICT forever.
@@ -405,8 +450,22 @@ def test(seed=None, analyzer=None, obstacles=None):
               f"  concrete_until={concrete_until}  mpc_hz={mpc_horizon_until}"
               f"  conflict={conflict_time}  t_diverge={t_diverge}  [{phase}]{RESET}")
 
-        # ── P1: Ensure mpc_buffer[t+1] exists (critical for PSF check) ───
-        if t_next not in mpc_buffer:
+        # -- P1: Ensure mpc_buffer[t+1] exists (Safety Filter) --
+
+        # Skip P1 when we are inside the S-region passthrough.
+        # MPC will fail anyway if we are inside S (S is a hard constraint)
+        # Skip condition: only skip when t_diverge is ahead (passthrough active) AND
+        # bounds at t+1 are still inside S.  Once the robot exits S,
+        # P1 resumes so the RSOA check stays tight.
+        in_passthrough = (t_diverge is not None and t_diverge > t_next)
+        skip_p1 = False
+        if in_passthrough and t_next in tester.horizons:
+            _bound = tester.horizons[t_next].get_tight_bound()
+            if _bound is not None and collides_invariant(_bound, obstacles, turning_radius):
+                skip_p1 = True
+
+        # Normal P1 operations
+        if t_next not in mpc_buffer and not skip_p1:
             # Ensure concrete bounds exist at t+1
             if t_next not in tester.horizons:
                 concrete_scan(tester, concrete_until, t_next)
@@ -414,12 +473,12 @@ def test(seed=None, analyzer=None, obstacles=None):
             if t_next in tester.horizons and budget.remaining >= budget.mpc_cost:
                 valid = build_mpc_backup(mpc_sf, tester, mpc_buffer, t_next)
                 mpc_horizon_until = max(mpc_horizon_until, t_next)
-                if valid:
+                if valid and (t_diverge is None or t_next > t_diverge):
                     t_diverge = t_next
                 print(f"  [P1] mpc_buffer[{t_next}] = {'VALID' if valid else 'INFEASIBLE'}"
                       f"  t_diverge={t_diverge}")
 
-        # ── P2: Concrete scan forward (stop at conflict_time) ─────────────
+        # ---- P2: Concrete scan forward (stop at conflict_time) -----
         scan_ceil = conflict_time if conflict_time is not None else MAX_TIME
         while concrete_until < scan_ceil and budget.can_afford('concrete'):
             end = min(
@@ -438,10 +497,8 @@ def test(seed=None, analyzer=None, obstacles=None):
                 break
             concrete_until = end
 
-        # ── P3: MPC buffer forward toward conflict_time ───────────────────
+        # ---- P3: Build MPC buffer forward toward conflict_time -------
         if conflict_time is not None:
-            # Ensure mpc_horizon_until is at least current_timestep so we
-            # don't waste budget re-building stale past entries.
             mpc_horizon_until = max(mpc_horizon_until, current_timestep)
             while (mpc_horizon_until < conflict_time - 1
                    and budget.remaining >= budget.mpc_cost):
@@ -449,17 +506,44 @@ def test(seed=None, analyzer=None, obstacles=None):
                 if tau not in tester.horizons:
                     break
                 if mpc_buffer.get(mpc_horizon_until) is None:
-                    break  # last τ was infeasible — wall reached, don't go further
+                    wall_tau = mpc_horizon_until
+                    break
                 valid = build_mpc_backup(mpc_sf, tester, mpc_buffer, tau)
                 mpc_horizon_until = tau
                 if valid:
                     t_diverge = tau
                     print(f"  [P3] mpc_buffer[{tau}] VALID  t_diverge → {t_diverge}")
                 else:
-                    print(f"  [P3] mpc_buffer[{tau}] INFEASIBLE — stopping buffer build")
+                    print(f"  [P3] mpc_buffer[{tau}] INFEASIBLE — wall at tau={tau}")
+                    wall_tau = tau
                     break
 
-        # ── P4: Symbolic — continuous even after confirmation ─────────────
+        #  P3b: Passthrough scan beyond infeasible wall
+        # Only invoke when an S-region exists ahead (bounds overlap S but not raw
+        # obstacle)
+        if wall_tau is not None and budget.remaining >= budget.mpc_cost:
+            scan_limit = (min(conflict_time, concrete_until + 1)
+                          if conflict_time is not None
+                          else concrete_until + 1)
+            _has_S_ahead = any(
+                b is not None
+                and collides_invariant(b, obstacles, turning_radius)
+                and not collides_raw(b, obstacles)
+                for t in range(wall_tau, scan_limit)
+                for b in [_bounds_at(tester, t)]
+            )
+            if _has_S_ahead:
+                passthrough_td = scan_window(
+                    tester, mpc_sf, mpc_buffer, obstacles,
+                    wall_tau, scan_limit, budget, R=turning_radius)
+                if passthrough_td is not None:
+                    t_diverge = passthrough_td
+                    mpc_horizon_until = passthrough_td
+                    print(f"  [P3b] Passthrough t_diverge -> {t_diverge}")
+            else:
+                print(f"  [P3b] No S-region ahead of wall_tau={wall_tau} — skipping scan")
+
+        # ── P4: Symbolic. Still run even after confirmation
         if (pending_job is not None
                 and budget.can_afford('symbolic', 1)):
             print(f"  [P4] Symbolic: t={pending_job.symbolic_start} → t={pending_job.conflict_time}")
@@ -468,44 +552,46 @@ def test(seed=None, analyzer=None, obstacles=None):
 
             if result is not None:
                 if result["collision"]:
-                    # Confirmed or re-confirmed — refresh buffer with tighter bounds
-                    # Symbolic tightened bounds — drop only INFEASIBLE entries so
+                    # Symbolic tightened bounds so drop INFEASIBLE entries so
                     # P3 retries them with tighter bounds (may extend t_diverge).
-                    # VALID entries remain safe; no need to throw them away.
+                    # VALID entries remain safe
                     print(f"  [P4] Conflict confirmed at t={conflict_time} — retrying INFEASIBLE entries")
-                    for k in list(mpc_buffer.keys()):
-                        if k > current_timestep and mpc_buffer[k] is None:
-                            del mpc_buffer[k]
-                    # Recalculate t_diverge from remaining valid entries.
-                    # Include k == current_timestep: backup can still activate NOW (ctrl_idx=0).
-                    valid_keys = [k for k, v in mpc_buffer.items() if k >= current_timestep and v is not None]
-                    t_diverge = max(valid_keys) if valid_keys else None
+                    _purge_infeasible(mpc_buffer, current_timestep)
+                    # Pull mpc_horizon_until back to t_diverge so P3 re-scans the
+                    # purged gap with tightened bounds on the next iteration.
                     mpc_horizon_until = t_diverge if t_diverge is not None else current_timestep
                     # Reset job for continuous refinement
-                    pending_job = VerificationTask(current_timestep, conflict_time)
+                    pending_job       = VerificationTask(current_timestep, conflict_time)
                 else:
-                    # Deconflicted — clear conflict state but keep VALID buffer
+                    # Deconflicted -  clear conflict state but keep VALID buffer
                     # entries; they're still collision-free and serve as backups
                     # if a new conflict appears immediately after.
                     print(f"  [P4] Deconflicted! Clearing conflict state")
                     conflict_time = None
                     pending_job   = None
-                    for k in list(mpc_buffer.keys()):
-                        if k > current_timestep and mpc_buffer[k] is None:
-                            del mpc_buffer[k]
-                    valid_keys = [k for k, v in mpc_buffer.items() if k >= current_timestep and v is not None]
-                    t_diverge = max(valid_keys) if valid_keys else None
+                    _purge_infeasible(mpc_buffer, current_timestep)
                     mpc_horizon_until = t_diverge if t_diverge is not None else current_timestep
 
         # ══════════════════════════════════════════════════════════════════
         #  PSF DECISION: nominal or activate MPC backup
         # ══════════════════════════════════════════════════════════════════
         if psf_valid(mpc_buffer, t_next):
-            # PSF satisfied — nominal control is safe
+            # PSF satisfied —> nominal control is safe
             u_diffs.append(0.0)
             tester.real_state_empirical(current_timestep, t_next)
-            print(f"  [NOMINAL] t={current_timestep}  PSF OK (buffer[{t_next}] valid)"
+            print(f"  [PSF NOMINAL] t={current_timestep}  PSF OK (buffer[{t_next}] valid)"
                   f"  Budget: {budget.elapsed:.3f}s / {budget.timestep_budget:.3f}s")
+            current_timestep += 1
+
+        elif (t_diverge is not None and t_diverge > current_timestep
+                and psf_valid(mpc_buffer, t_diverge)):
+            # Passthrough: t_diverge is ahead — we're inside S but
+            # scan_window already verified no raw collision in the gap.
+            print(f"  [PSF PASSTHROUGH] t={current_timestep} inside S, "
+                  f"t_diverge={t_diverge} ahead — nominal safe"
+                  f"  Budget: {budget.elapsed:.3f}s / {budget.timestep_budget:.3f}s")
+            u_diffs.append(0.0)
+            tester.real_state_empirical(current_timestep, t_next)
             current_timestep += 1
 
         else:
@@ -553,6 +639,7 @@ def test(seed=None, analyzer=None, obstacles=None):
             else:
                 # No valid backup yet — mpc_buffer[t+1] not ready (P1 stalled)
                 # Apply nominal and warn; P1 will catch up next timestep.
+                # SHOULD NOT RUN IF WORKING!!!!!
                 print(f"{RED}[PSF] No backup available at t={current_timestep}"
                       f" (t_diverge={t_diverge}) — nominal fallback{RESET}")
                 u_diffs.append(0.0)
@@ -588,7 +675,6 @@ def test(seed=None, analyzer=None, obstacles=None):
     else:
         print(f"[SAFETY] No real-state collision detected")
     return state_history, had_collision, u_diffs, mpc_calls, mpc_over_budget
-
 
 if __name__ == "__main__":
     import sys

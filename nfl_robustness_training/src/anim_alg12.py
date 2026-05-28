@@ -13,8 +13,11 @@ from mpc_safety_filter_acados import make_mpc_safety_filter_acados as make_mpc_s
 from alg12_mpc_every_timestep import (
     concrete_scan, symbolic_step, VerificationTask,
     build_mpc_backup, psf_valid, extend_mpc_sequence,
+    collides_invariant, collides_raw, scan_window,
+    _purge_infeasible, _max_valid_diverge, _bounds_at,
 )
 from time_budget import TimeBudget
+import time
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -32,7 +35,10 @@ MAX_SYMBOLIC_HORIZON = 5
 
 
 _DEFAULT_OBSTACLES = [
-    np.array([-6,  1.5,  0.5]),
+    np.array([-4.3,  1,  0.5]),
+    np.array([-2,  -2,  0.5]),
+    np.array([-1,  0.5,  0.5]),
+    # np.array([-3.5,  0,  0.5]),
 ]
 
 _args = sys.argv[1:]
@@ -53,7 +59,11 @@ for o in obstacles:
 
 analyzer = setup_analyzer('Unicycle_NL', 'natural_none_default')
 tester   = ReachabilityTester(analyzer, obstacles, seed=_seed)
-mpc_sf   = make_mpc_safety_filter(tester, obstacles_list=obstacles, n_horizon=10, use_safety_radius=True)
+mpc_sf   = make_mpc_safety_filter(tester, obstacles_list=obstacles, n_horizon=12, use_safety_radius=True)
+
+v_nom = tester.analyzer.cl_system.dynamics.vt
+u_max = 1.0
+turning_radius = v_nom / u_max
 
 budget = TimeBudget(timestep_budget=0.2)
 budget.symbolic_costs = {
@@ -74,12 +84,18 @@ def snapshot_rsoa(tester):
         tb = horizon.get_tight_bound()
         if tb is not None:
             calc_type = "empirical"
+            real_state = None
             for calc_id in sorted(horizon.calculations.keys()):
-                calc_type = horizon.calculations[calc_id]["calc_type"].value
+                calc = horizon.calculations[calc_id]
+                calc_type = calc["calc_type"].value
+                if real_state is None and "real_state" in calc:
+                    rs = np.asarray(calc["real_state"]).flatten()
+                    real_state = (float(rs[0]), float(rs[1]))
             snap[t] = {
-                "x1":  (float(tb[0, 0]), float(tb[0, 1])),
-                "x2":  (float(tb[1, 0]), float(tb[1, 1])),
-                "type": calc_type,
+                "x1":        (float(tb[0, 0]), float(tb[0, 1])),
+                "x2":        (float(tb[1, 0]), float(tb[1, 1])),
+                "type":      calc_type,
+                "real_state": real_state,  # (x, y) or None
             }
     return snap
 
@@ -103,6 +119,7 @@ def _current_phase():
 
 
 def push(frames, current_t, label, origin="info"):
+    _t0 = time.perf_counter()
     frames.append((
         snapshot_rsoa(tester),
         _tdiv_traj(),          # t_diverge backup trajectory (pink preview)
@@ -113,6 +130,7 @@ def push(frames, current_t, label, origin="info"):
         list(mpc_traj_executed),  # accumulated MPC-executed bounds trail
         _current_phase(),      # actual simulation phase for badge
     ))
+    budget.exclude_elapsed(time.perf_counter() - _t0)
 
 
 # ── Module-level PSF state ──
@@ -122,6 +140,7 @@ mpc_horizon_until: int             = -1
 conflict_time:     Optional[int]   = None
 t_diverge:         Optional[int]   = None
 pending_job:       Optional[VerificationTask] = None
+wall_tau:          Optional[int]   = None
 
 mpc_state = {
     'committed_at':  None,
@@ -143,7 +162,8 @@ push(frames, 0, "t=0  initial", "info")
 
 while current_timestep < MAX_TIME:
     budget.start_timestep()
-    t_next = current_timestep + 1
+    t_next   = current_timestep + 1
+    wall_tau = None  # reset each iteration; P3 sets it if it hits INFEASIBLE
 
     # ══ MPC ACTIVE PHASE ═════════════════════════════════════════════════
     if mpc_started:
@@ -163,9 +183,7 @@ while current_timestep < MAX_TIME:
             if _t > current_timestep:
                 del tester.horizons[_t]
         concrete_until = current_timestep
-        _first = True
-        while _first or budget.can_afford('concrete'):
-            _first = False
+        while budget.can_afford('concrete'):
             if concrete_until >= MAX_TIME:
                 break
             # One concrete step
@@ -196,18 +214,19 @@ while current_timestep < MAX_TIME:
             mpc_state['needed']        = False
             mpc_state['committed_at']  = None
             mpc_state['conflict_time'] = None
-            # Keep conflict_time and pending_job — conflict is still real;
-            # only P4 symbolic deconfliction should clear them.
+            # Reset pending_job to start from the new post-MPC position.
+            # The old symbolic chain started from the pre-MPC nominal
+            # trajectory; those parent bounds no longer match the MPC-rebuilt
+            # horizons ahead, causing empty intersections.  conflict_time is
+            # kept — the conflict may still exist; P4 will re-verify from here.
+            pending_job = (VerificationTask(t_next, conflict_time)
+                           if conflict_time is not None else None)
             # Only clear INFEASIBLE (None) entries beyond t_next. VALID entries
             # were built from nominal-trajectory concrete bounds (concrete_scan
             # always uses nominal dynamics) so they remain valid safety backups
             # now that we are reverting to nominal control.
-            for _k in list(mpc_buffer.keys()):
-                if _k > t_next and mpc_buffer[_k] is None:
-                    del mpc_buffer[_k]
-            valid_keys = [k for k, v in mpc_buffer.items()
-                          if k >= current_timestep and v is not None]
-            t_diverge         = max(valid_keys) if valid_keys else None
+            _purge_infeasible(mpc_buffer, t_next)
+            t_diverge         = _max_valid_diverge(mpc_buffer, current_timestep)
             mpc_horizon_until = t_diverge if t_diverge is not None else t_next
             concrete_until             = t_next
             tester.real_state_empirical(current_timestep, t_next)
@@ -245,14 +264,23 @@ while current_timestep < MAX_TIME:
          f"  t_div={t_diverge}  [{phase}]", "info")
 
     # P1 — Ensure mpc_buffer[t+1]
-    if t_next not in mpc_buffer:
+    # Skip P1 when inside S-region passthrough: MPC would be INFEASIBLE anyway.
+    # Saves ~0.034 s so the symbolic budget fires in 2 timesteps instead of 3.
+    # Gate reopens as soon as bounds at t+1 exit S.
+    _in_passthrough = (t_diverge is not None and t_diverge > t_next)
+    _skip_p1 = False
+    if _in_passthrough and t_next in tester.horizons:
+        _b = tester.horizons[t_next].get_tight_bound()
+        if _b is not None and collides_invariant(_b, obstacles, turning_radius):
+            _skip_p1 = True
+    if t_next not in mpc_buffer and not _skip_p1:
         if t_next not in tester.horizons:
             concrete_scan(tester, concrete_until, t_next)
             concrete_until = max(concrete_until, t_next)
         if t_next in tester.horizons and budget.remaining >= budget.mpc_cost:
             valid = build_mpc_backup(mpc_sf, tester, mpc_buffer, t_next)
             mpc_horizon_until = max(mpc_horizon_until, t_next)
-            if valid:
+            if valid and (t_diverge is None or t_next > t_diverge):
                 t_diverge = t_next
             push(frames, current_timestep,
                  f"t={current_timestep}  [P1] mpc_buffer[{t_next}]="
@@ -287,7 +315,8 @@ while current_timestep < MAX_TIME:
             if buf_t not in tester.horizons:
                 break
             if mpc_buffer.get(mpc_horizon_until) is None:
-                break  # infeasible wall — don't extend further
+                wall_tau = mpc_horizon_until
+                break
             valid = build_mpc_backup(mpc_sf, tester, mpc_buffer, buf_t)
             mpc_horizon_until = buf_t
             push(frames, current_timestep,
@@ -296,7 +325,33 @@ while current_timestep < MAX_TIME:
             if valid:
                 t_diverge = buf_t
             else:
+                wall_tau = buf_t
                 break
+
+    # P3b — Passthrough scan beyond infeasible wall
+    # Only invoke when an S-region exists ahead (bounds overlap S but not raw
+    # obstacle). Checks all τ in scan range — wall_tau itself may be outside S
+    # (n_horizon failure) while the actual S-region starts a few steps later.
+    if wall_tau is not None and budget.remaining >= budget.mpc_cost:
+        scan_limit = (min(conflict_time, concrete_until + 1)
+                      if conflict_time is not None
+                      else concrete_until + 1)
+        _has_S_ahead = any(
+            b is not None
+            and collides_invariant(b, obstacles, turning_radius)
+            and not collides_raw(b, obstacles)
+            for t in range(wall_tau, scan_limit)
+            for b in [_bounds_at(tester, t)]
+        )
+        if _has_S_ahead:
+            passthrough_td = scan_window(
+                tester, mpc_sf, mpc_buffer, obstacles,
+                wall_tau, scan_limit, budget, R=turning_radius)
+            if passthrough_td is not None:
+                t_diverge = passthrough_td
+                mpc_horizon_until = passthrough_td
+                push(frames, current_timestep,
+                     f"t={current_timestep}  [P3b] Passthrough t_div -> {t_diverge}", "mpc")
 
     # P4 — Symbolic (continuous)
     if pending_job is not None and budget.can_afford('symbolic', 1):
@@ -313,24 +368,18 @@ while current_timestep < MAX_TIME:
                      f" — refreshing buffer", "baseline")
                 # Symbolic tightened bounds — drop only INFEASIBLE entries so
                 # P3 retries them. VALID entries remain safe.
-                for k in list(mpc_buffer.keys()):
-                    if k > current_timestep and mpc_buffer[k] is None:
-                        del mpc_buffer[k]
-                valid_keys = [k for k, v in mpc_buffer.items() if k >= current_timestep and v is not None]
-                t_diverge = max(valid_keys) if valid_keys else None
+                _purge_infeasible(mpc_buffer, current_timestep)
+                # Pull mpc_horizon_until back to t_diverge so P3 re-scans the
+                # purged gap with tightened bounds on the next iteration.
                 mpc_horizon_until = t_diverge if t_diverge is not None else current_timestep
-                pending_job = VerificationTask(current_timestep, conflict_time)
+                pending_job       = VerificationTask(current_timestep, conflict_time)
                 push(frames, current_timestep,
                      f"t={current_timestep}  [P4] confirmed — kept VALID entries"
                      f"  t_div={t_diverge}  mpc_hz={mpc_horizon_until}", "mpc")
             else:
                 conflict_time = None
                 pending_job   = None
-                for k in list(mpc_buffer.keys()):
-                    if k > current_timestep and mpc_buffer[k] is None:
-                        del mpc_buffer[k]
-                valid_keys = [k for k, v in mpc_buffer.items() if k >= current_timestep and v is not None]
-                t_diverge = max(valid_keys) if valid_keys else None
+                _purge_infeasible(mpc_buffer, current_timestep)
                 mpc_horizon_until = t_diverge if t_diverge is not None else current_timestep
                 push(frames, current_timestep,
                      f"t={current_timestep}  [P4] ✓ deconflicted — kept VALID entries"
@@ -339,11 +388,21 @@ while current_timestep < MAX_TIME:
     # ══ PSF DECISION ════════════════════════════════════════════════════
     if psf_valid(mpc_buffer, t_next):
         push(frames, current_timestep,
-             f"t={current_timestep}  [NOMINAL] PSF OK — mpc_buffer[{t_next}] valid", "info")
+             f"t={current_timestep}  [PSF NOMINAL] PSF OK — mpc_buffer[{t_next}] valid", "info")
         tester.real_state_empirical(current_timestep, t_next)
         current_timestep += 1
         push(frames, current_timestep,
              f"t={current_timestep}  nominal step  t_div={t_diverge}", "info")
+
+    elif (t_diverge is not None and t_diverge > current_timestep
+            and psf_valid(mpc_buffer, t_diverge)):
+        push(frames, current_timestep,
+             f"t={current_timestep}  [PSF PASSTHROUGH] inside S, t_div={t_diverge} ahead"
+             f" — nominal safe", "info")
+        tester.real_state_empirical(current_timestep, t_next)
+        current_timestep += 1
+        push(frames, current_timestep,
+             f"t={current_timestep}  nominal step (passthrough)  t_div={t_diverge}", "info")
 
     else:
         if t_diverge is not None and psf_valid(mpc_buffer, t_diverge):
@@ -541,15 +600,23 @@ def update(frame_idx):
                           color="#ec4899", fontsize=8, fontfamily="monospace", zorder=7)
             dynamic_artists.append(lbl)
 
-    # Blue dot at current timestep
+    # Real-state dot at current timestep (green = real position; blue = RSOA center fallback)
     if ct in snap:
         entry = snap[ct]
-        if all(np.isfinite(v) for v in [*entry["x1"], *entry["x2"]]):
+        rs = entry.get("real_state")
+        if rs is not None:
+            cxd, cyd = rs[0], rs[1]
+            dot_color = "#16a34a"   # green — actual Kalman state
+        elif all(np.isfinite(v) for v in [*entry["x1"], *entry["x2"]]):
             cxd = sum(entry["x1"]) / 2; cyd = sum(entry["x2"]) / 2
-            dot = ax.plot(cxd, cyd, "o", color="#3b82f6", markersize=8, zorder=6)[0]
+            dot_color = "#3b82f6"   # blue — RSOA center (no real state available)
+        else:
+            cxd = cyd = None
+        if cxd is not None:
+            dot = ax.plot(cxd, cyd, "o", color=dot_color, markersize=8, zorder=6)[0]
             dynamic_artists.append(dot)
             lbl = ax.text(cxd + 0.05, cyd + 0.04, f"t={ct}",
-                          color="#3b82f6", fontsize=9, fontfamily="monospace", zorder=6)
+                          color=dot_color, fontsize=9, fontfamily="monospace", zorder=6)
             dynamic_artists.append(lbl)
 
     # State badge — driven by actual simulation phase, not per-frame origin
@@ -579,7 +646,7 @@ legend_els = [
     Patch(facecolor="#f9a8d4", alpha=0.30, edgecolor="#ec4899",
           linewidth=0.8, linestyle="--", label="PSF backup (t_diverge)"),
     Patch(facecolor="#ef4444", alpha=0.5,  edgecolor="#ef4444", label="Obstacle"),
-    Line2D([0], [0], marker="o",  color="#3b82f6", ls="", markersize=6, label="Current t"),
+    Line2D([0], [0], marker="o",  color="#16a34a", ls="", markersize=6, label="Real state (t)"),
     Line2D([0], [0], marker="*",  color="#ec4899", ls="", markersize=8, label="t_diverge"),
 ]
 ax.legend(handles=legend_els, loc="upper right", fontsize=8,
@@ -600,7 +667,7 @@ for i in range(len(frames)):
         print(f"  {i}/{len(frames)} rendered...")
     update(i)
     buf = io.BytesIO()
-    fig.savefig(buf, format='png', dpi=50)
+    fig.savefig(buf, format='png', dpi=100)
     buf.seek(0)
     images.append(imageio.v2.imread(buf))
 
