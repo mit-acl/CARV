@@ -37,18 +37,6 @@ RESET   = "\033[0m"
 
 # ── Shared helpers (identical to alg11) ────────────────────────────────────
 
-def _get_nn_control(tester, timestep):
-    """Query NN nominal control at the real state stored in horizons[timestep]."""
-    h = tester.horizons.get(timestep)
-    if h is None:
-        return None
-    calc = next((c for c in h.calculations.values() if 'real_state' in c), None)
-    if calc is None:
-        return None
-    state  = np.asarray(calc['real_state']).reshape(1, -1)
-    cl_sys = tester.analyzer.cl_system
-    return np.asarray(cl_sys.dynamics.control_nn(state, cl_sys.controller.cpu())).flatten()
-
 
 class VerificationTask:
     """Represents an in-progress symbolic verification toward conflict_time."""
@@ -314,13 +302,13 @@ def test(seed=None, analyzer=None, obstacles=None):
     print(tester.horizons[0])
 
     # ── PSF buffer state ───────────────────────────────────────────────────
-    mpc_buffer:        dict                      = {}   # τ → (controls, traj_bounds) | None
+    mpc_buffer:        dict                      = {}   # tau -> (controls, traj_bounds) | None
     concrete_until:    int                       = 0
-    mpc_horizon_until: int                       = -1   # last τ MPC was attempted
+    mpc_horizon_until: int                       = -1   # last tau MPC was attempted
     conflict_time:     Optional[int]             = None
     t_diverge:         Optional[int]             = None
     pending_job:       Optional[VerificationTask] = None
-    wall_tau:          Optional[int]             = None   # first INFEASIBLE τ hit in P3; reset each iteration
+    wall_tau:          Optional[int]             = None   # first INFEASIBLE tau hit in P3; reset each iteration
 
     # ── MPC execution state (mirrors alg11) ───────────────────────────────
     mpc_state = {
@@ -333,9 +321,6 @@ def test(seed=None, analyzer=None, obstacles=None):
     mpc_started      = False
 
     current_timestep = 0
-    u_diffs          = []
-    mpc_calls        = 0   # number of PSF activations
-    mpc_over_budget  = 0   # timesteps where elapsed > timestep_budget
 
     while current_timestep < MAX_TIME:
         budget.start_timestep()
@@ -352,7 +337,7 @@ def test(seed=None, analyzer=None, obstacles=None):
             ctrl_idx = current_timestep - mpc_state['committed_at']
             queue    = mpc_state['controls']
 
-            # Extend queue whenever ≤ n_horizon mpc controls remain (mirrors alg11)
+            # Extend queue whenever <= n_horizon mpc controls remain (mirrors alg11)
             if len(queue) - ctrl_idx <= mpc_sf.n_horizon:
                 extend_mpc_sequence(mpc_sf, mpc_state, mpc_sf.n_horizon, MAX_TIME,
                                     ctrl_idx=ctrl_idx, budget=budget)
@@ -410,7 +395,6 @@ def test(seed=None, analyzer=None, obstacles=None):
                 t_diverge         = _max_valid_diverge(mpc_buffer, current_timestep)
                 mpc_horizon_until = t_diverge if t_diverge is not None else t_next
                 concrete_until    = t_next
-                u_diffs.append(0.0)
                 tester.real_state_empirical(current_timestep, t_next)
                 print(f"  Budget: {budget.elapsed:.3f}s / {budget.timestep_budget:.3f}s")
                 current_timestep += 1
@@ -426,8 +410,6 @@ def test(seed=None, analyzer=None, obstacles=None):
             print(f"{MAGENTA}[MPC] t={current_timestep}  idx={ctrl_idx}/{len(queue)-1}"
                   f"  u={np.round(ctrl, 4)}  (plan from t={mpc_state['committed_at']})"
                   f"  Budget: {budget.elapsed:.3f}s / {budget.timestep_budget:.3f}s{RESET}")
-            u_nn = _get_nn_control(tester, current_timestep)
-            u_diffs.append(float(np.abs(ctrl[0] - u_nn[0])) if u_nn is not None else 0.0)
             tester.real_state_mpc(current_timestep, ctrl)
             current_timestep += 1
             continue
@@ -577,7 +559,6 @@ def test(seed=None, analyzer=None, obstacles=None):
         # ══════════════════════════════════════════════════════════════════
         if psf_valid(mpc_buffer, t_next):
             # PSF satisfied —> nominal control is safe
-            u_diffs.append(0.0)
             tester.real_state_empirical(current_timestep, t_next)
             print(f"  [PSF NOMINAL] t={current_timestep}  PSF OK (buffer[{t_next}] valid)"
                   f"  Budget: {budget.elapsed:.3f}s / {budget.timestep_budget:.3f}s")
@@ -590,7 +571,6 @@ def test(seed=None, analyzer=None, obstacles=None):
             print(f"  [PSF PASSTHROUGH] t={current_timestep} inside S, "
                   f"t_diverge={t_diverge} ahead — nominal safe"
                   f"  Budget: {budget.elapsed:.3f}s / {budget.timestep_budget:.3f}s")
-            u_diffs.append(0.0)
             tester.real_state_empirical(current_timestep, t_next)
             current_timestep += 1
 
@@ -604,7 +584,6 @@ def test(seed=None, analyzer=None, obstacles=None):
                 mpc_state['traj_bounds']   = list(traj_bounds)
                 mpc_state['needed']        = True
                 mpc_started                = True
-                mpc_calls                 += 1
 
                 ctrl_idx = current_timestep - t_diverge
                 queue    = mpc_state['controls']
@@ -613,8 +592,6 @@ def test(seed=None, analyzer=None, obstacles=None):
                     print(f"{RED}[PSF ACTIVATE] t={current_timestep}  PSF failed —"
                           f" backup from t_diverge={t_diverge}"
                           f"  ctrl_idx={ctrl_idx}  u={np.round(ctrl, 4)}{RESET}")
-                    u_nn = _get_nn_control(tester, current_timestep)
-                    u_diffs.append(float(np.abs(ctrl[0] - u_nn[0])) if u_nn is not None else 0.0)
                     tester.real_state_mpc(current_timestep, ctrl)
                     current_timestep += 1
                 else:
@@ -626,14 +603,10 @@ def test(seed=None, analyzer=None, obstacles=None):
                     queue = mpc_state['controls']
                     if ctrl_idx < len(queue):
                         ctrl = queue[ctrl_idx]
-                        u_nn = _get_nn_control(tester, current_timestep)
-                        u_diffs.append(
-                            float(np.abs(ctrl[0] - u_nn[0])) if u_nn is not None else 0.0)
                         tester.real_state_mpc(current_timestep, ctrl)
                         current_timestep += 1
                     else:
                         print(f"[PSF] Cannot activate — queue still empty. Nominal fallback.")
-                        u_diffs.append(0.0)
                         tester.real_state_empirical(current_timestep, t_next)
                         current_timestep += 1
             else:
@@ -642,12 +615,9 @@ def test(seed=None, analyzer=None, obstacles=None):
                 # SHOULD NOT RUN IF WORKING!!!!!
                 print(f"{RED}[PSF] No backup available at t={current_timestep}"
                       f" (t_diverge={t_diverge}) — nominal fallback{RESET}")
-                u_diffs.append(0.0)
                 tester.real_state_empirical(current_timestep, t_next)
                 current_timestep += 1
 
-        if budget.elapsed > budget.timestep_budget:
-            mpc_over_budget += 1
 
     # ── Collect state history and check real-state collisions ─────────────
     state_history = []
@@ -674,7 +644,7 @@ def test(seed=None, analyzer=None, obstacles=None):
         print(f"[SAFETY] COLLISION at real-state timesteps: {collision_timesteps}")
     else:
         print(f"[SAFETY] No real-state collision detected")
-    return state_history, had_collision, u_diffs, mpc_calls, mpc_over_budget
+    return state_history, had_collision
 
 if __name__ == "__main__":
     import sys
