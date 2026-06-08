@@ -35,7 +35,20 @@ CYAN    = "\033[36m"
 RESET   = "\033[0m"
 
 
-# ── Shared helpers (identical to alg11) ────────────────────────────────────
+# ── Shared helpers ─────────────────────────────────────────────────────────
+
+
+def _get_nn_control(tester, timestep):
+    """Query NN nominal control at the real state stored in horizons[timestep]."""
+    h = tester.horizons.get(timestep)
+    if h is None:
+        return None
+    calc = next((c for c in h.calculations.values() if 'real_state' in c), None)
+    if calc is None:
+        return None
+    state  = np.asarray(calc['real_state']).reshape(1, -1)
+    cl_sys = tester.analyzer.cl_system
+    return np.asarray(cl_sys.dynamics.control_nn(state, cl_sys.controller.cpu())).flatten()
 
 
 class VerificationTask:
@@ -196,10 +209,12 @@ def _bounds_at(tester, t):
     return h.get_tight_bound() if h is not None else None
 
 
-def collides_invariant(bounds: np.ndarray, obstacles: list,
-                       R: float = 1.0) -> bool:
-    """Overlap against the invariant safe set S = sqrt(r^2 + 2rR).
-    r is radius of obstacle, R is curvature radius. R = 1 for current dynamics
+def collides_danger(bounds: np.ndarray, obstacles: list,
+                    R: float = 1.0) -> bool:
+    """Overlap against the danger / uncertainty region S = sqrt(r^2 + 2rR).
+    S is the inflated obstacle radius where MPC can't guarantee avoidance;
+    outside S is the invariant safe region. r = obstacle radius,
+    R = curvature radius. R = 1 for current dynamics.
     """
     return any(_box_circle_overlap(bounds, obs[0], obs[1],
                                    np.sqrt(obs[2]**2 + 2 * obs[2] * R))
@@ -216,7 +231,7 @@ def scan_window(tester, mpc_sf, mpc_buffer: dict, obstacles: list,
                      wall_tau: int, scan_limit: int, budget,
                      R: float = 1.0) -> Optional[int]:
     """
-    Scan beyond an MPC INFEASIBLE "wall" to find a window otuside of invariant set S.
+    Scan beyond an MPC INFEASIBLE "wall" to find a window outside the danger region S.
     Returns new t_diverge if a valid MPC backup is found outside S, else None.
 
     scan limit is either
@@ -232,7 +247,7 @@ def scan_window(tester, mpc_sf, mpc_buffer: dict, obstacles: list,
         if collides_raw(bounds, obstacles):
             print(f"  [Scan window] tau={tau} collides with raw obstacle — abort")
             return None
-        if not collides_invariant(bounds, obstacles, R):
+        if not collides_danger(bounds, obstacles, R):
             if tau in mpc_buffer:
                 if mpc_buffer[tau] is not None:
                     print(f"  [Scan window] tau={tau} already VALID in buffer")
@@ -321,6 +336,9 @@ def test(seed=None, analyzer=None, obstacles=None):
     mpc_started      = False
 
     current_timestep = 0
+    u_diffs          = []   # |u_mpc - u_nn| per timestep; 0.0 when nominal
+    mpc_calls        = 0    # number of PSF activations
+    mpc_over_budget  = 0    # timesteps where elapsed > timestep_budget
 
     while current_timestep < MAX_TIME:
         budget.start_timestep()
@@ -395,6 +413,7 @@ def test(seed=None, analyzer=None, obstacles=None):
                 t_diverge         = _max_valid_diverge(mpc_buffer, current_timestep)
                 mpc_horizon_until = t_diverge if t_diverge is not None else t_next
                 concrete_until    = t_next
+                u_diffs.append(0.0)
                 tester.real_state_empirical(current_timestep, t_next)
                 print(f"  Budget: {budget.elapsed:.3f}s / {budget.timestep_budget:.3f}s")
                 current_timestep += 1
@@ -410,6 +429,8 @@ def test(seed=None, analyzer=None, obstacles=None):
             print(f"{MAGENTA}[MPC] t={current_timestep}  idx={ctrl_idx}/{len(queue)-1}"
                   f"  u={np.round(ctrl, 4)}  (plan from t={mpc_state['committed_at']})"
                   f"  Budget: {budget.elapsed:.3f}s / {budget.timestep_budget:.3f}s{RESET}")
+            u_nn = _get_nn_control(tester, current_timestep)
+            u_diffs.append(float(np.abs(ctrl[0] - u_nn[0])) if u_nn is not None else 0.0)
             tester.real_state_mpc(current_timestep, ctrl)
             current_timestep += 1
             continue
@@ -443,7 +464,7 @@ def test(seed=None, analyzer=None, obstacles=None):
         skip_p1 = False
         if in_passthrough and t_next in tester.horizons:
             _bound = tester.horizons[t_next].get_tight_bound()
-            if _bound is not None and collides_invariant(_bound, obstacles, turning_radius):
+            if _bound is not None and collides_danger(_bound, obstacles, turning_radius):
                 skip_p1 = True
 
         # Normal P1 operations
@@ -509,7 +530,7 @@ def test(seed=None, analyzer=None, obstacles=None):
                           else concrete_until + 1)
             _has_S_ahead = any(
                 b is not None
-                and collides_invariant(b, obstacles, turning_radius)
+                and collides_danger(b, obstacles, turning_radius)
                 and not collides_raw(b, obstacles)
                 for t in range(wall_tau, scan_limit)
                 for b in [_bounds_at(tester, t)]
@@ -559,6 +580,7 @@ def test(seed=None, analyzer=None, obstacles=None):
         # ══════════════════════════════════════════════════════════════════
         if psf_valid(mpc_buffer, t_next):
             # PSF satisfied —> nominal control is safe
+            u_diffs.append(0.0)
             tester.real_state_empirical(current_timestep, t_next)
             print(f"  [PSF NOMINAL] t={current_timestep}  PSF OK (buffer[{t_next}] valid)"
                   f"  Budget: {budget.elapsed:.3f}s / {budget.timestep_budget:.3f}s")
@@ -571,6 +593,7 @@ def test(seed=None, analyzer=None, obstacles=None):
             print(f"  [PSF PASSTHROUGH] t={current_timestep} inside S, "
                   f"t_diverge={t_diverge} ahead — nominal safe"
                   f"  Budget: {budget.elapsed:.3f}s / {budget.timestep_budget:.3f}s")
+            u_diffs.append(0.0)
             tester.real_state_empirical(current_timestep, t_next)
             current_timestep += 1
 
@@ -584,6 +607,7 @@ def test(seed=None, analyzer=None, obstacles=None):
                 mpc_state['traj_bounds']   = list(traj_bounds)
                 mpc_state['needed']        = True
                 mpc_started                = True
+                mpc_calls                 += 1
 
                 ctrl_idx = current_timestep - t_diverge
                 queue    = mpc_state['controls']
@@ -592,6 +616,8 @@ def test(seed=None, analyzer=None, obstacles=None):
                     print(f"{RED}[PSF ACTIVATE] t={current_timestep}  PSF failed —"
                           f" backup from t_diverge={t_diverge}"
                           f"  ctrl_idx={ctrl_idx}  u={np.round(ctrl, 4)}{RESET}")
+                    u_nn = _get_nn_control(tester, current_timestep)
+                    u_diffs.append(float(np.abs(ctrl[0] - u_nn[0])) if u_nn is not None else 0.0)
                     tester.real_state_mpc(current_timestep, ctrl)
                     current_timestep += 1
                 else:
@@ -603,10 +629,13 @@ def test(seed=None, analyzer=None, obstacles=None):
                     queue = mpc_state['controls']
                     if ctrl_idx < len(queue):
                         ctrl = queue[ctrl_idx]
+                        u_nn = _get_nn_control(tester, current_timestep)
+                        u_diffs.append(float(np.abs(ctrl[0] - u_nn[0])) if u_nn is not None else 0.0)
                         tester.real_state_mpc(current_timestep, ctrl)
                         current_timestep += 1
                     else:
                         print(f"[PSF] Cannot activate — queue still empty. Nominal fallback.")
+                        u_diffs.append(0.0)
                         tester.real_state_empirical(current_timestep, t_next)
                         current_timestep += 1
             else:
@@ -615,8 +644,12 @@ def test(seed=None, analyzer=None, obstacles=None):
                 # SHOULD NOT RUN IF WORKING!!!!!
                 print(f"{RED}[PSF] No backup available at t={current_timestep}"
                       f" (t_diverge={t_diverge}) — nominal fallback{RESET}")
+                u_diffs.append(0.0)
                 tester.real_state_empirical(current_timestep, t_next)
                 current_timestep += 1
+
+        if budget.elapsed > budget.timestep_budget:
+            mpc_over_budget += 1
 
 
     # ── Collect state history and check real-state collisions ─────────────
@@ -644,7 +677,9 @@ def test(seed=None, analyzer=None, obstacles=None):
         print(f"[SAFETY] COLLISION at real-state timesteps: {collision_timesteps}")
     else:
         print(f"[SAFETY] No real-state collision detected")
-    return state_history, had_collision
+    print(f"  mpc_calls={mpc_calls}  mpc_over_budget={mpc_over_budget}"
+          f"  max_u_diff={max(u_diffs, default=0):.3f}")
+    return state_history, had_collision, u_diffs, mpc_calls, mpc_over_budget
 
 if __name__ == "__main__":
     import sys

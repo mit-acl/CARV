@@ -4,7 +4,8 @@ Algorithm 13
 This is a DI-equivalent of alg12_mpc_every_timestep.py:
 
 Changes
-  - Use a parabola p >= 0.5 * max(0, v^2) as the invariant safe set S
+  - Use a parabola p >= 0.5 * max(0, v^2) as the danger / uncertainty region S
+    (outside S is the invariant safe region)
   - Circular-obstacle / S-region / passthrough machinery is REMOVED;
     half-planes have no S-region to traverse. once robot is inside S region, it cannot get out
 
