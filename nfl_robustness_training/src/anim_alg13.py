@@ -6,7 +6,7 @@ Animation for alg13 — DI Predictive Safety Filter (PSF)
 from REAL_integrated_sim import setup_analyzer, ReachabilityTester
 from mpc_safety_filter_acados import make_mpc_safety_filter_acados as make_mpc_safety_filter
 from alg12_mpc_every_timestep import (
-    concrete_scan, symbolic_step, VerificationTask,
+    concrete_scan, symbolic_step, RefinementTask,
     build_mpc_backup, psf_valid, extend_mpc_sequence,
     _purge_infeasible,
 )
@@ -123,7 +123,7 @@ def push(frames, current_t, label, origin="info"):
         current_t,
         label,
         origin,
-        list(mpc_traj_executed),
+        set(mpc_applied),
         _current_phase(),
     ))
     budget.exclude_elapsed(time.perf_counter() - _t0)
@@ -135,7 +135,7 @@ concrete_until:    int           = 0
 mpc_horizon_until: int           = -1
 conflict_time:     Optional[int] = None
 t_diverge:         Optional[int] = None
-pending_job:       Optional[VerificationTask] = None
+pending_job:       Optional[RefinementTask] = None
 wall_tau:          Optional[int] = None
 
 mpc_state = {
@@ -145,8 +145,10 @@ mpc_state = {
     'traj_bounds':   [],
     'needed':        False,
 }
-mpc_started       = False
-mpc_traj_executed = []
+mpc_started  = False
+# Set of timesteps where MPC control was applied.
+# Used to replace the Kalman/green RSOA with a pink one for those steps.
+mpc_applied: set = set()
 
 
 # ── Simulation with frame capture ──
@@ -205,7 +207,7 @@ while current_timestep < MAX_TIME:
             mpc_state['needed']        = False
             mpc_state['committed_at']  = None
             mpc_state['conflict_time'] = None
-            pending_job = (VerificationTask(t_next, conflict_time)
+            pending_job = (RefinementTask(t_next, conflict_time)
                            if conflict_time is not None else None)
             _purge_infeasible(mpc_buffer, t_next)
             mpc_horizon_until = t_diverge if t_diverge is not None else t_next
@@ -221,8 +223,7 @@ while current_timestep < MAX_TIME:
                  f"t={current_timestep}  [MPC] ERROR queue exhausted — ABORT", "mpc")
             break
         ctrl = queue[ctrl_idx]
-        if ctrl_idx + 1 < len(mpc_state['traj_bounds']):
-            mpc_traj_executed.append(mpc_state['traj_bounds'][ctrl_idx + 1].copy())
+        mpc_applied.add(current_timestep)
         push(frames, current_timestep,
              f"t={current_timestep}  [MPC] idx={ctrl_idx}/{len(queue)-1}"
              f"  u={np.round(ctrl, 4)}  (plan from t={mpc_state['committed_at']})", "mpc")
@@ -265,7 +266,7 @@ while current_timestep < MAX_TIME:
                 conflict_time = ct
                 scan_ceil     = ct
                 if pending_job is None:
-                    pending_job = VerificationTask(current_timestep, conflict_time)
+                    pending_job = RefinementTask(current_timestep, conflict_time)
             concrete_until = ct
             push(frames, current_timestep,
                  f"t={current_timestep}  [P2] concrete →{ct}  ⚠ conflict@{conflict_time}",
@@ -309,7 +310,7 @@ while current_timestep < MAX_TIME:
             if result["collision"]:
                 _purge_infeasible(mpc_buffer, current_timestep)
                 mpc_horizon_until = t_diverge if t_diverge is not None else current_timestep
-                pending_job       = VerificationTask(current_timestep, conflict_time)
+                pending_job       = RefinementTask(current_timestep, conflict_time)
                 push(frames, current_timestep,
                      f"t={current_timestep}  [P4] confirmed — kept VALID entries"
                      f"  t_div={t_diverge}  mpc_hz={mpc_horizon_until}", "mpc")
@@ -343,8 +344,7 @@ while current_timestep < MAX_TIME:
             ctrl_idx = current_timestep - t_diverge
             if ctrl_idx < len(controls):
                 ctrl = controls[ctrl_idx]
-                if ctrl_idx + 1 < len(traj_bounds):
-                    mpc_traj_executed.append(traj_bounds[ctrl_idx + 1].copy())
+                mpc_applied.add(current_timestep)
                 push(frames, current_timestep,
                      f"t={current_timestep}  [PSF ACTIVATE] PSF failed —"
                      f" backup t_div={t_diverge}  ctrl_idx={ctrl_idx}"
@@ -357,6 +357,8 @@ while current_timestep < MAX_TIME:
                 queue = mpc_state['controls']
                 if ctrl_idx < len(queue):
                     ctrl = queue[ctrl_idx]
+                    if ctrl_idx < len(mpc_state['traj_bounds']):
+                        mpc_applied[current_timestep] = mpc_state['traj_bounds'][ctrl_idx].copy()
                     push(frames, current_timestep,
                          f"t={current_timestep}  [PSF ACTIVATE extended]"
                          f"  u={np.round(ctrl, 4)}", "mpc")
@@ -463,7 +465,7 @@ def update(frame_idx):
         a.remove()
     dynamic_artists.clear()
 
-    snap, tdiv_traj, tdiv, ct, label, origin, mpc_exec_trail, phase = frames[frame_idx]
+    snap, tdiv_traj, tdiv, ct, label, origin, mpc_applied_snap, phase = frames[frame_idx]
     title.set_text(label)
 
     if origin != "info":
@@ -473,11 +475,39 @@ def update(frame_idx):
 
     # RSOA boxes
     for t, entry in sorted(snap.items()):
+        p_lo_s, p_hi_s = entry["p"]
+        v_lo_s, v_hi_s = entry["v"]
+
+        # MPC-controlled timesteps: draw pink RSOA using the actual snap bounds
+        # (same size as the Kalman box — avoids inflation from traj_bounds propagation).
+        if t in mpc_applied_snap:
+            p_lo, p_hi = p_lo_s, p_hi_s
+            v_lo, v_hi = v_lo_s, v_hi_s
+            if all(np.isfinite(x) and abs(x) < _BOUND_LIMIT
+                   for x in [p_lo, p_hi, v_lo, v_hi]):
+                p_lo = max(p_lo, p_min); p_hi = min(p_hi, p_max)
+                v_lo = max(v_lo, v_min_ax); v_hi = min(v_hi, v_max_ax)
+                if p_hi > p_lo and v_hi > v_lo:
+                    r = patches.Rectangle(
+                        (p_lo, v_lo), p_hi - p_lo, v_hi - v_lo,
+                        linewidth=1.5, linestyle="-",
+                        edgecolor=MPC_EXEC_COLOR["ec"], facecolor=MPC_EXEC_COLOR["fc"],
+                        alpha=MPC_EXEC_COLOR["fa"], zorder=4,
+                    )
+                    ax.add_patch(r)
+                    dynamic_artists.append(r)
+                    txt = ax.text((p_lo + p_hi) / 2, (v_lo + v_hi) / 2, str(t),
+                                  fontsize=6, color=MPC_EXEC_COLOR["ec"],
+                                  alpha=0.85, ha="center", va="center", zorder=5,
+                                  fontfamily="monospace")
+                    dynamic_artists.append(txt)
+            continue  # skip normal Kalman rendering for this timestep
+
         fill = RSOA_FILL.get(entry["type"], RSOA_FILL["concrete"])
         bdr  = ORIGIN_BORDER.get(t_origin.get(t, "baseline"), ORIGIN_BORDER["baseline"])
 
-        p_lo, p_hi = entry["p"]
-        v_lo, v_hi = entry["v"]
+        p_lo, p_hi = p_lo_s, p_hi_s
+        v_lo, v_hi = v_lo_s, v_hi_s
         if not all(np.isfinite(x) and abs(x) < _BOUND_LIMIT
                    for x in [p_lo, p_hi, v_lo, v_hi]):
             continue
@@ -514,24 +544,6 @@ def update(frame_idx):
             linewidth=1.0, linestyle="--",
             edgecolor=MPC_BUF_COLOR["ec"], facecolor=MPC_BUF_COLOR["fc"],
             alpha=MPC_BUF_COLOR["fa"], zorder=5,
-        )
-        ax.add_patch(r)
-        dynamic_artists.append(r)
-
-    # Accumulated MPC-executed trail
-    for b in mpc_exec_trail:
-        if not hasattr(b, 'shape') or b.shape[0] < 2:
-            continue
-        p_lo, p_hi = float(b[0, 0]), float(b[0, 1])
-        v_lo, v_hi = float(b[1, 0]), float(b[1, 1])
-        if not all(np.isfinite(x) and abs(x) < _BOUND_LIMIT
-                   for x in [p_lo, p_hi, v_lo, v_hi]):
-            continue
-        r = patches.Rectangle(
-            (p_lo, v_lo), p_hi - p_lo, v_hi - v_lo,
-            linewidth=1.5,
-            edgecolor=MPC_EXEC_COLOR["ec"], facecolor=MPC_EXEC_COLOR["fc"],
-            alpha=MPC_EXEC_COLOR["fa"], zorder=6,
         )
         ax.add_patch(r)
         dynamic_artists.append(r)

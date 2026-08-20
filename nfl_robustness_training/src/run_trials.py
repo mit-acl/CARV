@@ -25,11 +25,11 @@ N_WORKERS = 16
 # ]
 
 obstacles = [
-        np.array([-6.5, 2.02,  0.5]),
-        np.array([-3.2,  1.21,  0.5]),
-        np.array([-2,  -0.3, 0.45]),
-        np.array([-2, -1.3, 0.5])
-    ]
+    np.array([-4.3,  1,   0.5]),
+    np.array([-2,   -2,   0.5]),
+    np.array([-1,    0.5, 0.5]),
+    # np.array([-3.5,  0,   0.5]),
+]
 
 
 def point_collision(traj, obstacles):
@@ -46,6 +46,18 @@ def point_collision(traj, obstacles):
 
 def _worker_init():
     """Called once per worker process at pool startup."""
+    # One BLAS/torch thread per worker. Without this each worker spawns
+    # torch.get_num_threads() (10 here) intra-op threads, and N workers
+    # oversubscribe the machine ~N-fold. That inflates the ops the 0.20s
+    # timestep budget is measured against — concrete/step went 0.0142s -> 0.172s
+    # at 16 workers — so the algorithm silently skips verification it thinks it
+    # cannot afford. Must run before the worker imports torch.
+    for var in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS',
+                'OPENBLAS_NUM_THREADS', 'NUMEXPR_NUM_THREADS'):
+        os.environ[var] = '1'
+    import torch
+    torch.set_num_threads(1)
+
     # Suppress verbose output inside workers
     sys.stdout = open(os.devnull, 'w')
     sys.stderr = open(os.devnull, 'w')
@@ -55,11 +67,11 @@ def _run_trial(args):
     """Worker function: run one trial with a fresh analyzer, return results."""
     i, seed = args
     from REAL_integrated_sim import setup_analyzer
-    from alg11_mpc_acados import test
+    from alg12_mpc_every_timestep import test
     analyzer = setup_analyzer('Unicycle_NL', 'natural_none_default')
-    traj, _, u_diffs, mpc_calls, mpc_over = test(seed=seed, analyzer=analyzer)
+    traj, _, u_diffs, mpc_calls, no_diverge, queue_empty = test(seed=seed, analyzer=analyzer, obstacles=obstacles)
     had_collision = point_collision(traj, obstacles)
-    return i, seed, traj, u_diffs, mpc_calls, mpc_over, had_collision
+    return i, seed, traj, u_diffs, mpc_calls, no_diverge, queue_empty, had_collision
 
 
 def plot_trials(all_trajectories, all_u_diffs, obstacles, trial_seeds, danger):
@@ -143,27 +155,35 @@ if __name__ == "__main__":
         results_raw = []
         for result in pool.imap_unordered(_run_trial, args):
             results_raw.append(result)
-            i, seed, traj, u_diffs, mpc_calls, mpc_over, had_collision = result
+            i, seed, traj, u_diffs, mpc_calls, no_diverge, queue_empty, had_collision = result
             status = "UNSAFE" if had_collision else "safe"
-            pct = f"  ({100*mpc_over/mpc_calls:.0f}%)" if mpc_calls else ""
             print(f"  Trial {i+1:>3}  seed={seed}  [{status}]  "
-                  f"states={len(traj)}  mpc={mpc_calls}  over_budget={mpc_over}{pct}",
+                  f"states={len(traj)}  mpc={mpc_calls}",
                   flush=True)
 
     # Sort back into trial order
     results_raw.sort(key=lambda r: r[0])
 
     all_trajectories, all_u_diffs, trial_seeds, safety_record = [], [], [], []
-    total_mpc_calls = total_mpc_over = 0
+    total_mpc_calls = 0
+    total_no_diverge = 0
+    total_queue_empty = 0
+    no_diverge_trials  = []
+    queue_empty_trials = []
     danger = set()
 
-    for i, seed, traj, u_diffs, mpc_calls, mpc_over, had_collision in results_raw:
+    for i, seed, traj, u_diffs, mpc_calls, no_diverge, queue_empty, had_collision in results_raw:
         trial_seeds.append(seed)
         all_trajectories.append(traj)
         all_u_diffs.append(u_diffs)
         safety_record.append(not had_collision)
         total_mpc_calls += mpc_calls
-        total_mpc_over  += mpc_over
+        total_no_diverge  += no_diverge
+        total_queue_empty += queue_empty
+        if no_diverge:
+            no_diverge_trials.append((i + 1, seed, no_diverge))
+        if queue_empty:
+            queue_empty_trials.append((i + 1, seed, queue_empty))
         if had_collision:
             danger.add(i)
 
@@ -173,10 +193,14 @@ if __name__ == "__main__":
     print(f"Safety record:         {n_safe}/{N_TRIALS} safe  ({100*n_safe/N_TRIALS:.1f}%)")
     print(f"Unsafe trials:         {[i+1 for i, s in enumerate(safety_record) if not s]}")
     print(f"Unsafe seeds:          {unsafe_seeds}")
-    # print(f"MPC calls total:       {total_mpc_calls}")
-    # print(f"MPC over budget:       {total_mpc_over}/{total_mpc_calls}"
-    #       + (f"  ({100*total_mpc_over/total_mpc_calls:.1f}%)" if total_mpc_calls else ""))
-    # print(f"MPC over budget/trial: {total_mpc_over/N_TRIALS:.2f} avg")
+    print(f"PSF no-diverge fallbacks:  {total_no_diverge} timesteps"
+          f" across {len(no_diverge_trials)} trials")
+    for trial_num, seed, count in no_diverge_trials:
+        print(f"    Trial {trial_num:>3}  seed={seed}  ×{count}")
+    print(f"PSF queue-empty fallbacks: {total_queue_empty} timesteps"
+          f" across {len(queue_empty_trials)} trials")
+    for trial_num, seed, count in queue_empty_trials:
+        print(f"    Trial {trial_num:>3}  seed={seed}  ×{count}")
     print(f"{'='*50}")
 
     plot_trials(all_trajectories, all_u_diffs, obstacles, trial_seeds, danger)
