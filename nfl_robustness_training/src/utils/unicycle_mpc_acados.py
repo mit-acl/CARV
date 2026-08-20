@@ -84,13 +84,24 @@ class AcadosUnicycleMPC:
 
     def __init__(self, obstacles: list, dt: float = 0.2, v: float = 1.0,
                  n_horizon: int = 10, nominal_tracking: bool = True,
-                 solver_name: str = 'unicycle_acados'):
+                 solver_name: str = 'unicycle_acados',
+                 turn_radius: float = None):
         # nominal_tracking kept as parameter for call-site compatibility but
         # non-nominal path is removed — always uses NONLINEAR_LS tracking cost.
-        self.n_horizon = n_horizon
-        self.dt        = dt
-        self.v         = v
-        self.obstacles = obstacles if obstacles is not None else []
+        #
+        # turn_radius (R): if given, enables the path/terminal constraint split.
+        #   Path nodes (0..N-1) are constrained against the RAW obstacle radii in
+        #   `obstacles`, while the terminal node (N) is constrained against the
+        #   inflated danger radius S = sqrt(r^2 + 2rR). This lets the optimizer
+        #   route a backup THROUGH S (fixing the bug-trap) while still ending
+        #   outside S, where the max-turn loiter is control-invariant — which
+        #   preserves persistent feasibility. If None, path and terminal share
+        #   the same radii in `obstacles` (legacy behaviour).
+        self.n_horizon   = n_horizon
+        self.dt          = dt
+        self.v           = v
+        self.obstacles   = obstacles if obstacles is not None else []
+        self.turn_radius = turn_radius
 
         # Buffers — same attribute names as the do_mpc version
         self._obs_inflation_buf = np.zeros(1)
@@ -143,14 +154,28 @@ class AcadosUnicycleMPC:
         # even when the warm-start trajectory passes close to an obstacle.
         # A small epsilon under the sqrt prevents a zero gradient at dist=0.
         if n_obs > 0:
-            h_list = []
+            # Path stages have TWO sets of constraints per obstacle:
+            #   (1) raw r — hard collision avoidance (high slack penalty),
+            #   (2) D     — danger region; cheap slack so intermediates *may*
+            #               enter D when needed but pay a small price.
+            # Terminal stage has ONE constraint per obstacle: D, HARD (no slack)
+            # so the persistent-feasibility loiter is guaranteed.
+            h_list_path_r = []   # raw r soft (path)
+            h_list_path_D = []   # D soft, cheap (path)
+            h_list_e      = []   # D hard (terminal)
             for obs in self.obstacles:
                 cx, cy, r = float(obs[0]), float(obs[1]), float(obs[2])
                 dist = ca.sqrt((x_sym[0] - cx) ** 2 + (x_sym[1] - cy) ** 2 + 1e-6)
-                h_list.append(dist - (r + obs_inflation))
-            h_expr = ca.vertcat(*h_list)
-            model.con_h_expr   = h_expr   # stages 0 … N-1
-            model.con_h_expr_e = h_expr   # stage N (terminal)
+                h_list_path_r.append(dist - (r + obs_inflation))
+                if self.turn_radius is not None:
+                    r_term = float(np.sqrt(r ** 2 + 2 * r * self.turn_radius))
+                else:
+                    r_term = r
+                h_list_path_D.append(dist - (r_term + obs_inflation))
+                h_list_e.append(dist - (r_term + obs_inflation))
+            # Path: [raw_r constraints..., D constraints...]
+            model.con_h_expr   = ca.vertcat(*h_list_path_r, *h_list_path_D)
+            model.con_h_expr_e = ca.vertcat(*h_list_e)   # terminal: D only
 
         ocp = AcadosOcp()
         ocp.model = model
@@ -182,27 +207,35 @@ class AcadosUnicycleMPC:
         ocp.constraints.idxbu = np.array([0])
 
         if n_obs > 0:
-            ocp.constraints.lh   = np.zeros(n_obs)
-            ocp.constraints.uh   = np.full(n_obs, 1e15)
+            n_path = 2 * n_obs   # raw r + D for each obstacle
+            ocp.constraints.lh   = np.zeros(n_path)
+            ocp.constraints.uh   = np.full(n_path, 1e15)
             ocp.constraints.lh_e = np.zeros(n_obs)
             ocp.constraints.uh_e = np.full(n_obs, 1e15)
 
-            # Soft constraints: slacks on lower bound of h (obstacle avoidance).
-            # The QP is always feasible; slack is penalised heavily in cost.
-            # Jsh selects which h-constraints are softened (all of them).
-            _slack_penalty_lin  = 1e3   # linear penalty on slack
-            _slack_penalty_quad = 1e3   # quadratic penalty on slack
-            ocp.constraints.Jsh   = np.eye(n_obs)
-            ocp.constraints.Jsh_e = np.eye(n_obs)
-            # zl / zu: linear slack costs (lower / upper slack)
-            ocp.cost.zl   = _slack_penalty_lin  * np.ones(n_obs)
-            ocp.cost.zu   = np.zeros(n_obs)        # no upper slack penalty
-            ocp.cost.Zl   = _slack_penalty_quad * np.ones(n_obs)
-            ocp.cost.Zu   = np.zeros(n_obs)
-            ocp.cost.zl_e = _slack_penalty_lin  * np.ones(n_obs)
-            ocp.cost.zu_e = np.zeros(n_obs)
-            ocp.cost.Zl_e = _slack_penalty_quad * np.ones(n_obs)
-            ocp.cost.Zu_e = np.zeros(n_obs)
+            # PATH stages: both raw-r and D constraints are softened.
+            #   raw-r slack expensive (true collision must not happen),
+            #   D     slack cheap     (intermediates may enter D when needed).
+            # TERMINAL stage: D constraint is HARD (no Jsh_e). The QP solver
+            # cannot return a terminal inside D — if it can't satisfy, it
+            # reports infeasibility and we treat the result as INFEASIBLE.
+            _raw_slack_lin    = 1e3   # raw r violation — collision avoidance
+            _raw_slack_quad   = 1e3
+            _D_path_slack_lin   = 1e1   # intermediate in D — small cost
+            _D_path_slack_quad  = 1e1
+
+            ocp.constraints.Jsh = np.eye(n_path)
+            ocp.cost.zl = np.concatenate([
+                _raw_slack_lin  * np.ones(n_obs),     # raw r
+                _D_path_slack_lin * np.ones(n_obs),   # D
+            ])
+            ocp.cost.zu = np.zeros(n_path)
+            ocp.cost.Zl = np.concatenate([
+                _raw_slack_quad  * np.ones(n_obs),
+                _D_path_slack_quad * np.ones(n_obs),
+            ])
+            ocp.cost.Zu = np.zeros(n_path)
+            # Terminal: NO Jsh_e / zl_e / Zl_e → hard constraint.
 
         ocp.constraints.x0      = np.zeros(3)
         ocp.parameter_values    = np.zeros(1)   # p = [obs_inflation]
@@ -226,18 +259,77 @@ class AcadosUnicycleMPC:
     def x0(self, val):
         self._x0 = np.array(val).reshape(-1, 1)
 
+    def _rollout(self, omega_seq):
+        """Forward-simulate the unicycle from self._x0 with given omega sequence."""
+        x = self._x0.flatten().copy()
+        states = [x.copy()]
+        for k in range(self.n_horizon):
+            u_k = float(omega_seq[k])
+            x = np.array([
+                x[0] + self.v * np.cos(x[2]) * self.dt,
+                x[1] + self.v * np.sin(x[2]) * self.dt,
+                x[2] + u_k * self.dt,
+            ])
+            states.append(x.copy())
+        return states
+
+    def _terminal_clears_D(self, states):
+        """Check if the rollout's terminal state lies outside D for every obstacle."""
+        if self.turn_radius is None or not self.obstacles:
+            return True
+        tx, ty = states[-1][0], states[-1][1]
+        inflation = float(self._obs_inflation_buf[0])
+        for obs in self.obstacles:
+            cx, cy, r = float(obs[0]), float(obs[1]), float(obs[2])
+            D = float(np.sqrt(r ** 2 + 2 * r * self.turn_radius)) + inflation
+            if (tx - cx) ** 2 + (ty - cy) ** 2 < D * D:
+                return False
+        return True
+
+    def _heuristic_swerve_omega(self):
+        """
+        Pick a swerve direction that points the terminal away from the worst
+        obstacle. Looks at obstacle bearing relative to current heading; if
+        obstacle is to the left of heading we swerve right (omega = -1), and
+        vice versa. The 'worst' obstacle is the one whose D-region the NN
+        rollout penetrates most deeply.
+        """
+        nn_states = self._rollout(self._nom_ctrl_buf[:self.n_horizon, 0])
+        tx, ty    = nn_states[-1][0], nn_states[-1][1]
+        inflation = float(self._obs_inflation_buf[0])
+        worst, worst_depth = None, 0.0
+        for obs in self.obstacles:
+            cx, cy, r = float(obs[0]), float(obs[1]), float(obs[2])
+            D = float(np.sqrt(r ** 2 + 2 * r * self.turn_radius)) + inflation
+            d = float(np.sqrt((tx - cx) ** 2 + (ty - cy) ** 2))
+            depth = D - d
+            if depth > worst_depth:
+                worst_depth = depth
+                worst = (cx, cy)
+        if worst is None:
+            return None
+        x0 = self._x0.flatten()
+        theta = float(x0[2])
+        # Bearing from current position to obstacle, expressed in body frame:
+        # positive y means obstacle is to the left of current heading.
+        dx, dy = worst[0] - float(x0[0]), worst[1] - float(x0[1])
+        body_y = -dx * np.sin(theta) + dy * np.cos(theta)
+        # Obstacle on left → swerve right (omega = -1); on right → left (+1).
+        return -1.0 if body_y > 0.0 else 1.0
+
     def set_initial_guess(self):
         """
-        Warm-start solver by simulating the unicycle forward with the current
-        nominal controls (_nom_ctrl_buf).  This keeps the warm-start trajectory
-        on the nominal path rather than stationary at x0, which avoids the QP
-        starting deep inside an inflated obstacle region.
+        Warm-start solver by simulating the unicycle forward with whatever
+        controls are currently in _nom_ctrl_buf. The caller is responsible for
+        setting that buffer to the desired warm-start (NN rollout or constant
+        swerve omega) before calling this.
         """
+        omega_seq = self._nom_ctrl_buf[:self.n_horizon, 0]
         x = self._x0.flatten().copy()
         for k in range(self.n_horizon + 1):
             self._solver.set(k, 'x', x)
             if k < self.n_horizon:
-                u_k = float(self._nom_ctrl_buf[k])
+                u_k = float(omega_seq[k])
                 self._solver.set(k, 'u', np.array([u_k]))
                 x = np.array([
                     x[0] + self.v * np.cos(x[2]) * self.dt,
@@ -284,7 +376,7 @@ class AcadosUnicycleMPC:
         n_rti = self._RTI_WARMUP_ITERS if self._step_count == 0 else 1
         for _ in range(n_rti):
             status = self._solver.solve()
-        if status not in (0, 2):   # 0=success, 2=max_iter/RTI
+        if status not in (0, 2):
             print(f'  [acados] Solver status {status} (step {self._step_count})')
 
         for k in range(self.n_horizon + 1):

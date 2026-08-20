@@ -2,6 +2,7 @@
 Time budget for TTT-CARV.
 Calibrate at startup, then query what you can afford each timestep.
 """
+import os
 import time
 import math
 import numpy as np
@@ -18,41 +19,57 @@ class TimeBudget:
         self._log = []             # [(operation_name, elapsed)] for current timestep
         self._excluded = 0.0       # time excluded from budget (non-algorithmic overhead)
 
-    def calibrate(self, tester, max_symbolic_horizon=10, max_backward_horizon=10, num_repeats=1):
-        """Run once at startup with a throwaway tester."""
+    def calibrate(self, tester, max_symbolic_horizon=10, max_backward_horizon=10,
+                  num_repeats=1, mpc_probe=None):
+        """Run once at startup with a throwaway tester.
+
+        Costs must be measured on the machine and under the load the run will
+        actually see — a table calibrated on an idle box makes can_afford() lie
+        by up to 12x when workers contend (see concrete_cost in particular).
+
+        max_backward_horizon=0 skips backward calibration, which is the right
+        choice for callers that never query 'backward' (e.g. alg12).
+        mpc_probe: optional zero-arg callable performing one representative MPC
+        solve. Without it mpc_cost keeps its conservative default, which gates
+        six affordability checks in alg12.
+        """
         max_needed = max(max_symbolic_horizon, max_backward_horizon) + 5
         for t in range(max_needed):
             tester.real_state_empirical(t, t + 1)
 
+        def _median_of(fn):
+            # First call absorbs lazy init/JIT warmup; measuring it inflates the
+            # cost by ~4x at h=1 and makes the algorithm skip work it can afford.
+            fn()
+            return float(np.median([fn() for _ in range(num_repeats)]))
+
         # Symbolic forward
         for h in range(1, max_symbolic_horizon + 1):
-            times = []
-            for _ in range(num_repeats):
-                result = tester.symbolic(0, h)
-                times.append(result['time'])
-            self.symbolic_costs[h] = np.median(times)
+            self.symbolic_costs[h] = _median_of(lambda: tester.symbolic(0, h)['time'])
 
         # Backward
         # We need a collision to backproject from, so we create a dummy target set
         # Just measure the backward_from_set call with a small synthetic set
         dummy_set = np.array([[0.5, 0.6], [-0.3, -0.2]])
         for h in range(1, max_backward_horizon + 1):
-            times = []
-            for _ in range(num_repeats):
-                result = tester.backward_from_set(
+            self.backward_costs[h] = _median_of(
+                lambda: tester.backward_from_set(
                     target_set=dummy_set,
                     target_timestep=max_needed - 1,
-                    num_steps=h
-                )
-                times.append(result['time'])
-            self.backward_costs[h] = np.median(times)
+                    num_steps=h,
+                )['time']
+            )
 
         # Concrete
-        times = []
-        for _ in range(num_repeats):
-            result = tester.concrete(0, 15)
-            times.append(result['time'])
-        self.concrete_cost = np.median(times) / 15  # per-step cost
+        self.concrete_cost = _median_of(lambda: tester.concrete(0, 15)['time']) / 15
+
+        # MPC solve
+        if mpc_probe is not None:
+            def _timed_mpc():
+                t0 = time.perf_counter()
+                mpc_probe()
+                return time.perf_counter() - t0
+            self.mpc_cost = _median_of(_timed_mpc)
 
     # ─── Timestep tracking ───────────────────────────────────────────
 
@@ -182,3 +199,68 @@ class TimeBudget:
         elif operation == 'backward':
             return self.backward_costs.get(horizon, float('inf'))
         return float('inf')
+
+
+# ─── Per-process calibration ─────────────────────────────────────────────
+
+# Fallback table, measured once on an idle machine. Accurate solo, but under
+# 16-way parallelism the real costs are 2-12x these, so can_afford() overcommits
+# and blows the whole timestep budget in a single concrete scan.
+FALLBACK_SYMBOLIC_COSTS = {
+    1:  0.05942702293395996,  2: 0.0532071590423584,
+    3:  0.12308859825134277,  4: 0.2227306365966797,
+    5:  0.3548123836517334,   6: 0.5160810947418213,
+    7:  0.7076215744018555,   8: 1.046485185623169,
+    9:  1.189185619354248,   10: 1.4745268821716309,
+}
+FALLBACK_CONCRETE_COST = 0.0142
+FALLBACK_MPC_COST      = 0.040
+
+_CALIBRATION = None
+
+
+def calibrated_costs(make_tester, make_mpc_probe=None, max_symbolic_horizon=5):
+    """Measure op costs once per process and cache them.
+
+    Costs are only meaningful when measured on the machine and under the load
+    the run will actually see, so this runs inside each pool worker rather than
+    shipping a static table. The result is cached because it costs a few seconds
+    and amortizes over every trial the worker goes on to run.
+
+    make_tester()      -> a throwaway tester; calibration advances real_state,
+                          which would corrupt the trial if run on the live one.
+    make_mpc_probe(t)  -> zero-arg callable doing one representative MPC solve
+                          on that tester. Reuse the caller's existing filter:
+                          acados codegen dirs are keyed on the pid, so a second
+                          filter in this process clobbers the first one's C code.
+
+    Returns (symbolic_costs, concrete_cost, mpc_cost).
+    """
+    global _CALIBRATION
+    if _CALIBRATION is not None:
+        return _CALIBRATION
+
+    fallback = (dict(FALLBACK_SYMBOLIC_COSTS), FALLBACK_CONCRETE_COST, FALLBACK_MPC_COST)
+    if os.environ.get('TTTCARV_CALIBRATE', '1') == '0':
+        _CALIBRATION = fallback
+        return _CALIBRATION
+
+    t0 = time.time()
+    try:
+        probe_tester = make_tester()
+        cal = TimeBudget()
+        cal.calibrate(
+            probe_tester,
+            max_symbolic_horizon=max_symbolic_horizon,
+            max_backward_horizon=0,   # forward algorithms never query 'backward'
+            num_repeats=2,
+            mpc_probe=make_mpc_probe(probe_tester) if make_mpc_probe else None,
+        )
+        _CALIBRATION = (cal.symbolic_costs, cal.concrete_cost, cal.mpc_cost)
+        print(f"[calibrate] {time.time()-t0:.1f}s  concrete={cal.concrete_cost:.4f}s"
+              f"  mpc={cal.mpc_cost:.4f}s"
+              f"  symbolic={ {h: round(c, 4) for h, c in cal.symbolic_costs.items()} }")
+    except Exception as e:
+        print(f"[calibrate] failed ({e}) — falling back to the static table")
+        _CALIBRATION = fallback
+    return _CALIBRATION

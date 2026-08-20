@@ -1,5 +1,5 @@
 """
-Run alg12 N times with random initial states and randomly generated obstacles.
+Run alg14 N times with random initial states and randomly generated obstacles.
 Obstacles:
   - Number per trial: 1-4 (uniform)
   - Center x: uniform in [-7, -1]
