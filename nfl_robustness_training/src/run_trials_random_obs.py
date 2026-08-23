@@ -12,8 +12,8 @@ import numpy as np
 import multiprocessing as mp
 import os, sys
 
-N_TRIALS  = 500
-N_WORKERS = 1
+N_TRIALS  = 100
+N_WORKERS = 12
 
 # Override from the environment so a cluster run needs no source edit:
 #   TTTCARV_WORKERS=64 python run_trials_random_obs.py
