@@ -101,6 +101,7 @@ def _machine():
     except OSError:
         pass
     return {"host": socket.gethostname(), "cpu": model,
+            "trial_seed": os.environ.get("TTTCARV_SEED"),
             "cpus_granted": _n_cpus, "workers": N_WORKERS,
             "python": platform.python_version(),
             "slurm_job": os.environ.get("SLURM_JOB_ID"),
@@ -132,7 +133,17 @@ def _run_trial(args):
 
 
 if __name__ == "__main__":
-    rng = np.random.default_rng()
+    # Layout generation must be reproducible or the regime comparison the
+    # fingerprint exists for is impossible: an unseeded rng gives every
+    # invocation a different set of obstacle layouts, so a 64-worker run and a
+    # 32-worker run differ in BOTH compute and problem, and the collision
+    # counts cannot be attributed to either. Set TTTCARV_SEED to the same value
+    # across worker counts to hold the layouts fixed and vary only compute.
+    _trial_seed = os.environ.get('TTTCARV_SEED')
+    rng = np.random.default_rng(int(_trial_seed) if _trial_seed else None)
+    if _trial_seed is None:
+        print("WARNING: TTTCARV_SEED unset -- layouts are freshly random, so this"
+              " run is NOT comparable to any other run.")
 
     args = []
     for i in range(N_TRIALS):
