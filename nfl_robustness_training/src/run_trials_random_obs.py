@@ -22,6 +22,8 @@ N_WORKERS = 12
 # the wall-clock timestep budget then silently skips verification it can afford.
 _n_cpus = len(os.sched_getaffinity(0))
 N_WORKERS = min(int(os.environ.get('TTTCARV_WORKERS', N_WORKERS)), _n_cpus)
+# Trial count is the other knob a cluster run needs without a source edit.
+N_TRIALS  = int(os.environ.get('TTTCARV_TRIALS', N_TRIALS))
 OBS_RADIUS = 0.5
 X_RANGE = (-7.0, -1.0)
 Y_RANGE = (-1.0,  2.0)
@@ -64,16 +66,69 @@ def _worker_init():
     sys.stderr = open(os.devnull, 'w')
 
 
+# ── Regime fingerprint ──────────────────────────────────────────────────
+# The filter's decisions are a function of how much work fits inside its fixed
+# 0.20 s wall-clock timestep budget, so identical code on identical seeds takes
+# different trajectories at different compute. Seed 3168 collides 15/15 run
+# serially and 4/16 run 16-way concurrent on the same box. Outcomes are
+# therefore NOT comparable across machines or worker counts unless the achieved
+# compute is reported with them.
+#
+# _probe times a fixed unit of work inside the worker, under exactly the
+# contention that trial saw. It is the per-trial regime coordinate: bucket
+# collisions by probe_s, not by hostname. Bigger probe_s = more starved.
+
+def _probe(reps=3):
+    """Median seconds for a fixed unit of work under current contention."""
+    import numpy as _np, time as _t
+    a = _np.random.default_rng(0).standard_normal((256, 256))
+    ts = []
+    for _ in range(reps):
+        t0 = _t.perf_counter()
+        a @ a
+        ts.append(_t.perf_counter() - t0)
+    return float(_np.median(ts))
+
+
+def _machine():
+    import platform, socket
+    model = platform.processor() or platform.machine()
+    try:
+        for line in open("/proc/cpuinfo"):
+            if line.startswith("model name"):
+                model = line.split(":", 1)[1].strip()
+                break
+    except OSError:
+        pass
+    return {"host": socket.gethostname(), "cpu": model,
+            "cpus_granted": _n_cpus, "workers": N_WORKERS,
+            "python": platform.python_version(),
+            "slurm_job": os.environ.get("SLURM_JOB_ID"),
+            "slurm_cpus": os.environ.get("SLURM_CPUS_ON_NODE")}
+
+
 def _run_trial(args):
     i, seed, obstacles = args
     from REAL_integrated_sim import setup_analyzer
     from alg14_split_terminal import test
+    import time as _t
     analyzer = setup_analyzer('Unicycle_NL', 'natural_none_default')
+    probe_before = _probe()
+    _t0 = _t.perf_counter()
     (traj, _, u_diffs, mpc_calls, no_diverge, queue_empty,
      pt_found, pt_used) = test(seed=seed, analyzer=analyzer, obstacles=obstacles)
+    wall = _t.perf_counter() - _t0
+    probe_after = _probe()
     had_collision = point_collision(traj, obstacles)
+    # Probe both sides: a trial that starts unloaded and ends contended (or the
+    # reverse, as the pool drains) has no single regime, and averaging the two
+    # would hide that. Reported separately so such trials can be excluded.
+    fp = {"probe_before_s": probe_before, "probe_after_s": probe_after,
+          "wall_s": wall,
+          "wall_per_timestep_s": wall / max(len(traj), 1),
+          "pid": os.getpid()}
     return (i, seed, obstacles, len(traj), mpc_calls, no_diverge, queue_empty,
-            pt_found, pt_used, had_collision)
+            pt_found, pt_used, had_collision, fp)
 
 
 if __name__ == "__main__":
@@ -99,7 +154,7 @@ if __name__ == "__main__":
         for result in pool.imap_unordered(_run_trial, args):
             results_raw.append(result)
             (i, seed, obstacles, n_states, mpc_calls, no_diverge, queue_empty,
-             pt_found, pt_used, had_collision) = result
+             pt_found, pt_used, had_collision, fp) = result
             status = "UNSAFE" if had_collision else "safe"
             obs_str = "  ".join(f"({o[0]:.2f},{o[1]:.2f})" for o in obstacles)
             print(f"  Trial {i+1:>3}  seed={seed}  [{status}]  "
@@ -120,7 +175,7 @@ if __name__ == "__main__":
     queue_empty_trials = []
     pt_trials          = []   # trials where passthrough fired (found or used)
     for (i, seed, obstacles, n_states, mpc_calls, no_diverge, queue_empty,
-         pt_found, pt_used, had_collision) in results_raw:
+         pt_found, pt_used, had_collision, fp) in results_raw:
         safety_record.append(not had_collision)
         total_no_diverge  += no_diverge
         total_queue_empty += queue_empty
@@ -162,3 +217,36 @@ if __name__ == "__main__":
     else:
         print("No unsafe trials.")
     print(f"{'='*60}")
+
+    # ── Regime fingerprint report ───────────────────────────────────────
+    import json as _json
+    mach = _machine()
+    rows = [{"seed": r[1], "timesteps": r[3], "collision": bool(r[9]), **r[10]}
+            for r in results_raw]
+    with open("trials_fingerprint.json", "w") as f:
+        _json.dump({"machine": mach, "n_trials": N_TRIALS, "trials": rows}, f, indent=1)
+
+    print(f"\nRegime fingerprint  ->  trials_fingerprint.json")
+    print(f"  host={mach['host']}  cpu={mach['cpu']}")
+    print(f"  workers={mach['workers']}  cpus_granted={mach['cpus_granted']}"
+          f"  slurm_job={mach['slurm_job']}")
+    probes = sorted(r["probe_after_s"] for r in rows)
+    if probes:
+        def _q(p):
+            return probes[min(len(probes) - 1, int(p * len(probes)))]
+        print(f"  probe_s (fixed unit of work under load):"
+              f"  min={probes[0]:.5f}  median={_q(.5):.5f}  p90={_q(.9):.5f}"
+              f"  max={probes[-1]:.5f}")
+        print(f"  contention spread (max/min) = {probes[-1]/max(probes[0],1e-9):.1f}x"
+              f"   -- 1.0x means every trial saw the same compute")
+        # Collisions bucketed by achieved compute. This is the comparison that
+        # transfers between machines; the raw safe/unsafe count does not.
+        med = _q(.5)
+        for lab, sel in (("faster half (less starved)", lambda v: v <= med),
+                         ("slower half (more starved)", lambda v: v > med)):
+            g = [r for r in rows if sel(r["probe_after_s"])]
+            nc = sum(1 for r in g if r["collision"])
+            if g:
+                print(f"  {lab:<28} n={len(g):<5} collisions={nc}"
+                      f"  ({100*nc/len(g):.2f}%)")
+

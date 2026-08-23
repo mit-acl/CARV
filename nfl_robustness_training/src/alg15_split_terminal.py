@@ -438,6 +438,7 @@ def test(seed=None, analyzer=None, obstacles=None):
     mpc_calls        = 0    # number of PSF activations
     psf_no_diverge   = 0    # PSF failed, no valid t_diverge at all
     psf_queue_empty  = 0    # PSF failed, t_diverge valid but queue empty after extend
+    psf_stale_refused = 0   # PSF failed, only a stale (ctrl_idx>0) plan existed
     passthrough_found = 0   # P3b scan_window returned a τ outside D after a wall
     passthrough_used  = 0   # PSF PASSTHROUGH branch executed (nominal while in D)
 
@@ -773,6 +774,25 @@ def test(seed=None, analyzer=None, obstacles=None):
         # ══════════════════════════════════════════════════════════════════
         if psf_valid(mpc_buffer, t_next):
             # PSF satisfied —> nominal control is safe
+            #
+            # Record t_next as the divergence point. This branch is entered
+            # *because* mpc_buffer[t_next] is valid, so t_next IS a certified
+            # place to diverge; not writing it down is what lets the clock
+            # overtake t_diverge. P1 normally raises it (same rule, same
+            # place), but P1 is skipped whenever buffer[t_next] was already
+            # built on an earlier timestep — and that is precisely when this
+            # branch fires without it. Once current_timestep > t_diverge the
+            # activation site computes ctrl_idx > 0 and joins a plan whose
+            # first controls were never applied, so traj_bounds[ctrl_idx]
+            # describes a trajectory the robot is not on.
+            #
+            # Only ever raises t_diverge, exactly as P1 does, so a pending
+            # passthrough target further ahead is left alone. After the
+            # increment below the invariant t_diverge >= current_timestep
+            # holds, which makes ctrl_idx > 0 unreachable rather than merely
+            # unobserved.
+            if t_diverge is None or t_diverge < t_next:
+                t_diverge = t_next
             u_diffs.append(0.0)
             tester.real_state_empirical(current_timestep, t_next)
             print(f"  [PSF NOMINAL] t={current_timestep}  PSF OK (buffer[{t_next}] valid)"
@@ -823,6 +843,37 @@ def test(seed=None, analyzer=None, obstacles=None):
 
         else:
             # PSF fails — need MPC backup from t_diverge
+            #
+            # A backup is a plan from a specific state at a specific time:
+            # controls[k] and traj_bounds[k] both assume controls[0..k-1] were
+            # the inputs actually applied. Joining a plan at ctrl_idx > 0 means
+            # those inputs were NOT applied — the filter flew nominal over
+            # those steps — so traj_bounds[ctrl_idx] describes a state the
+            # robot is not in, and every clearance check made against it is
+            # void. t_diverge persists across loop iterations, so it can point
+            # at a plan committed on an earlier timestep; that is a stale
+            # pointer, not a backup.
+            #
+            # Prefer the plan committed at this exact timestep. If there isn't
+            # one, refuse rather than fly a plan whose bounds do not describe
+            # the robot: fall through to the no-backup branch, which at least
+            # reports the condition instead of hiding it.
+            if (t_diverge is not None and t_diverge != current_timestep
+                    and psf_valid(mpc_buffer, current_timestep)):
+                print(f"{RED}[PSF ACTIVATE] stale t_diverge={t_diverge} at"
+                      f" t={current_timestep} (ctrl_idx would be"
+                      f" {current_timestep - t_diverge}) — using the plan"
+                      f" committed at t={current_timestep} instead{RESET}")
+                t_diverge = current_timestep
+            if t_diverge is not None and t_diverge != current_timestep:
+                print(f"{RED}[PSF ACTIVATE] REFUSED stale backup:"
+                      f" t_diverge={t_diverge} != t={current_timestep}"
+                      f" (would join at ctrl_idx={current_timestep - t_diverge});"
+                      f" no plan committed at t={current_timestep}"
+                      f"  (seed={seed}){RESET}")
+                psf_stale_refused += 1
+                t_diverge = None
+
             if t_diverge is not None and psf_valid(mpc_buffer, t_diverge):
                 controls, traj_bounds = mpc_buffer[t_diverge]
                 mpc_state['committed_at']  = t_diverge
@@ -927,6 +978,7 @@ def test(seed=None, analyzer=None, obstacles=None):
         print(f"[SAFETY] No real-state collision detected")
     print(f"  mpc_calls={mpc_calls}  psf_no_diverge={psf_no_diverge}"
           f"  psf_queue_empty={psf_queue_empty}"
+          f"  psf_stale_refused={psf_stale_refused}"
           f"  passthrough_found={passthrough_found}"
           f"  passthrough_used={passthrough_used}"
           f"  max_u_diff={max(u_diffs, default=0):.3f}")
