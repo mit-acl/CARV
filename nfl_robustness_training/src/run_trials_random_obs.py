@@ -260,4 +260,3 @@ if __name__ == "__main__":
             if g:
                 print(f"  {lab:<28} n={len(g):<5} collisions={nc}"
                       f"  ({100*nc/len(g):.2f}%)")
-

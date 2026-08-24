@@ -39,10 +39,12 @@ class UniycleMPCSafetyFilterAcados(MPCSafetyFilter):
                  n_horizon: int = 10, max_lookback: int = 10,
                  use_safety_radius: bool = True,
                  split_terminal_D: bool = False,
-                 verify_input_bounds: bool = False):
+                 verify_input_bounds: bool = False,
+                 verify_heading_bounds: bool = False):
         super().__init__(obstacles, tester, max_lookback)
         # Opt-in so alg14/alg15 keep their measured baseline behaviour.
         self.verify_input_bounds = verify_input_bounds
+        self.verify_heading_bounds = verify_heading_bounds
         self.dt        = dt
         self.n_horizon = n_horizon
         self.v         = v
@@ -154,6 +156,21 @@ class UniycleMPCSafetyFilterAcados(MPCSafetyFilter):
 
         Returns (trajectory_bounds, points, controls).
         """
+        # A heading bound is an OVER-approximation of where theta may lie. Once
+        # its half-width reaches pi the interval spans >= 2*pi, i.e. every
+        # heading -- it excludes nothing, so it constrains nothing, and any
+        # certificate derived from it is vacuous rather than conservative.
+        # Refusing here (before the solve) is fail-safe: build_mpc_backup
+        # catches this and records mpc_buffer[tau] = None, so the timestep
+        # falls back to the certified-clear passthrough window instead of
+        # flying a plan built on a bound that proves nothing.
+        if self.verify_heading_bounds:
+            hw_theta = float(initial_bounds[2, 1] - initial_bounds[2, 0]) / 2.0
+            if (not np.isfinite(hw_theta)) or hw_theta >= np.pi:
+                raise VacuousHeadingBound(
+                    f"vacuous heading bound: hw_theta={hw_theta:.4f} >= pi "
+                    f"(interval spans >= 2*pi, constrains nothing)")
+
         if multi_start:
             return self._run_mpc_multi_start(initial_bounds, center, extra_inflation)
         return self._run_mpc_single(initial_bounds, center, extra_inflation,
@@ -334,6 +351,10 @@ class InputBoundViolation(Exception):
     """Every candidate rollout violated the OCP's own |omega| <= u_max box."""
 
 
+class VacuousHeadingBound(Exception):
+    """Initial heading interval spans >= 2*pi, so it certifies nothing."""
+
+
 def make_mpc_safety_filter_acados(tester, obstacles_list=None,
                                    t_step: float = None,
                                    n_horizon: int = 10,
@@ -377,6 +398,7 @@ def make_mpc_safety_filter_acados(tester, obstacles_list=None,
             use_safety_radius=kwargs.get('use_safety_radius', True),
             split_terminal_D=kwargs.get('split_terminal_D', False),
             verify_input_bounds=kwargs.get('verify_input_bounds', False),
+            verify_heading_bounds=kwargs.get('verify_heading_bounds', False),
         )
 
     return None

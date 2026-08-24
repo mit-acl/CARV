@@ -24,11 +24,25 @@ corner of the terminal RSOA box.
 Safety
 ~~~~~~
 v_corner >= 0 ⇒ max(0, -v_corner) = 0 ⇒ margin at terminal
-    m_N = p_corner - 0 = p_corner >= buffer > 0.
-Margin is non-increasing under |u| <= 1, so every intermediate stage
-inherits m_k >= m_N >= buffer ≥ 0, which implies
-    p_k > 0  AND  v_k > -1   for all k.
-No per-stage h is needed (just control bounds).
+    m_N = p_corner - 0 = p_corner >= buffer > 0,
+so the terminal state is control-invariant: holding u = 0 keeps v >= 0
+and p non-decreasing forever.
+
+NOTE (corrected): an earlier version of this file claimed the terminal
+constraint alone was sufficient because "margin is non-increasing under
+|u| <= 1", and therefore omitted per-stage constraints. That argument is
+WRONG. The margin m = p - 0.5*max(0,-v)^2 is non-increasing only while
+v < 0; once v crosses zero, m = p and it GROWS. The trajectory minimum
+sits at the v = 0 crossing, which the terminal constraint does not bound.
+Counterexample from (p, v) = (0.6, -1.0), a state strictly inside S_par
+(margin +0.1), with |u| <= 1 and N = 12, dt = 0.2:
+
+    u = [0, 1, .5, .5, 1, .5, 1, 1, 1, 1, 1, 1]
+    p:  +0.60 +0.40 +0.22 +0.07 -0.06 -0.16 -0.23 -0.27 -0.27 ... +0.13
+                                 ^^^^^ p >= 0 violated       terminal h OK
+
+A second sequence drives v to -1.10 against vel_min = -1.0. Per-stage
+constraints are therefore REQUIRED and are now enforced below.
 
 Why linear rather than the smoothed parabolic constraint:
 the smoothed `max(0, -v)` has a near-zero gradient around v = 0, which
@@ -179,11 +193,19 @@ class AcadosDIMPC:
         # (where it was bailing with status 3).
         p_corner = x_sym[0] - hw_p
         v_corner = x_sym[1] - hw_v
-        h_v_terminal = v_corner                       # >= 0
-        h_p_terminal = p_corner - self.buffer         # >= 0
+        h_v_terminal = v_corner                                 # >= 0
+        h_p_terminal = p_corner - (self.pos_min + self.buffer)  # >= 0
         model.con_h_expr_e = ca.vertcat(h_v_terminal, h_p_terminal)
-        # No per-stage h: monotonicity of the parabolic margin under |u|≤1
-        # carries terminal safety back to every intermediate stage.
+
+        # Per-stage h: the RAW state constraints on every path node.
+        # Required — the terminal constraint alone does NOT imply them
+        # (see the corrected safety note in the module docstring).
+        # This is the split-terminal contract: path nodes clear the RAW
+        # constraint, only the terminal must reach the invariant set.
+        model.con_h_expr = ca.vertcat(
+            p_corner - self.pos_min,    # >= 0
+            v_corner - self.vel_min,    # >= 0
+        )
 
         ocp = AcadosOcp()
         ocp.model = model
@@ -217,8 +239,15 @@ class AcadosDIMPC:
         ocp.constraints.lh_e = np.zeros(n_h_e)
         ocp.constraints.uh_e = np.full(n_h_e, 1e15)
 
-        # Soft slack on terminal h so QP is always feasible. Stage h is empty
-        # so no per-stage slack is needed.
+        # ── Per-stage h bounds (raw constraints: p >= pos_min, v >= vel_min)
+        n_h = 2
+        ocp.constraints.lh = np.zeros(n_h)
+        ocp.constraints.uh = np.full(n_h, 1e15)
+
+        # Soft slack on BOTH stage and terminal h so the QP is always feasible.
+        # Slacks only affect which plan acados proposes; the safety verdict is
+        # made independently by the filter's own node check, so a slacked
+        # solution can never be certified unsafe-but-accepted.
         slack_lin  = 1e3
         slack_quad = 1e3
         ocp.constraints.Jsh_e = np.eye(n_h_e)
@@ -226,6 +255,12 @@ class AcadosDIMPC:
         ocp.cost.zu_e = np.zeros(n_h_e)
         ocp.cost.Zl_e = slack_quad * np.ones(n_h_e)
         ocp.cost.Zu_e = np.zeros(n_h_e)
+
+        ocp.constraints.Jsh = np.eye(n_h)
+        ocp.cost.zl = slack_lin  * np.ones(n_h)
+        ocp.cost.zu = np.zeros(n_h)
+        ocp.cost.Zl = slack_quad * np.ones(n_h)
+        ocp.cost.Zu = np.zeros(n_h)
 
         ocp.constraints.x0   = np.zeros(2)
         ocp.parameter_values = np.zeros(2)
