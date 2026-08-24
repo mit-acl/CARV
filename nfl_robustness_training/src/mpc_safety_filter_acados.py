@@ -38,8 +38,11 @@ class UniycleMPCSafetyFilterAcados(MPCSafetyFilter):
                  dt: float = 0.1, v: float = 1.0,
                  n_horizon: int = 10, max_lookback: int = 10,
                  use_safety_radius: bool = True,
-                 split_terminal_D: bool = False):
+                 split_terminal_D: bool = False,
+                 verify_input_bounds: bool = False):
         super().__init__(obstacles, tester, max_lookback)
+        # Opt-in so alg14/alg15 keep their measured baseline behaviour.
+        self.verify_input_bounds = verify_input_bounds
         self.dt        = dt
         self.n_horizon = n_horizon
         self.v         = v
@@ -48,8 +51,13 @@ class UniycleMPCSafetyFilterAcados(MPCSafetyFilter):
         # For turning radius R = v / u_max (u_max = 1.0), the vehicle can guarantee
         # avoidance only if it stays outside D = sqrt(r² + 2rR) of each obstacle center.
         # Set use_safety_radius=False to revert to the raw obstacle radii.
-        u_max = 1.0  # omega bounds [-1, 1]
+        u_max = 1.0  # omega bounds [-1, 1]; MUST match acados lbu/ubu
         R     = v / u_max
+        # Single source of truth. The D-geometry below and the input-bound
+        # check in _run_mpc_from_bounds must use the SAME u_max: D assumes the
+        # vehicle never turns faster than this, so a plan that exceeds it
+        # invalidates D rather than merely exceeding the actuator.
+        self.u_max            = u_max
         self.turn_radius      = R
         self.split_terminal_D = split_terminal_D
 
@@ -267,14 +275,16 @@ class UniycleMPCSafetyFilterAcados(MPCSafetyFilter):
         Two solves max (~80ms), down from four. Matches the live MPC budget.
         """
         candidates = []
+        rejected   = []
         # 1) NN warm-start (standard PSF behaviour)
         nn_rollout = self._run_mpc_single(initial_bounds, center,
                                           extra_inflation,
                                           warm_start_omega=None)
-        nn_score = self._score_rollout(nn_rollout[0], nn_rollout[2])
-        candidates.append((nn_score, nn_rollout))
-        if nn_score[0] <= 1e-3:
-            return nn_rollout    # NN already clears D — no second solve.
+        if self._input_bounds_ok(nn_rollout[2], rejected):
+            nn_score = self._score_rollout(nn_rollout[0], nn_rollout[2])
+            candidates.append((nn_score, nn_rollout))
+            if nn_score[0] <= 1e-3:
+                return nn_rollout    # NN already clears D — no second solve.
 
         # 2) Heuristic swerve based on obstacle bearing.
         swerve = self._heuristic_swerve_sign(center.flatten())
@@ -282,11 +292,46 @@ class UniycleMPCSafetyFilterAcados(MPCSafetyFilter):
             sw_rollout = self._run_mpc_single(initial_bounds, center,
                                               extra_inflation,
                                               warm_start_omega=swerve)
-            sw_score = self._score_rollout(sw_rollout[0], sw_rollout[2])
-            candidates.append((sw_score, sw_rollout))
+            if self._input_bounds_ok(sw_rollout[2], rejected):
+                sw_score = self._score_rollout(sw_rollout[0], sw_rollout[2])
+                candidates.append((sw_score, sw_rollout))
+
+        if not candidates:
+            raise InputBoundViolation(
+                "input_bound: every rollout exceeded |omega| <= "
+                f"{self.u_max:.4f} (peaks={['%.4f' % r for r in rejected]}); "
+                "D geometry assumes |omega| <= u_max")
 
         candidates.sort(key=lambda c: c[0])
         return candidates[0][1]
+
+    def _input_bounds_ok(self, controls, rejected):
+        """
+        True if every control in the rollout satisfies the box the OCP declares.
+
+        acados enforces lbu/ubu only when it CONVERGES; make_step returns the
+        last iterate unclipped otherwise, and the rollout is then integrated
+        with the true dynamics — so an out-of-box omega yields a path that is
+        geometrically checked but physically unflyable, and one that breaks the
+        D = sqrt(r^2 + 2rR) geometry the terminal test rests on.
+
+        Rejecting per-candidate (not per-build) keeps a legal rollout when the
+        other one is bad. Off by default: see verify_input_bounds.
+        """
+        if not self.verify_input_bounds:
+            return True
+        peak = max((abs(float(np.asarray(c).flatten()[0])) for c in controls),
+                   default=0.0)
+        if (not np.isfinite(peak)) or peak > self.u_max + 1e-6:
+            rejected.append(peak)
+            print(f"  [input_bound] candidate discarded: |omega|={peak:.4f} "
+                  f"> u_max={self.u_max:.4f}")
+            return False
+        return True
+
+
+class InputBoundViolation(Exception):
+    """Every candidate rollout violated the OCP's own |omega| <= u_max box."""
 
 
 def make_mpc_safety_filter_acados(tester, obstacles_list=None,
@@ -331,6 +376,7 @@ def make_mpc_safety_filter_acados(tester, obstacles_list=None,
             max_lookback=max_lookback,
             use_safety_radius=kwargs.get('use_safety_radius', True),
             split_terminal_D=kwargs.get('split_terminal_D', False),
+            verify_input_bounds=kwargs.get('verify_input_bounds', False),
         )
 
     return None
