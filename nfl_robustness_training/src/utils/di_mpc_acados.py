@@ -202,9 +202,19 @@ class AcadosDIMPC:
         # (see the corrected safety note in the module docstring).
         # This is the split-terminal contract: path nodes clear the RAW
         # constraint, only the terminal must reach the invariant set.
+        # The buffer applies here too, not just to the terminal position.
+        # Without it the per-stage corner is free to graze vel_min exactly,
+        # and because hw_p/hw_v are held CONSTANT across the horizon while the
+        # analyzer's RSOA actually widens (measured: 0.1399 -> 0.1537 in v over
+        # one step), a plan verified at the boundary lands just below it at
+        # tau+1. That produced 8 RSOA violations over 100 seeds, every one of
+        # them exactly one step after a PSF activation; the margin removes all
+        # 8. This is a mitigation, not a proof: the sound fix is per-stage
+        # half-widths that track the analyzer's propagation instead of a
+        # constant margin.
         model.con_h_expr = ca.vertcat(
-            p_corner - self.pos_min,    # >= 0
-            v_corner - self.vel_min,    # >= 0
+            p_corner - (self.pos_min + self.buffer),    # >= 0
+            v_corner - (self.vel_min + self.buffer),    # >= 0
         )
 
         ocp = AcadosOcp()
