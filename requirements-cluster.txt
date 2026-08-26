@@ -2,10 +2,40 @@
 # Versions are pinned exactly on purpose: numpy is held at 1.24.1, which is older
 # than what TF 2.20 would pick on its own. Letting pip re-resolve changes behavior.
 #
-# Four packages are deliberately NOT in this file because they are not on PyPI:
-#   auto_LiRPA, nfl_veripy   -> vendored in third_party/, install with `pip install -e`
-#   jax_verify               -> install from the GitLab URL in CLUSTER_HANDOFF.md
-#   acados_template          -> comes from the acados source build
+# INSTALL WITH --no-deps. This is not optional:
+#
+#     pip install --no-deps -r requirements-cluster.txt
+#
+# The pin set is internally contradictory, so any resolving install aborts before
+# writing a single package. Known conflicts against typing_extensions:
+# exceptiongroup 1.3.0 needs >=4.6.0, astroid 3.3.11 needs >=4, chex 0.1.90
+# needs >=4.2.0. --no-deps installs the frozen set verbatim, which is the intent.
+#
+# FIVE packages are deliberately NOT pinned here because they are not on PyPI.
+# Install them after the above, also with --no-deps:
+#
+#   auto_LiRPA, nfl_veripy   -> vendored in third_party/
+#       pip install --no-deps -e third_party/auto_LiRPA
+#       pip install --no-deps -e third_party/nfl_veripy
+#
+#   jax_verify, crown_ibp    -> GitLab, not PyPI
+#       pip install --no-deps "git+https://gitlab.com/neu-autonomy/certifiable-learning/jax_verify.git@c9dedb6a60a84a9262d07d1a7efa67106649ece8"
+#       pip install --no-deps "git+https://gitlab.com/neu-autonomy/certifiable-learning/crown_ibp.git@96abca4086c66fc7869e92359f490c08940e0757"
+#
+#   acados_template          -> comes from the acados source build (CLUSTER_HANDOFF.md section 2)
+#
+# crown_ibp is on the critical import path and cannot be skipped:
+# nfl_veripy/dynamics/Dynamics.py imports utils.nn_bounds at module level, which
+# imports crown_ibp.bound_layers at module level, and REAL_integrated_sim.py
+# imports nfl_veripy.dynamics. Do not substitute third_party/CROWN-IBP -- that is
+# the upstream research repo, not the packaged dist (its converter/keras2torch.py
+# parses argv at import and raises SystemExit).
+#
+# SYSTEM PREREQUISITE: pycddlib builds from source and needs cddlib + gmp headers.
+# pypoman imports it at module level via nfl_veripy/constraints/Constraints.py, so
+# it is not optional. On a cluster without them:
+#     conda install -c conda-forge cddlib gmp
+#     export CFLAGS="-I$CONDA_PREFIX/include" LDFLAGS="-L$CONDA_PREFIX/lib" CPATH="$CONDA_PREFIX/include"
 about-time==4.2.1
 absl-py==2.3.1
 alive-progress==3.3.0
@@ -28,7 +58,6 @@ click-log==0.4.0
 cma==4.4.3
 colour==0.1.5
 contourpy==1.3.2
-crown-ibp==1.0.0
 cvxopt==1.3.2
 cvxpy==1.7.3
 cycler==0.12.1
@@ -154,7 +183,8 @@ torchvision==0.17.2
 tqdm==4.67.1
 trimesh==4.8.2
 triton==2.2.0
-typing_extensions==4.5.0
+typing_extensions==4.16.0  # was 4.5.0; auto_LiRPA raises it on install, and
+                           # exceptiongroup/astroid/chex all require >4.5.0 anyway
 tzdata==2025.2
 urllib3==2.5.0
 Werkzeug==3.1.3
