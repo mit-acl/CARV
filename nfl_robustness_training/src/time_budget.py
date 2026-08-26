@@ -19,6 +19,17 @@ class TimeBudget:
         self._log = []             # [(operation_name, elapsed)] for current timestep
         self._excluded = 0.0       # time excluded from budget (non-algorithmic overhead)
 
+        # ── Per-timestep ledger (opt-in; off by default, zero cost when off) ──
+        # A timestep is closed out by the NEXT start_timestep() rather than by
+        # the caller, so every exit path out of the control loop is captured --
+        # including the `continue` branches -- without instrumenting each one.
+        # close_timestep() flushes the final tick after the loop ends.
+        self.ledger         = []      # [{'t','elapsed','charges'}]
+        self.ledger_enabled = False
+        self._charges       = {}
+        self._tick_open     = False
+        self._tick_index    = 0
+
     def calibrate(self, tester, max_symbolic_horizon=10, max_backward_horizon=10,
                   num_repeats=1, mpc_probe=None):
         """Run once at startup with a throwaway tester.
@@ -78,9 +89,47 @@ class TimeBudget:
         self._excluded += seconds
 
     def start_timestep(self):
+        if self.ledger_enabled and self._tick_open:
+            self._close_tick()
         self._start = time.perf_counter()
         self._excluded = 0.0
         self._log = []
+        if self.ledger_enabled:
+            self._charges   = {}
+            self._tick_open = True
+
+    # ─── Per-timestep ledger ─────────────────────────────────────────
+
+    def _close_tick(self):
+        self.ledger.append({'t': self._tick_index,
+                            'elapsed': self.elapsed,
+                            'charges': dict(self._charges)})
+        self._tick_index += 1
+        self._tick_open = False
+
+    def close_timestep(self):
+        """Flush the final timestep. Safe to call when the ledger is off."""
+        if self.ledger_enabled and self._tick_open:
+            self._close_tick()
+
+    def charge(self, name, seconds):
+        """Attribute `seconds` of the current timestep to category `name`.
+
+        Ignored unless a timestep is open, so work done during calibration --
+        before the control loop starts -- is not charged to timestep 0.
+        """
+        if self.ledger_enabled and self._tick_open:
+            self._charges[name] = self._charges.get(name, 0.0) + seconds
+
+    def charged(self, fn, name):
+        """Wrap a callable so its wall time is charged to `name`."""
+        def inner(*a, **kw):
+            t0 = time.perf_counter()
+            try:
+                return fn(*a, **kw)
+            finally:
+                self.charge(name, time.perf_counter() - t0)
+        return inner
 
     def record(self, name):
         """Call right after an operation to log its time."""

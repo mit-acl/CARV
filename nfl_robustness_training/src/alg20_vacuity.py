@@ -499,6 +499,21 @@ def test(seed=None, analyzer=None, obstacles=None):
         tester.real_state_empirical = _wrap(tester.real_state_empirical, 'empirical')
         tester.real_state_mpc       = _wrap(tester.real_state_mpc,       'mpc')
 
+    # ── Per-timestep budget ledger (opt-in via TTTCARV_BUDGET_DUMP) ──────
+    # Charges the four kinds of work the budget actually prices, so a timestep
+    # can be scored both as-is and with the deferrable symbolic refinement
+    # removed. Wrapping the bound methods catches every call site; the residual
+    # (elapsed minus the charges) is Python/geometry overhead.
+    _budget_path = os.environ.get('TTTCARV_BUDGET_DUMP')
+    if _budget_path:
+        budget.ledger_enabled       = True
+        tester.symbolic             = budget.charged(tester.symbolic,   'symbolic')
+        tester.concrete             = budget.charged(tester.concrete,   'concrete')
+        tester.real_state_empirical = budget.charged(tester.real_state_empirical, 'step')
+        tester.real_state_mpc       = budget.charged(tester.real_state_mpc,       'step')
+        mpc_sf._run_mpc_from_bounds = budget.charged(
+            mpc_sf._run_mpc_from_bounds, 'mpc')
+
     while current_timestep < MAX_TIME:
         budget.start_timestep()
         t_next   = current_timestep + 1
@@ -958,6 +973,19 @@ def test(seed=None, analyzer=None, obstacles=None):
                 current_timestep += 1
 
 
+
+    budget.close_timestep()
+    if _budget_path:
+        import json
+        with open(_budget_path, 'w') as _f:
+            json.dump({'seed': seed,
+                       'timestep_budget': budget.timestep_budget,
+                       'calibrated_costs': {
+                           'symbolic': dict(budget.symbolic_costs),
+                           'concrete': budget.concrete_cost,
+                           'mpc':      budget.mpc_cost},
+                       'ticks': budget.ledger}, _f)
+        print(f"[BUDGET] wrote {len(budget.ledger)} timestep records to {_budget_path}")
 
     if _rsoa_path:
         import json

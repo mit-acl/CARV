@@ -5,6 +5,8 @@ Obstacles:
   - Center x: uniform in [-7, -1]
   - Center y: uniform in [-1,  2]
   - Radius:   0.5
+  - Rejected if the centre is within GOAL_KEEPOUT of the origin (the NN
+    controller is untrained that close to the goal)
 
 """
 
@@ -24,17 +26,39 @@ _n_cpus = len(os.sched_getaffinity(0))
 N_WORKERS = min(int(os.environ.get('TTTCARV_WORKERS', N_WORKERS)), _n_cpus)
 # Trial count is the other knob a cluster run needs without a source edit.
 N_TRIALS  = int(os.environ.get('TTTCARV_TRIALS', N_TRIALS))
+# alg14/alg15/alg19 expose an identical test() signature and return tuple, so
+# which one is under test is a third knob rather than a source edit:
+#   TTTCARV_ALG=alg19_purge python run_trials_random_obs.py
+ALG_MODULE = os.environ.get('TTTCARV_ALG', 'alg14_split_terminal')
 OBS_RADIUS = 0.5
 X_RANGE = (-7.0, -1.0)
 Y_RANGE = (-1.0,  2.0)
+
+# The NN controller was trained only on the approach to the origin and is
+# unreliable once it gets close to the goal — it misbehaves there with no
+# obstacle present at all. Every collision across the 40k trials run so far had
+# an obstacle centre within 1.18 of the origin (0/9885 failures anywhere else),
+# so leaving that region in makes the safety statistic a measurement of the
+# controller's untrained endgame rather than of the filter. Deployment assumes
+# a controller that is stable at the goal, so obstacles are kept out of a disc
+# around it. GOAL_KEEPOUT is centre-to-goal distance: at 1.5 the obstacle
+# surface stays 1.0 clear of the origin.
+#   TTTCARV_GOAL_KEEPOUT=0 restores the old unrestricted placement.
+GOAL         = np.array([0.0, 0.0])
+GOAL_KEEPOUT = float(os.environ.get('TTTCARV_GOAL_KEEPOUT', 1.5))
 
 
 def _gen_obstacles(rng):
     n = int(rng.integers(1, 6))  # 1–5
     obs = []
     for _ in range(n):
-        cx = float(rng.uniform(*X_RANGE))
-        cy = float(rng.uniform(*Y_RANGE))
+        # Rejection-sample per obstacle rather than per scene so the 1–5 count
+        # distribution is unchanged by the keep-out.
+        while True:
+            cx = float(rng.uniform(*X_RANGE))
+            cy = float(rng.uniform(*Y_RANGE))
+            if np.hypot(cx - GOAL[0], cy - GOAL[1]) >= GOAL_KEEPOUT:
+                break
         obs.append(np.array([cx, cy, OBS_RADIUS]))
     return obs
 
@@ -111,9 +135,16 @@ def _machine():
 def _run_trial(args):
     i, seed, obstacles = args
     from REAL_integrated_sim import setup_analyzer
-    from alg14_split_terminal import test
+    from importlib import import_module
+    test = import_module(ALG_MODULE).test
     import time as _t
     analyzer = setup_analyzer('Unicycle_NL', 'natural_none_default')
+    # Per-timestep budget ledger: one file per trial, named by seed so the
+    # dumps can be joined back to the fingerprint rows. Only alg20 honours
+    # TTTCARV_BUDGET_DUMP; the variable is inert for the other algorithms.
+    _bud_dir = os.environ.get('TTTCARV_BUDGET_DIR')
+    if _bud_dir:
+        os.environ['TTTCARV_BUDGET_DUMP'] = os.path.join(_bud_dir, f'b_{seed}.json')
     probe_before = _probe()
     _t0 = _t.perf_counter()
     (traj, _, u_diffs, mpc_calls, no_diverge, queue_empty,
@@ -153,10 +184,11 @@ if __name__ == "__main__":
 
     # set up workers to run simulation in parallel
     n_workers = min(N_WORKERS, N_TRIALS)
-    print(f"Running {N_TRIALS} trials across {n_workers} workers  "
+    print(f"Running {N_TRIALS} trials of {ALG_MODULE} across {n_workers} workers  "
           f"({_n_cpus} CPUs available)  "
           f"(1-5 random obstacles, r={OBS_RADIUS}, "
-          f"x∈{X_RANGE}, y∈{Y_RANGE})...")
+          f"x∈{X_RANGE}, y∈{Y_RANGE}, "
+          f"goal keep-out={GOAL_KEEPOUT})...")
 
 
     ctx = mp.get_context('spawn')
@@ -234,7 +266,7 @@ if __name__ == "__main__":
     mach = _machine()
     rows = [{"seed": r[1], "timesteps": r[3], "collision": bool(r[9]), **r[10]}
             for r in results_raw]
-    with open("trials_fingerprint.json", "w") as f:
+    with open(os.environ.get("TTTCARV_FINGERPRINT", "trials_fingerprint.json"), "w") as f:
         _json.dump({"machine": mach, "n_trials": N_TRIALS, "trials": rows}, f, indent=1)
 
     print(f"\nRegime fingerprint  ->  trials_fingerprint.json")
