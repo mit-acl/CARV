@@ -21,7 +21,7 @@ from mpc_safety_filter_acados import make_mpc_safety_filter_acados as make_mpc_s
 
 # Reuse the system-agnostic PSF helpers from alg12 verbatim.
 from alg12_mpc_every_timestep import (
-    RefinementTask, concrete_scan, symbolic_step,
+    VerificationTask, concrete_scan, symbolic_step,
     extend_mpc_sequence, psf_valid, build_mpc_backup,
     _purge_infeasible,
 )
@@ -118,7 +118,7 @@ def test(seed=None, analyzer=None,
     mpc_horizon_until: int                        = -1
     conflict_time:     Optional[int]              = None
     t_diverge:         Optional[int]              = None
-    pending_job:       Optional[RefinementTask] = None
+    pending_job:       Optional[VerificationTask] = None
     wall_tau:          Optional[int]              = None
 
     mpc_state = {
@@ -189,7 +189,7 @@ def test(seed=None, analyzer=None,
                 mpc_state['committed_at']  = None
                 mpc_state['conflict_time'] = None
 
-                pending_job = (RefinementTask(t_next, conflict_time)
+                pending_job = (VerificationTask(t_next, conflict_time)
                                if conflict_time is not None else None)
 
                 _purge_infeasible(mpc_buffer, t_next)
@@ -259,7 +259,7 @@ def test(seed=None, analyzer=None,
                     scan_ceil     = ct
                     print(f"  [P2] Conflict detected at t={conflict_time}")
                     if pending_job is None:
-                        pending_job = RefinementTask(current_timestep, conflict_time)
+                        pending_job = VerificationTask(current_timestep, conflict_time)
                 concrete_until = ct
                 break
             concrete_until = end
@@ -297,7 +297,7 @@ def test(seed=None, analyzer=None,
                     print(f"  [P4] Conflict confirmed at t={conflict_time} — retrying INFEASIBLE entries")
                     _purge_infeasible(mpc_buffer, current_timestep)
                     mpc_horizon_until = t_diverge if t_diverge is not None else current_timestep
-                    pending_job       = RefinementTask(current_timestep, conflict_time)
+                    pending_job       = VerificationTask(current_timestep, conflict_time)
                 else:
                     print(f"  [P4] Deconflicted! Clearing conflict state")
                     conflict_time = None

@@ -31,7 +31,12 @@ def di_model(A:np.ndarray, B: np.ndarray, t_step: float = 0.1):
 def di_mpc(model: do_mpc.model.Model,
            obstacles: list = None,
            t_step: float = 0.1,
-           n_horizon: int = 8) -> do_mpc.controller.MPC:
+           n_horizon: int = 8,
+           pos_min: float = 0.0,
+           vel_min: float = -1.0,
+           buffer: float = 0.0) -> do_mpc.controller.MPC:
+    """buffer tightens the state constraints relative to the half-planes the
+    verifier checks, so the MPC aims for a margin rather than the boundary."""
 
     mpc = do_mpc.controller.MPC(model)
     mpc.settings.t_step = t_step
@@ -54,9 +59,11 @@ def di_mpc(model: do_mpc.model.Model,
     mpc.set_objective(mterm=mterm, lterm=lterm)
     mpc.set_rterm(a=0.1)
 
-    mpc.bounds['lower', '_x', 'p'] = 0.0
+    # These were hardcoded to 0.0 / -1.0, which happened to equal the caller's
+    # defaults, so the half-plane arguments alg13 passes were silently inert.
+    mpc.bounds['lower', '_x', 'p'] = pos_min + buffer
     mpc.bounds['upper', '_x', 'p'] = 5.0
-    mpc.bounds['lower', '_x', 'v'] = -1.0
+    mpc.bounds['lower', '_x', 'v'] = vel_min + buffer
     mpc.bounds['upper', '_x', 'v'] = 1.0
     mpc.bounds['lower', '_u', 'a'] = -1.0
     mpc.bounds['upper', '_u', 'a'] = 1.0

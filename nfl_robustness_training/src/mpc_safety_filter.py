@@ -146,16 +146,24 @@ class LinearMPCSafetyFilter(MPCSafetyFilter):
     """Safety filter for linear DI dynamics."""
 
     def __init__(self, A, B, obstacles, tester,
-                 t_step: float = 0.1, n_horizon: int = 10, max_lookback: int = 10):
+                 t_step: float = 0.1, n_horizon: int = 10, max_lookback: int = 10,
+                 pos_min: float = 0.0, vel_min: float = -1.0, buffer: float = 0.0):
         super().__init__(obstacles, tester, max_lookback)
         self.t_step    = t_step
         self.n_horizon = n_horizon
         self.A         = A
         self.B         = B
+        self.pos_min   = pos_min
+        self.vel_min   = vel_min
+        self.buffer    = buffer
 
+        # nominal_tracking is a unicycle_mpc parameter; di_mpc has never taken
+        # it, so both calls below raised TypeError and this whole branch was
+        # dead. Nothing exercised it because DI had not been run since.
         self._model = di_model(self.A, self.B, t_step=t_step)
         self._mpc   = di_mpc(self._model, obstacles=obstacles, t_step=t_step,
-                             n_horizon=n_horizon, nominal_tracking=True)
+                             n_horizon=n_horizon, pos_min=pos_min,
+                             vel_min=vel_min, buffer=buffer)
 
     def _run_mpc_from_bounds(self, initial_bounds: np.ndarray, center: np.ndarray,
                              extra_inflation: float = 0.0) -> list:
@@ -174,7 +182,8 @@ class LinearMPCSafetyFilter(MPCSafetyFilter):
 
         model = di_model(self.A, self.B, t_step=self.t_step)
         mpc   = di_mpc(model, obstacles=inflated_obs, t_step=self.t_step,
-                       n_horizon=self.n_horizon, nominal_tracking=True)
+                       n_horizon=self.n_horizon, pos_min=self.pos_min,
+                       vel_min=self.vel_min, buffer=self.buffer)
 
         x = center.reshape(2, 1)
         mpc.x0 = x

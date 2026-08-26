@@ -72,6 +72,27 @@ def invariant_boundary(v_grid, dt, u_max, pos_min, buffer):
     return np.array(out)
 
 
+def parabolic_boundary(v_grid, u_max, pos_min, buffer):
+    """
+    Boundary of the parabolic max-brake-invariant set — the set the terminal
+    safety argument in di_mpc_acados actually uses:
+
+        p - 0.5 * max(0, -v)**2 / u_max  >=  pos_min + buffer
+
+    so the boundary is p(v) = pos_min + buffer + 0.5*max(0,-v)**2/u_max.
+
+    invariant_boundary() above is the discrete-exact version. It is genuinely
+    discontinuous: braking takes an integer number of steps, so at each
+    v0 = -k*dt*u_max the step count jumps and the boundary jumps with it by
+    0.5*dt^2*u_max = 0.02 here. That staircase is correct but unreadable as a
+    curve, and it lies at or left of this parabola at every v (checked over
+    the plotted range), i.e. the parabola is the conservative inner
+    approximation. Plot the parabola; it is what the safety argument states.
+    """
+    vneg = np.maximum(0.0, -np.asarray(v_grid, dtype=float))
+    return pos_min + buffer + 0.5 * vneg ** 2 / u_max
+
+
 def _boxes(ax, bounds_list, color, alpha, label=None, lw=0.8, ls='-'):
     first = True
     for b in bounds_list:
@@ -89,7 +110,7 @@ def phase_portrait(psf, nom, path):
     pos_min, vel_min = psf['pos_min'], psf['vel_min']
     buffer, dt, u_max = psf['buffer'], psf['dt'], psf['u_max']
 
-    fig, (ax, az) = plt.subplots(1, 2, figsize=(13.0, 5.4),
+    fig, (ax, az) = plt.subplots(1, 2, figsize=(15.0, 5.6),
                                  gridspec_kw={'width_ratios': [1.25, 1.0]})
 
     ns = np.array(nom['state_history'])
@@ -98,8 +119,10 @@ def phase_portrait(psf, nom, path):
     act = [i for i in range(len(ps)) if modes.get(i) in ('MPC', 'ACTIVATE')]
 
     for a in (ax, az):
-        vg = np.linspace(vel_min - 0.18, 0.0, 240)
-        pb = invariant_boundary(vg, dt, u_max, pos_min, buffer)
+        # Span well beyond both panels' y-limits so the boundary runs off
+        # the top and bottom axes instead of stopping in mid-air.
+        vg = np.linspace(vel_min - 1.2, 1.5, 1200)
+        pb = parabolic_boundary(vg, u_max, pos_min, buffer)
         a.plot(pb, vg, color='tab:purple', lw=2.0, zorder=6,
                label='terminal invariant-set boundary')
         a.fill_betweenx(vg, pos_min - 1, pb, color='tab:purple', alpha=0.10, zorder=0)
@@ -107,14 +130,14 @@ def phase_portrait(psf, nom, path):
         a.axhline(vel_min, color='tab:red', lw=1.8, ls='--', zorder=6,
                   label=r'$v \geq v_{\min}$')
         _boxes(a, nom['bound_history'], 'tab:orange', 0.55, 'RSOA — unfiltered', 0.7, '--')
-        _boxes(a, psf['bound_history'], 'tab:blue', 0.55, 'RSOA — PSF', 0.7, '-')
+        _boxes(a, psf['bound_history'], 'tab:blue', 0.55, 'RSOA — REACH-PSF', 0.7, '-')
         a.plot(ns[:, 0], ns[:, 1], 'o-', color='tab:orange', ms=3.0, lw=1.4,
                zorder=7, label='real state — unfiltered')
         a.plot(ps[:, 0], ps[:, 1], 'o-', color='tab:blue', ms=3.0, lw=1.4,
-               zorder=8, label='real state — PSF')
+               zorder=8, label='real state — REACH-PSF')
         if act:
             a.plot(ps[act, 0], ps[act, 1], 'o', color='tab:red', ms=8.0,
-                   mfc='none', mew=1.8, zorder=9, label='PSF intervening')
+                   mfc='none', mew=1.8, zorder=9, label='REACH-PSF intervening')
         for v_ in nom['rsoa_viol']:
             b = nom['bound_history'][v_]
             if b is not None:
@@ -124,11 +147,14 @@ def phase_portrait(psf, nom, path):
         a.set_xlabel('position $p$')
 
     ax.set_ylabel('velocity $v$')
-    ax.set_ylim(vel_min - 0.20, max(0.35, float(ps[:, 1].max()) + 0.1))
+    # headroom above the data so the legend sits in empty space, not on the plot
+    _vtop = max(0.35, float(ps[:, 1].max()) + 0.1)
+    ax.set_ylim(vel_min - 0.20, _vtop + 0.58)
     ax.set_xlim(pos_min - 0.25,
                 max(float(ns[:, 0].max()), float(ps[:, 0].max())) + 0.25)
     ax.set_title('(a) full phase portrait', fontsize=11)
-    ax.legend(loc='lower left', fontsize=7.4, framealpha=0.95, ncol=2)
+    ax.legend(loc='upper center', fontsize=7.8, framealpha=0.95, ncol=3,
+              borderaxespad=0.5, handlelength=1.6, columnspacing=1.3)
 
     # zoom on the v_min crossing — where the constraint actually binds
     lo = np.array([b[1, 0] for b in nom['bound_history'] if b is not None])
@@ -139,7 +165,7 @@ def phase_portrait(psf, nom, path):
     az.set_title(r'(b) zoom on the $v_{\min}$ crossing', fontsize=11)
     az.legend().set_visible(False)
 
-    fig.suptitle(f"Double-integrator split-terminal PSF   "
+    fig.suptitle(f"Double-integrator split-terminal REACH-PSF   "
                  f"($p_{{\min}}={pos_min}$, $v_{{\min}}={vel_min}$, seed {psf['seed']})   "
                  f"\u00d7 = certified-bound violation (unfiltered)", fontsize=11.5)
     fig.tight_layout(rect=[0, 0, 1, 0.93])
@@ -151,7 +177,7 @@ def timeseries(psf, nom, path):
     fig, (a1, a2) = plt.subplots(2, 1, figsize=(9.0, 6.6), sharex=True)
 
     for res, c, name in ((nom, 'tab:orange', 'unfiltered'),
-                         (psf, 'tab:blue', 'PSF')):
+                         (psf, 'tab:blue', 'REACH-PSF')):
         s = np.array(res['state_history'])
         t = np.arange(len(s))
         lo = np.array([b[1, 0] if b is not None else np.nan
@@ -176,16 +202,16 @@ def timeseries(psf, nom, path):
         first = True
         for t_ in act:
             a.axvspan(t_ - 0.5, t_ + 0.5, color='tab:red', alpha=0.11, lw=0,
-                      label='PSF active' if first else None)
+                      label='REACH-PSF active' if first else None)
             first = False
 
     ts = [r['t'] for r in psf['records'] if r['u'] is not None]
     ua = [r['u'] for r in psf['records'] if r['u'] is not None]
     un = [r['u_nn'] for r in psf['records'] if r['u'] is not None]
     a2.step(np.arange(len(psf['u_diffs'])), psf['u_diffs'], where='mid',
-            color='tab:green', lw=1.6, label=r'$|u_{PSF}-u_{NN}|$')
+            color='tab:green', lw=1.6, label='REACH-PSF vs NN: $|u_{\mathrm{PSF}}-u_{NN}|$')
     if ts:
-        a2.plot(ts, ua, 'o', color='tab:red', ms=6, label='$u$ applied (PSF)')
+        a2.plot(ts, ua, 'o', color='tab:red', ms=6, label='$u$ applied (REACH-PSF)')
         a2.plot(ts, un, 'o', color='k', ms=4, mfc='none', label='$u$ nominal')
     a2.set_xlabel('timestep'); a2.set_ylabel('control')
     a2.grid(alpha=0.25); a2.legend(fontsize=8.5, loc='upper right')

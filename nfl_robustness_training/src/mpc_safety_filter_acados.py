@@ -385,6 +385,11 @@ def make_mpc_safety_filter_acados(tester, obstacles_list=None,
             t_step=t_step,
             n_horizon=n_horizon,
             max_lookback=max_lookback,
+            # alg13 passes these; before, **kwargs swallowed them and the DI
+            # filter was built against di_mpc's hardcoded defaults instead.
+            pos_min=kwargs.get('pos_min', 0.0),
+            vel_min=kwargs.get('vel_min', -1.0),
+            buffer=kwargs.get('buffer', 0.0),
         )
 
     if dynamics_name == 'Unicycle_NL':
