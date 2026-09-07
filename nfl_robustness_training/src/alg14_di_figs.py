@@ -22,7 +22,7 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
+from matplotlib.patches import Rectangle, ConnectionPatch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -48,6 +48,23 @@ C_PSF  = '#1f5fa8'   # REACH-PSF
 C_NOM  = '#e07b1c'   # unfiltered baseline
 C_TERM = '#7a4fa3'   # terminal invariant set
 C_VIOL = '#b3202c'   # constraint / violation
+
+# Zoom-inset geometry — the knobs to turn when the figure needs re-fitting.
+#
+#   INSET_RECT  [x0, y0, w, h] in axes fractions: where the magnified panel
+#               sits inside the main axes, and how BIG it is. (0, 0) is the
+#               lower-left corner of the main axes, (1, 1) the upper-right.
+#   INSET_PAD_P p-units of margin left and right of the timesteps the zoom is
+#               built around.
+#   INSET_DV    v window, as an offset from vel_min: (bottom, top).
+#
+# The two interact: magnification is INSET_RECT's size divided by the window
+# INSET_PAD_P/INSET_DV carve out, so widening the window at a fixed rect zooms
+# out, and enlarging the rect at a fixed window zooms in.
+INSET_RECT  = (0.245, 0.575, 0.530, 0.375)
+INSET_PAD_P = 0.10
+INSET_DV    = (-0.13, 0.26)
+INSET_EDGE  = '0.40'
 
 OUT = os.path.join('nfl_robustness_training', 'results_di')
 os.makedirs(OUT, exist_ok=True)
@@ -213,12 +230,12 @@ def phase_portrait(psf, nom, path):
     span = sorted(set(viol) | set(act))
     span = list(range(max(0, min(span) - 1), min(len(ns), max(span) + 2)))
     px = np.concatenate([ns[span, 0], ps[span, 0]])
-    z_x0, z_x1 = float(px.min()) - 0.10, float(px.max()) + 0.10
-    z_y0, z_y1 = vel_min - 0.13, vel_min + 0.26
+    z_x0, z_x1 = float(px.min()) - INSET_PAD_P, float(px.max()) + INSET_PAD_P
+    z_y0, z_y1 = vel_min + INSET_DV[0], vel_min + INSET_DV[1]
 
     # Upper-middle of the plane: bounded left by the trajectory as it climbs
     # back toward the origin, right by the RSOA stack around the initial set.
-    axins = ax.inset_axes([0.245, 0.575, 0.530, 0.375])
+    axins = ax.inset_axes(list(INSET_RECT))
     _draw_layers(axins, psf, nom, act, box_lw=0.7, traj_lw=1.5, ms=3.6)
     axins.set_xlim(z_x0, z_x1)
     axins.set_ylim(z_y0, z_y1)
@@ -228,17 +245,30 @@ def phase_portrait(psf, nom, path):
     axins.grid(alpha=0.18, lw=0.5)
     axins.set_axisbelow(True)
     for s in axins.spines.values():
-        s.set_edgecolor('0.45')
+        s.set_edgecolor(INSET_EDGE)
         s.set_linewidth(0.9)
     axins.set_title(r'zoom: the $v_{\min}$ crossing', fontsize=8.0, pad=3.0)
 
-    # Rectangle only, no leader lines: the inset sits directly above the region
-    # it magnifies, so the connectors add nothing and both of them would be
-    # drawn straight across the trajectory and its RSOA stack.
-    _, leaders = ax.indicate_inset_zoom(axins, edgecolor='0.40', lw=0.9,
-                                        alpha=0.85)
-    for ln in leaders:
+    # Indicator rectangle, then leaders drawn by hand. matplotlib's own
+    # connectors join corresponding corners (rect lower-left to inset
+    # lower-left, and so on), which here means two lines rising out of the
+    # bottom of the rectangle and straight back through it. Joining the
+    # rectangle's TOP corners to the inset's BOTTOM corners instead gives the
+    # usual splayed magnifier cone and leaves the region itself clear. They
+    # still cross the trajectory on the way up — unavoidable with the inset
+    # above the region — so they are thin, dashed and pale enough to read as
+    # guides rather than as data.
+    ind = ax.indicate_inset_zoom(axins, edgecolor=INSET_EDGE, lw=0.9,
+                                 alpha=0.85)
+    for ln in ind.connectors:
         ln.set_visible(False)
+
+    for (rx, ry), corner in (((z_x0, z_y1), (0.0, 0.0)),
+                             ((z_x1, z_y1), (1.0, 0.0))):
+        ax.add_artist(ConnectionPatch(
+            xyA=(rx, ry), coordsA=ax.transData,
+            xyB=corner, coordsB=axins.transAxes,
+            color=INSET_EDGE, lw=0.8, ls=(0, (4, 2.5)), alpha=0.8, zorder=11))
 
     # ── legend and title, both outside the axes ──────────────────────────
     handles, labels = ax.get_legend_handles_labels()
