@@ -30,6 +30,25 @@ from REAL_integrated_sim import setup_analyzer
 import alg14_di as A
 
 
+# Figure style. One place to change it, and the timeseries figure inherits it.
+plt.rcParams.update({
+    'font.family':       'serif',
+    'font.serif':        ['DejaVu Serif'],
+    'mathtext.fontset':  'dejavuserif',
+    'font.size':         9.0,
+    'axes.labelsize':    10,
+    'axes.linewidth':    0.8,
+    'xtick.labelsize':   9,
+    'ytick.labelsize':   9,
+    'legend.fontsize':   8,
+    'savefig.bbox':      'standard',
+})
+
+C_PSF  = '#1f5fa8'   # REACH-PSF
+C_NOM  = '#e07b1c'   # unfiltered baseline
+C_TERM = '#7a4fa3'   # terminal invariant set
+C_VIOL = '#b3202c'   # constraint / violation
+
 OUT = os.path.join('nfl_robustness_training', 'results_di')
 os.makedirs(OUT, exist_ok=True)
 LOG = os.path.join(OUT, 'run.log')
@@ -106,78 +125,144 @@ def _boxes(ax, bounds_list, color, alpha, label=None, lw=0.8, ls='-'):
         first = False
 
 
-def phase_portrait(psf, nom, path):
+def _draw_layers(a, psf, nom, act, box_lw, traj_lw, ms, label=False):
+    """Every layer of the phase portrait, drawn onto one axes.
+
+    Called twice with identical content — main axes and zoom inset — so the two
+    can never drift apart. Only the main axes contributes legend handles.
+    """
     pos_min, vel_min = psf['pos_min'], psf['vel_min']
-    buffer, dt, u_max = psf['buffer'], psf['dt'], psf['u_max']
+    L = (lambda s: s) if label else (lambda s: None)
 
-    fig, (ax, az) = plt.subplots(1, 2, figsize=(15.0, 5.6),
-                                 gridspec_kw={'width_ratios': [1.25, 1.0]})
+    ns, ps = np.array(nom['state_history']), np.array(psf['state_history'])
 
-    ns = np.array(nom['state_history'])
-    ps = np.array(psf['state_history'])
+    # Span well beyond both axes' y-limits so the boundary runs off the top and
+    # bottom edges instead of stopping in mid-air.
+    vg = np.linspace(vel_min - 1.2, 1.5, 1200)
+    pb = parabolic_boundary(vg, psf['u_max'], pos_min, psf['buffer'])
+    a.fill_betweenx(vg, pos_min - 1.0, pb, color=C_TERM, alpha=0.09,
+                    lw=0, zorder=0)
+    a.plot(pb, vg, color=C_TERM, lw=1.6, zorder=5,
+           label=L('terminal invariant set'))
+    a.axvline(pos_min, color='0.15', lw=1.4, zorder=5, label=L(r'$p \geq p_{\min}$'))
+    a.axhline(vel_min, color=C_VIOL, lw=1.5, ls=(0, (5, 2.5)), zorder=5,
+              label=L(r'$v \geq v_{\min}$'))
+
+    _boxes(a, nom['bound_history'], C_NOM, 0.50, L('RSOA — unfiltered'),
+           box_lw, (0, (3, 2)))
+    _boxes(a, psf['bound_history'], C_PSF, 0.50, L('RSOA — REACH-PSF'),
+           box_lw, '-')
+
+    a.plot(ns[:, 0], ns[:, 1], '-', color=C_NOM, lw=traj_lw, zorder=7)
+    a.plot(ns[:, 0], ns[:, 1], 'o', color=C_NOM, ms=ms, zorder=7,
+           label=L('state — unfiltered'))
+    a.plot(ps[:, 0], ps[:, 1], '-', color=C_PSF, lw=traj_lw, zorder=8)
+    a.plot(ps[:, 0], ps[:, 1], 'o', color=C_PSF, ms=ms, zorder=8,
+           label=L('state — REACH-PSF'))
+
+    if act:
+        a.plot(ps[act, 0], ps[act, 1], 'o', color=C_PSF, ms=ms * 3.0,
+               mfc='none', mew=1.6, zorder=9, label=L('PSF intervenes'))
+
+    # x at the lower-left corner of every unfiltered RSOA box that dips below a
+    # half-plane — the certificate itself is violated, not merely the sample.
+    first = True
+    for v_ in nom['rsoa_viol']:
+        b = nom['bound_history'][v_]
+        if b is None:
+            continue
+        a.plot([b[0, 0]], [b[1, 0]], 'x', color=C_VIOL, ms=ms * 2.6, mew=2.0,
+               zorder=10,
+               label=L('certified violation') if first else None)
+        first = False
+
+
+def phase_portrait(psf, nom, path):
+    """Single-panel phase portrait with the v_min crossing as an inset.
+
+    The trajectory sweeps from the top right down to the origin, which leaves
+    the upper-middle of the plane empty; the zoom goes there rather than into a
+    second panel, so the figure stays one column wide and the reader keeps the
+    global geometry in view while reading the detail.
+    """
+    pos_min, vel_min = psf['pos_min'], psf['vel_min']
+    ns, ps = np.array(nom['state_history']), np.array(psf['state_history'])
     modes = {r['t']: r['mode'] for r in psf['records']}
     act = [i for i in range(len(ps)) if modes.get(i) in ('MPC', 'ACTIVATE')]
 
-    for a in (ax, az):
-        # Span well beyond both panels' y-limits so the boundary runs off
-        # the top and bottom axes instead of stopping in mid-air.
-        vg = np.linspace(vel_min - 1.2, 1.5, 1200)
-        pb = parabolic_boundary(vg, u_max, pos_min, buffer)
-        a.plot(pb, vg, color='tab:purple', lw=2.0, zorder=6,
-               label='terminal invariant-set boundary')
-        a.fill_betweenx(vg, pos_min - 1, pb, color='tab:purple', alpha=0.10, zorder=0)
-        a.axvline(pos_min, color='k', lw=1.8, zorder=6, label=r'$p \geq p_{\min}$')
-        a.axhline(vel_min, color='tab:red', lw=1.8, ls='--', zorder=6,
-                  label=r'$v \geq v_{\min}$')
-        _boxes(a, nom['bound_history'], 'tab:orange', 0.55, 'RSOA — unfiltered', 0.7, '--')
-        _boxes(a, psf['bound_history'], 'tab:blue', 0.55, 'RSOA — REACH-PSF', 0.7, '-')
-        a.plot(ns[:, 0], ns[:, 1], 'o-', color='tab:orange', ms=3.0, lw=1.4,
-               zorder=7, label='real state — unfiltered')
-        a.plot(ps[:, 0], ps[:, 1], 'o-', color='tab:blue', ms=3.0, lw=1.4,
-               zorder=8, label='real state — REACH-PSF')
-        if act:
-            a.plot(ps[act, 0], ps[act, 1], 'o', color='tab:red', ms=8.0,
-                   mfc='none', mew=1.8, zorder=9, label='REACH-PSF intervening')
-        for v_ in nom['rsoa_viol']:
-            b = nom['bound_history'][v_]
-            if b is not None:
-                a.plot([b[0, 0]], [b[1, 0]], 'x', color='darkred', ms=10, mew=2.4,
-                       zorder=10, label=None)
-        a.grid(alpha=0.25)
-        a.set_xlabel('position $p$')
+    fig, ax = plt.subplots(figsize=(7.1, 4.5))
 
+    _draw_layers(ax, psf, nom, act, box_lw=0.6, traj_lw=1.3, ms=3.0, label=True)
+
+    ax.set_xlim(pos_min - 0.22,
+                max(float(ns[:, 0].max()), float(ps[:, 0].max())) + 0.20)
+    ax.set_ylim(vel_min - 0.20,
+                max(float(ps[:, 1].max()), float(ns[:, 1].max())) + 0.30)
+    ax.set_xlabel('position $p$')
     ax.set_ylabel('velocity $v$')
-    # headroom above the data so the legend sits in empty space, not on the plot
-    _vtop = max(0.35, float(ps[:, 1].max()) + 0.1)
-    ax.set_ylim(vel_min - 0.20, _vtop + 0.58)
-    ax.set_xlim(pos_min - 0.25,
-                max(float(ns[:, 0].max()), float(ps[:, 0].max())) + 0.25)
-    ax.set_title('(a) full phase portrait', fontsize=11)
-    ax.legend(loc='upper center', fontsize=7.8, framealpha=0.95, ncol=3,
-              borderaxespad=0.5, handlelength=1.6, columnspacing=1.3)
+    ax.grid(alpha=0.18, lw=0.6)
+    ax.set_axisbelow(True)
+    for s in ('top', 'right'):
+        ax.spines[s].set_visible(False)
 
-    # zoom on the v_min crossing — where the constraint actually binds
-    lo = np.array([b[1, 0] for b in nom['bound_history'] if b is not None])
-    i_worst = int(np.argmin(lo))
-    pc = float(ns[i_worst, 0])
-    az.set_xlim(pc - 0.85, pc + 0.85)
-    az.set_ylim(vel_min - 0.12, vel_min + 0.28)
-    az.set_title(r'(b) zoom on the $v_{\min}$ crossing', fontsize=11)
-    az.legend().set_visible(False)
+    # ── inset: the v_min crossing ────────────────────────────────────────
+    # Window covers every certified violation of the unfiltered run plus the
+    # PSF's response to it, with enough margin to show both RSOA stacks.
+    viol = nom['rsoa_viol'] or [int(np.argmin([b[1, 0] for b in nom['bound_history']
+                                               if b is not None]))]
+    span = sorted(set(viol) | set(act))
+    span = list(range(max(0, min(span) - 1), min(len(ns), max(span) + 2)))
+    px = np.concatenate([ns[span, 0], ps[span, 0]])
+    z_x0, z_x1 = float(px.min()) - 0.10, float(px.max()) + 0.10
+    z_y0, z_y1 = vel_min - 0.13, vel_min + 0.26
 
-    fig.suptitle(f"Double-integrator split-terminal REACH-PSF   "
-                 f"($p_{{\min}}={pos_min}$, $v_{{\min}}={vel_min}$, seed {psf['seed']})   "
-                 f"\u00d7 = certified-bound violation (unfiltered)", fontsize=11.5)
-    fig.tight_layout(rect=[0, 0, 1, 0.93])
-    fig.savefig(path, dpi=180); plt.close(fig)
+    # Upper-middle of the plane: bounded left by the trajectory as it climbs
+    # back toward the origin, right by the RSOA stack around the initial set.
+    axins = ax.inset_axes([0.245, 0.575, 0.530, 0.375])
+    _draw_layers(axins, psf, nom, act, box_lw=0.7, traj_lw=1.5, ms=3.6)
+    axins.set_xlim(z_x0, z_x1)
+    axins.set_ylim(z_y0, z_y1)
+    axins.set_facecolor('white')
+    axins.patch.set_alpha(0.96)
+    axins.tick_params(labelsize=7.5, length=2.5, pad=1.5)
+    axins.grid(alpha=0.18, lw=0.5)
+    axins.set_axisbelow(True)
+    for s in axins.spines.values():
+        s.set_edgecolor('0.45')
+        s.set_linewidth(0.9)
+    axins.set_title(r'zoom: the $v_{\min}$ crossing', fontsize=8.0, pad=3.0)
+
+    # Rectangle only, no leader lines: the inset sits directly above the region
+    # it magnifies, so the connectors add nothing and both of them would be
+    # drawn straight across the trajectory and its RSOA stack.
+    _, leaders = ax.indicate_inset_zoom(axins, edgecolor='0.40', lw=0.9,
+                                        alpha=0.85)
+    for ln in leaders:
+        ln.set_visible(False)
+
+    # ── legend and title, both outside the axes ──────────────────────────
+    handles, labels = ax.get_legend_handles_labels()
+    fig.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.5, 0.925),
+               ncol=4, fontsize=8.0, frameon=False, handlelength=1.9,
+               columnspacing=1.5, handletextpad=0.6, borderaxespad=0.0)
+
+    fig.suptitle(
+        'Double-integrator split-terminal REACH-PSF   '
+        rf'($p_{{\min}}={pos_min:g}$,  $v_{{\min}}={vel_min:g}$,  '
+        rf'seed {psf["seed"]})', fontsize=10.5, y=0.985)
+
+    fig.subplots_adjust(left=0.082, right=0.988, top=0.780, bottom=0.115)
+    fig.savefig(path, dpi=400)
+    fig.savefig(os.path.splitext(path)[0] + '.pdf')
+    plt.close(fig)
 
 
 def timeseries(psf, nom, path):
     vel_min = psf['vel_min']
     fig, (a1, a2) = plt.subplots(2, 1, figsize=(9.0, 6.6), sharex=True)
 
-    for res, c, name in ((nom, 'tab:orange', 'unfiltered'),
-                         (psf, 'tab:blue', 'REACH-PSF')):
+    for res, c, name in ((nom, C_NOM, 'unfiltered'),
+                         (psf, C_PSF, 'REACH-PSF')):
         s = np.array(res['state_history'])
         t = np.arange(len(s))
         lo = np.array([b[1, 0] if b is not None else np.nan
@@ -188,9 +273,9 @@ def timeseries(psf, nom, path):
         a1.plot(t, lo, color=c, lw=1.0, ls=':')
         a1.plot(t, s[:, 1], color=c, lw=1.8, label=f'$v$ — {name}')
 
-    a1.axhline(vel_min, color='tab:red', lw=2.0, ls='--', label=r'$v_{\min}$')
+    a1.axhline(vel_min, color=C_VIOL, lw=1.8, ls=(0, (5, 2.5)), label=r'$v_{\min}$')
     for v_ in nom['rsoa_viol']:
-        a1.plot([v_], [nom['bound_history'][v_][1, 0]], 'x', color='darkred',
+        a1.plot([v_], [nom['bound_history'][v_][1, 0]], 'x', color=C_VIOL,
                 ms=11, mew=2.6, zorder=9)
     a1.set_ylabel('velocity'); a1.grid(alpha=0.25)
     a1.legend(fontsize=8.0, ncol=3, loc='lower right', framealpha=0.95)
@@ -201,7 +286,7 @@ def timeseries(psf, nom, path):
     for a in (a1, a2):
         first = True
         for t_ in act:
-            a.axvspan(t_ - 0.5, t_ + 0.5, color='tab:red', alpha=0.11, lw=0,
+            a.axvspan(t_ - 0.5, t_ + 0.5, color=C_PSF, alpha=0.10, lw=0,
                       label='REACH-PSF active' if first else None)
             first = False
 

@@ -920,6 +920,18 @@ def run_nominal(seed=None, analyzer=None,
 
     This is the apples-to-apples control for the PSF run — identical closed-loop
     re-anchoring of the RSOA at each step, only the safety filter is removed.
+
+    "Identical" has to include the concrete one-step scan, not just the Kalman
+    update. A horizon's tight_bound is the INTERSECTION of every calculation
+    filed at it (ReachableSetHorizon.add_calculation), so a run that files two
+    boxes per step gets a strictly tighter certificate than one that files a
+    single box — even when the two runs are on the same trajectory. test() scans
+    concrete before every step, so without the scan here the baseline's RSOA is
+    looser from t=1 onward for a reason that has nothing to do with the filter,
+    and certified violations get charged to the baseline that are really just
+    the missing scan. Same-trajectory check on seed 17790419: the KF-only
+    baseline reports certified violations at t=5..10, with the scan it reports
+    t=5..9 — t=10 was an artifact of the weaker bound.
     """
     if analyzer is None:
         analyzer = setup_analyzer('DoubleIntegrator',
@@ -932,6 +944,7 @@ def run_nominal(seed=None, analyzer=None,
     tester.obstacles = HalfPlaneConstraints(pos_min=pos_min, vel_min=vel_min)
 
     for t in range(MAX_TIME):
+        concrete_scan(tester, t, t + 1)
         tester.real_state_empirical(t, t + 1)
 
     state_history, bound_history = [], []
