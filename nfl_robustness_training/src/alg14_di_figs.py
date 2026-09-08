@@ -3,8 +3,8 @@ Figures + results for alg14_di.py (double-integrator split-terminal PSF).
 
 Produces, into nfl_robustness_training/results_di/ :
     di_phase_portrait.png   — (p, v) phase plane: invariant-set boundary,
-                              RSOA boxes, nominal vs PSF trajectory
-    di_timeseries.png       — v(t) with the RSOA lower bound, and the
+                              uncertainty boxes, nominal vs PSF trajectory
+    di_timeseries.png       — v(t) with the uncertainty band, and the
                               applied vs nominal control
     di_results.md / .json   — filtered vs unfiltered violation counts
 
@@ -166,9 +166,15 @@ def _draw_layers(a, psf, nom, act, box_lw, traj_lw, ms, label=False):
     a.axhline(vel_min, color=C_VIOL, lw=1.5, ls=(0, (5, 2.5)), zorder=5,
               label=L(r'$v \geq v_{\min}$'))
 
-    _boxes(a, nom['bound_history'], C_NOM, 0.50, L('RSOA — unfiltered'),
+    # Not reachable sets. Each box is the previous box's one-step CROWN image
+    # INTERSECTED with the Kalman confidence region given the measurement at
+    # this step, and the horizon is re-anchored to that intersection before the
+    # next step. Conditioning on measurements is what makes it a set-valued
+    # state estimate rather than a forward reachable set, so label it as the
+    # uncertainty it is.
+    _boxes(a, nom['bound_history'], C_NOM, 0.50, L('uncertainty — unfiltered'),
            box_lw, (0, (3, 2)))
-    _boxes(a, psf['bound_history'], C_PSF, 0.50, L('RSOA — REACH-PSF'),
+    _boxes(a, psf['bound_history'], C_PSF, 0.50, L('uncertainty — REACH-PSF'),
            box_lw, '-')
 
     a.plot(ns[:, 0], ns[:, 1], '-', color=C_NOM, lw=traj_lw, zorder=7)
@@ -181,22 +187,6 @@ def _draw_layers(a, psf, nom, act, box_lw, traj_lw, ms, label=False):
     if act:
         a.plot(ps[act, 0], ps[act, 1], 'o', color=C_PSF, ms=ms * 3.0,
                mfc='none', mew=1.6, zorder=9, label=L('PSF intervenes'))
-
-    # x at the lower-left corner of every unfiltered RSOA box that dips below a
-    # half-plane. NOT "certified violation": the unfiltered run certifies
-    # nothing, and because the box is an over-approximation, intersecting the
-    # unsafe set does not imply the state is unsafe. What it does mean is that
-    # safety cannot be certified at that step — which is the honest comparison,
-    # since keeping this box out of the unsafe set is precisely the PSF's job.
-    first = True
-    for v_ in nom['rsoa_viol']:
-        b = nom['bound_history'][v_]
-        if b is None:
-            continue
-        a.plot([b[0, 0]], [b[1, 0]], 'x', color=C_VIOL, ms=ms * 2.2, mew=1.6,
-               alpha=0.85, zorder=10,
-               label=L('RSOA enters unsafe set') if first else None)
-        first = False
 
     # The headline: timesteps where the unfiltered REAL state is inside the
     # unsafe half-plane. Filled, on top, in the constraint colour — this is the
@@ -236,10 +226,9 @@ def phase_portrait(psf, nom, path):
         ax.spines[s].set_visible(False)
 
     # ── inset: the v_min crossing ────────────────────────────────────────
-    # Window covers every uncertifiable step of the unfiltered run plus the
-    # PSF's response to it, with enough margin to show both RSOA stacks.
-    viol = nom['rsoa_viol'] or [int(np.argmin([b[1, 0] for b in nom['bound_history']
-                                               if b is not None]))]
+    # Window covers every step where the unfiltered real state is unsafe plus
+    # the PSF's response to it, with enough margin to show both box stacks.
+    viol = nom['real_viol'] or [int(np.argmin(np.array(nom['state_history'])[:, 1]))]
     span = sorted(set(viol) | set(act))
     span = list(range(max(0, min(span) - 1), min(len(ns), max(span) + 2)))
     px = np.concatenate([ns[span, 0], ps[span, 0]])
@@ -317,13 +306,14 @@ def timeseries(psf, nom, path):
         a1.plot(t, s[:, 1], color=c, lw=1.8, label=f'$v$ — {name}')
 
     a1.axhline(vel_min, color=C_VIOL, lw=1.8, ls=(0, (5, 2.5)), label=r'$v_{\min}$')
-    for v_ in nom['rsoa_viol']:
-        a1.plot([v_], [nom['bound_history'][v_][1, 0]], 'x', color=C_VIOL,
-                ms=11, mew=2.6, zorder=9)
+    rv = nom['real_viol']
+    if rv:
+        a1.plot(rv, np.array(nom['state_history'])[rv, 1], 'o', color=C_VIOL,
+                ms=6.0, mec='white', mew=0.8, zorder=9)
     a1.set_ylabel('velocity'); a1.grid(alpha=0.25)
     a1.legend(fontsize=8.0, ncol=3, loc='lower right', framealpha=0.95)
-    a1.set_title("Certified RSOA velocity band vs constraint "
-                 r"($\times$ = unfiltered violation)", fontsize=10.5)
+    a1.set_title('Velocity uncertainty band vs constraint '
+                 '(dots = unfiltered real state below $v_{\min}$)', fontsize=10.5)
 
     act = sorted(r['t'] for r in psf['records'] if r['mode'] in ('MPC', 'ACTIVATE'))
     for a in (a1, a2):
