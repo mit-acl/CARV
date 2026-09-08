@@ -914,24 +914,28 @@ def run_nominal(seed=None, analyzer=None,
                 pos_min: float = 0.0, vel_min: float = -1.0,
                 MAX_TIME: int = 40, init_range=None):
     """
-    Unfiltered baseline: apply the NN nominal control at every timestep, with
-    the SAME estimator / RSOA machinery as test(), and record where the real
-    state and the certified bound violate the half-planes.
+    Unfiltered baseline: apply the NN nominal control at every timestep with the
+    same estimator as test(), and record where the real state and the
+    estimator's uncertainty box cross the half-planes.
 
-    This is the apples-to-apples control for the PSF run — identical closed-loop
-    re-anchoring of the RSOA at each step, only the safety filter is removed.
+    The TRAJECTORY is apples-to-apples with the PSF run: same analyzer, same
+    HalfPlaneConstraints, same seed driving the same RNG, so the measurement
+    noise matches draw-for-draw and the two runs are bit-identical until the
+    filter first intervenes. That is what makes the real-state comparison mean
+    something, and it holds no matter what gets filed into the horizons —
+    concrete_scan touches neither the true state nor the RNG.
 
-    "Identical" has to include the concrete one-step scan, not just the Kalman
-    update. A horizon's tight_bound is the INTERSECTION of every calculation
-    filed at it (ReachableSetHorizon.add_calculation), so a run that files two
-    boxes per step gets a strictly tighter certificate than one that files a
-    single box — even when the two runs are on the same trajectory. test() scans
-    concrete before every step, so without the scan here the baseline's RSOA is
-    looser from t=1 onward for a reason that has nothing to do with the filter,
-    and certified violations get charged to the baseline that are really just
-    the missing scan. Same-trajectory check on seed 17790419: the KF-only
-    baseline reports certified violations at t=5..10, with the scan it reports
-    t=5..9 — t=10 was an artifact of the weaker bound.
+    The BOUNDS are deliberately not the same object as the PSF's. Here they are
+    the raw Kalman uncertainty under the nominal controller, which is what a
+    system without the filter actually has; the PSF additionally intersects each
+    horizon with a CROWN one-step image, because the filter needs that bound to
+    decide with. A horizon's tight_bound is the INTERSECTION of everything filed
+    at it (ReachableSetHorizon.add_calculation), so filing the concrete scan
+    here too would tighten these boxes — measured on seed 17790419, it moves the
+    box-level violations from t=5..10 to t=5..9, on an unchanged trajectory.
+
+    So do not read the two box stacks against each other as though they were the
+    same quantity. The claim the figure makes is about the real state.
     """
     if analyzer is None:
         analyzer = setup_analyzer('DoubleIntegrator',
@@ -944,7 +948,6 @@ def run_nominal(seed=None, analyzer=None,
     tester.obstacles = HalfPlaneConstraints(pos_min=pos_min, vel_min=vel_min)
 
     for t in range(MAX_TIME):
-        concrete_scan(tester, t, t + 1)
         tester.real_state_empirical(t, t + 1)
 
     state_history, bound_history = [], []

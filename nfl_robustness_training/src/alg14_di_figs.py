@@ -193,8 +193,8 @@ def _draw_layers(a, psf, nom, act, box_lw, traj_lw, ms, label=False):
     # thing the filter prevents, and it should read before the boxes do.
     rv = nom['real_viol']
     if rv:
-        a.plot(ns[rv, 0], ns[rv, 1], 'o', color=C_VIOL, ms=ms * 1.7,
-               mec='white', mew=0.7, zorder=11, label=L('real-state violation'))
+        a.plot(ns[rv, 0], ns[rv, 1], 'x', color=C_VIOL, ms=ms * 3.0, mew=2.4,
+               zorder=11, label=L('real-state violation'))
 
 
 def phase_portrait(psf, nom, path):
