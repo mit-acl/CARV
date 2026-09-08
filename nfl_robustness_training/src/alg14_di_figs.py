@@ -61,7 +61,7 @@ C_VIOL = '#b3202c'   # constraint / violation
 # The two interact: magnification is INSET_RECT's size divided by the window
 # INSET_PAD_P/INSET_DV carve out, so widening the window at a fixed rect zooms
 # out, and enlarging the rect at a fixed window zooms in.
-INSET_RECT  = (0.245, 0.575, 0.530, 0.375)
+INSET_RECT  = (0.300, 0.575, 0.424, 0.300)
 INSET_PAD_P = 0.10
 INSET_DV    = (-0.13, 0.26)
 INSET_EDGE  = '0.40'
@@ -162,6 +162,7 @@ def _draw_layers(a, psf, nom, act, box_lw, traj_lw, ms, label=False):
     a.plot(pb, vg, color=C_TERM, lw=1.6, zorder=5,
            label=L('terminal invariant set'))
     a.axvline(pos_min, color='0.15', lw=1.4, zorder=5, label=L(r'$p \geq p_{\min}$'))
+    a.axhspan(vel_min - 10.0, vel_min, color=C_VIOL, alpha=0.055, lw=0, zorder=0)
     a.axhline(vel_min, color=C_VIOL, lw=1.5, ls=(0, (5, 2.5)), zorder=5,
               label=L(r'$v \geq v_{\min}$'))
 
@@ -188,10 +189,18 @@ def _draw_layers(a, psf, nom, act, box_lw, traj_lw, ms, label=False):
         b = nom['bound_history'][v_]
         if b is None:
             continue
-        a.plot([b[0, 0]], [b[1, 0]], 'x', color=C_VIOL, ms=ms * 2.6, mew=2.0,
-               zorder=10,
+        a.plot([b[0, 0]], [b[1, 0]], 'x', color=C_VIOL, ms=ms * 2.2, mew=1.6,
+               alpha=0.85, zorder=10,
                label=L('certified violation') if first else None)
         first = False
+
+    # The headline: timesteps where the unfiltered REAL state is inside the
+    # unsafe half-plane. Filled, on top, in the constraint colour — this is the
+    # thing the filter prevents, and it should read before the boxes do.
+    rv = nom['real_viol']
+    if rv:
+        a.plot(ns[rv, 0], ns[rv, 1], 'o', color=C_VIOL, ms=ms * 1.7,
+               mec='white', mew=0.7, zorder=11, label=L('real-state violation'))
 
 
 def phase_portrait(psf, nom, path):
