@@ -4,7 +4,7 @@ Figures + results for alg14_di.py (double-integrator split-terminal PSF).
 Produces, into nfl_robustness_training/results_di/ :
     di_phase_portrait.png   — (p, v) phase plane: invariant-set boundary,
                               RSOA boxes, nominal vs PSF trajectory
-    di_timeseries.png       — v(t) with certified RSOA lower bound, and the
+    di_timeseries.png       — v(t) with the RSOA lower bound, and the
                               applied vs nominal control
     di_results.md / .json   — filtered vs unfiltered violation counts
 
@@ -183,7 +183,11 @@ def _draw_layers(a, psf, nom, act, box_lw, traj_lw, ms, label=False):
                mfc='none', mew=1.6, zorder=9, label=L('PSF intervenes'))
 
     # x at the lower-left corner of every unfiltered RSOA box that dips below a
-    # half-plane — the certificate itself is violated, not merely the sample.
+    # half-plane. NOT "certified violation": the unfiltered run certifies
+    # nothing, and because the box is an over-approximation, intersecting the
+    # unsafe set does not imply the state is unsafe. What it does mean is that
+    # safety cannot be certified at that step — which is the honest comparison,
+    # since keeping this box out of the unsafe set is precisely the PSF's job.
     first = True
     for v_ in nom['rsoa_viol']:
         b = nom['bound_history'][v_]
@@ -191,7 +195,7 @@ def _draw_layers(a, psf, nom, act, box_lw, traj_lw, ms, label=False):
             continue
         a.plot([b[0, 0]], [b[1, 0]], 'x', color=C_VIOL, ms=ms * 2.2, mew=1.6,
                alpha=0.85, zorder=10,
-               label=L('certified violation') if first else None)
+               label=L('RSOA enters unsafe set') if first else None)
         first = False
 
     # The headline: timesteps where the unfiltered REAL state is inside the
@@ -232,7 +236,7 @@ def phase_portrait(psf, nom, path):
         ax.spines[s].set_visible(False)
 
     # ── inset: the v_min crossing ────────────────────────────────────────
-    # Window covers every certified violation of the unfiltered run plus the
+    # Window covers every uncertifiable step of the unfiltered run plus the
     # PSF's response to it, with enough margin to show both RSOA stacks.
     viol = nom['rsoa_viol'] or [int(np.argmin([b[1, 0] for b in nom['bound_history']
                                                if b is not None]))]
