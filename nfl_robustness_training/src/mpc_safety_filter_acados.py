@@ -40,7 +40,12 @@ class UniycleMPCSafetyFilterAcados(MPCSafetyFilter):
                  use_safety_radius: bool = True,
                  split_terminal_D: bool = False,
                  verify_input_bounds: bool = False,
-                 verify_heading_bounds: bool = False):
+                 verify_heading_bounds: bool = False,
+                 first_step_cost: bool = False,
+                 tail_cost_weight: float = 1e-3,
+                 oneshot: bool = False,
+                 oneshot_refine: int = 2,
+                 oneshot_verify: bool = False):
         super().__init__(obstacles, tester, max_lookback)
         # Opt-in so alg14/alg15 keep their measured baseline behaviour.
         self.verify_input_bounds = verify_input_bounds
@@ -48,6 +53,22 @@ class UniycleMPCSafetyFilterAcados(MPCSafetyFilter):
         self.dt        = dt
         self.n_horizon = n_horizon
         self.v         = v
+        # One-shot PSF rollout — see _run_mpc_single_oneshot for why.
+        self.oneshot        = oneshot
+        self.oneshot_refine = max(1, int(oneshot_refine))
+        self.oneshot_verify = oneshot_verify
+        # Largest observed |opt_x_num - plant re-simulation| over the run.
+        # Should stay at machine epsilon; anything else means the OCP model
+        # and cl_system.dynamics have drifted apart and the one-shot
+        # trajectory is no longer a truthful prediction.
+        self.oneshot_model_mismatch = 0.0
+        # Same, restricted to plans that PASSED the acceptance test — the only
+        # ones ever flown. A mismatch on a plan we reject costs nothing; a
+        # mismatch on one we accept is a broken certificate, so the two must
+        # not be pooled into a single max.
+        self.oneshot_mismatch_accepted = 0.0
+        self.oneshot_solves     = 0
+        self.oneshot_bad_status = 0
 
         # Kinematic safety radius: worst-case heading into obstacle at min turning radius.
         # For turning radius R = v / u_max (u_max = 1.0), the vehicle can guarantee
@@ -94,6 +115,7 @@ class UniycleMPCSafetyFilterAcados(MPCSafetyFilter):
             print(f"  [safety radius] disabled — using raw obstacle radii + heading buffer={self.buffer_init_heading}")
 
         # Build the acados MPC (solver is compiled on first call)
+        self.first_step_cost = first_step_cost
         self._mpc = AcadosUnicycleMPC(
             obstacles=solver_obstacles,
             dt=dt,
@@ -102,6 +124,8 @@ class UniycleMPCSafetyFilterAcados(MPCSafetyFilter):
             nominal_tracking=True,
             solver_name=f'unicycle_acados_sf_{os.getpid()}',
             turn_radius=solver_turn_R,
+            first_step_cost=first_step_cost,
+            tail_cost_weight=tail_cost_weight,
         )
 
     @staticmethod
@@ -178,6 +202,15 @@ class UniycleMPCSafetyFilterAcados(MPCSafetyFilter):
 
     def _run_mpc_single(self, initial_bounds, center, extra_inflation,
                         warm_start_omega):
+        """Dispatch to the one-shot or the re-simulation rollout."""
+        if self.oneshot:
+            return self._run_mpc_single_oneshot(
+                initial_bounds, center, extra_inflation, warm_start_omega)
+        return self._run_mpc_single_resim(
+            initial_bounds, center, extra_inflation, warm_start_omega)
+
+    def _run_mpc_single_resim(self, initial_bounds, center, extra_inflation,
+                              warm_start_omega):
         """
         One MPC rollout. warm_start_omega:
           None  → NN-rollout warm-start (default)
@@ -240,6 +273,158 @@ class UniycleMPCSafetyFilterAcados(MPCSafetyFilter):
             trajectory_bounds.append(point_bound)
             points.append(x.copy())
             controls.append(u_arr.copy())
+
+        return trajectory_bounds, points, controls
+
+    def _run_mpc_single_oneshot(self, initial_bounds, center, extra_inflation,
+                                warm_start_omega):
+        """
+        One-shot PSF rollout: solve the OCP once and return ITS OWN plan.
+
+        Why this exists
+        ---------------
+        _run_mpc_single_resim solves the OCP n_horizon times, keeping only u[0]
+        each time and stepping the plant forward one step. Each of those solves
+        applies its hard terminal-D constraint to its own stage N — which sits
+        n_horizon steps beyond wherever the loop currently is. The trajectory
+        that comes back only spans n_horizon steps in total, so its endpoint was
+        never the terminal stage of any solve. Every solve truthfully promises
+        "clear of D in n_horizon steps"; the loop advances one step and the
+        promise is renewed rather than kept. The returned endpoint is
+        unconstrained, and _rollout_verdict rejects it.
+
+        Solving once and returning the solver's own u[0..N-1] and x[0..N] closes
+        that gap: the terminal constraint binds on exactly the endpoint we hand
+        back, so a rollout that reaches this point cannot violate terminal-D.
+
+        What is returned is opt_u_seq re-simulated through the PLANT, not
+        opt_x_num itself. The two models are identical on paper — disc_dyn_expr
+        is x + v*cos(th)*dt, y + v*sin(th)*dt, th + w*dt, and
+        Unicycle_NL.dynamics_step is the same explicit Euler with v taken off
+        the plant — but that is not enough. opt_x_num is a primal iterate of an
+        SQP_RTI solve: its states satisfy the LINEARISED dynamics, and only at
+        convergence the nonlinear ones. Measured over 7722 solves, plans that
+        passed the full acceptance test differed from their own plant rollout by
+        up to 5.2. Returning the iterate would certify a trajectory the robot
+        cannot fly.
+
+        Re-simulating instead costs one rollout and is true by construction. The
+        terminal-D guarantee still transfers whenever the solve converged, which
+        is the entire reason to solve once rather than n_horizon times; when it
+        did not converge, the acceptance test sees the real endpoint and rejects
+        it. oneshot_verify measures the gap as a convergence diagnostic.
+
+        Bounds are built the same way as the re-simulation path: each nominal
+        state carries the INITIAL half-widths, translated rigidly. The box does
+        not grow along the horizon in either path, so swapping the state source
+        changes nothing about how the certificate is formed.
+        """
+        half_widths = (initial_bounds[:, 1] - initial_bounds[:, 0]) / 2.0
+        hw_x = half_widths[0]
+        hw_y = half_widths[1]
+
+        inflation = float(np.sqrt(hw_x ** 2 + hw_y ** 2)) + extra_inflation + self.buffer_init_heading
+
+        self._mpc._obs_inflation_buf[0] = inflation
+
+        x = center.reshape(-1, 1)
+        self._mpc.x0 = x
+
+        if warm_start_omega is not None:
+            self._mpc._nom_ctrl_buf[:] = float(warm_start_omega)
+        else:
+            self._fill_nom_ctrl_buf(x.flatten())
+        self._mpc.set_initial_guess()
+
+        # First make_step after set_initial_guess runs _RTI_WARMUP_ITERS
+        # iterations, so a single call is already converged. Further passes
+        # re-query the NN at the OCP's own predicted states and re-solve —
+        # the min-intervention fixed point the re-simulation loop was
+        # approaching one step at a time. Each extra pass is 1 RTI iteration.
+        predicted_states = None
+        for _ in range(self.oneshot_refine):
+            if predicted_states is not None:
+                self._fill_nom_ctrl_buf_from_states(predicted_states[1:])
+            # Force the full RTI budget on every pass. The default drops to a
+            # single iteration once _step_count > 0, which is right for a
+            # receding-horizon controller warm-started one step at a time but
+            # wrong here: each pass changes yref at the SAME x0, and one
+            # iteration leaves a primal iterate that does not satisfy the
+            # nonlinear dynamics.
+            self._mpc.make_step(x, n_rti=self._mpc._RTI_WARMUP_ITERS)
+            predicted_states = [
+                np.array(self._mpc.opt_x_num['_x', k, 0]).flatten()
+                for k in range(self.n_horizon + 1)
+            ]
+
+        controls = self._mpc.opt_u_seq
+
+        # The trajectory we return is the PLANT's response to these inputs, not
+        # the solver's iterate.
+        #
+        # opt_x_num is a primal iterate of an SQP_RTI solve. Its states satisfy
+        # the LINEARISED dynamics at each iteration; only at convergence do they
+        # satisfy the nonlinear ones. A partially converged iterate can clear
+        # every obstacle and sit outside D at the terminal node while not being
+        # a trajectory the robot can fly — measured at |opt_x_num - plant| up to
+        # 5.2 on plans that passed the acceptance test. Certifying that would be
+        # certifying fiction.
+        #
+        # Re-simulating opt_u_seq through cl_system.dynamics costs one rollout
+        # and makes the returned states true by construction, whatever the
+        # solver's convergence state. The terminal-D guarantee still transfers
+        # whenever the solve converged — that is the whole point of solving once
+        # instead of n_horizon times — and when it did not, the acceptance test
+        # sees the real endpoint and rejects it. Sound either way; better
+        # whenever acados converged.
+        cl_sys      = self.tester.analyzer.cl_system
+        xs          = center.flatten().reshape(1, -1)
+        plant_states = [center.flatten().copy()]
+        for u_arr in controls:
+            xs = cl_sys.dynamics.dynamics_step(xs, u_arr.reshape(1, -1))
+            if hasattr(xs, 'numpy'):
+                xs = xs.numpy()
+            xs = np.array(xs).reshape(1, -1)
+            plant_states.append(xs.flatten().copy())
+
+        trajectory_bounds = [initial_bounds.copy()]
+        points            = []
+        for k in range(1, self.n_horizon + 1):
+            xf = plant_states[k]
+            trajectory_bounds.append(np.array([
+                [xf[0] - hw_x,           xf[0] + hw_x          ],
+                [xf[1] - hw_y,           xf[1] + hw_y          ],
+                [xf[2] - half_widths[2], xf[2] + half_widths[2]],
+            ]))
+            points.append(xf.reshape(-1, 1).copy())
+
+        if self.oneshot_verify:
+            self.oneshot_solves += 1
+            if getattr(self._mpc, 'last_status', 0) not in (0, 2):
+                self.oneshot_bad_status += 1
+
+            # Distance between the solver's iterate and the real rollout. This
+            # is now a CONVERGENCE diagnostic, not a soundness one — the
+            # returned trajectory is the plant rollout either way. It still
+            # matters: the terminal-D guarantee only transfers from the OCP to
+            # the flown plan to the extent these agree, so a large number here
+            # predicts term_D rejections rather than unsafe flight.
+            worst = max(
+                (float(np.max(np.abs(plant_states[k] - predicted_states[k])))
+                 for k in range(1, self.n_horizon + 1)),
+                default=0.0)
+
+            if worst > self.oneshot_model_mismatch:
+                self.oneshot_model_mismatch = worst
+
+            # Split by whether this plan would be accepted. Rejected plans are
+            # discarded by the caller, so their mismatch is noise; only the
+            # accepted number bears on soundness.
+            accepted = not any(self._collides_raw(b)
+                               for b in trajectory_bounds[1:-1])
+            accepted = accepted and not self._collides_D(trajectory_bounds[-1])
+            if accepted and worst > self.oneshot_mismatch_accepted:
+                self.oneshot_mismatch_accepted = worst
 
         return trajectory_bounds, points, controls
 
@@ -404,6 +589,11 @@ def make_mpc_safety_filter_acados(tester, obstacles_list=None,
             split_terminal_D=kwargs.get('split_terminal_D', False),
             verify_input_bounds=kwargs.get('verify_input_bounds', False),
             verify_heading_bounds=kwargs.get('verify_heading_bounds', False),
+            first_step_cost=kwargs.get('first_step_cost', False),
+            oneshot=kwargs.get('oneshot', False),
+            oneshot_refine=kwargs.get('oneshot_refine', 2),
+            oneshot_verify=kwargs.get('oneshot_verify', False),
+            tail_cost_weight=kwargs.get('tail_cost_weight', 1e-3),
         )
 
     return None

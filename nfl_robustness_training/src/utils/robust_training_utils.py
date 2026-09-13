@@ -12,6 +12,61 @@ from auto_LiRPA.perturbations import *
 import cl_systems
 import time
 
+class ReachableSetBoundsError(RuntimeError):
+    """A reachable set was not a usable interval when handed to auto_LiRPA.
+
+    auto_LiRPA does not validate its input. A NaN (or inf, which becomes NaN
+    once BoundSin subtracts its 2-pi cycle offset) reaches the sine relaxation
+    lookup table as ``nan.div(step).long()``, which casts to INT64_MIN, and the
+    run dies with
+
+        IndexError: index -9223372036854775808 is out of bounds for dimension 0
+        with size 1001
+
+    thrown from ``trigonometric.py`` inside ``backward_general`` -- naming
+    neither the offending state nor the timestep it came from. Note that
+    ``torch.clamp`` in ``get_bound_tb`` does NOT filter this out: clamping a NaN
+    returns NaN. Checking here, where ``t`` and the interval are both in hand,
+    turns that into an error that says what actually went wrong.
+    """
+
+
+def check_interval_bounds(full_set, where, t=None, thread=None, tol=1e-9):
+    """Raise ReachableSetBoundsError unless `full_set` is a valid interval.
+
+    `full_set` is (n_dims, 2) of [lower, upper]. Rejects non-finite entries and
+    inverted intervals (lower > upper) -- the latter give PerturbationLpNorm a
+    negative eps, which silently concretizes to a backwards box rather than
+    raising anywhere.
+
+    `tol` keeps float noise from being reported as an inversion: a degenerate
+    set (lower == upper) is legitimate and common, and CROWN can land a hair
+    either side of it. A real inversion -- a sign error or a corrupt set -- is
+    orders of magnitude wider than this, so the tolerance costs no detection.
+    Non-finiteness is checked exactly; there is no benign NaN.
+    """
+    nonfinite = ~torch.isfinite(full_set)
+    lower, upper = full_set[..., 0], full_set[..., 1]
+    inverted = lower > upper + tol
+    if not bool(nonfinite.any() or inverted.any()):
+        return
+
+    lines = []
+    for i in range(full_set.shape[0]):
+        note = ""
+        if bool(nonfinite[i].any()):
+            note = "   <-- NON-FINITE"
+        elif bool(inverted[i]):
+            note = "   <-- INVERTED (lower > upper)"
+        lines.append("    dim {}: [{}, {}]{}".format(
+            i, lower[i].item(), upper[i].item(), note))
+
+    raise ReachableSetBoundsError(
+        "{}: reachable set at t={} (thread={}) is not a valid interval, "
+        "refusing to call auto_LiRPA.\n{}".format(
+            where, t, thread, "\n".join(lines)))
+
+
 class ReachableSet:
     def __init__(self, t, ranges = None, partition_strategy = 'maintain', thread = 0, device='cpu') -> None:
         self.t = t
@@ -119,24 +174,46 @@ class ReachableSet:
 
     def populate_next_reachable_set(self, bounded_cl_system, next_reachable_set, training=False):
         if self.subsets == {} and next_reachable_set.recalculate:
+            # Validate before auto_LiRPA gets it: a NaN/inf here dies ~8 frames
+            # deep as an unattributable IndexError out of the BoundSin lookup
+            # table. See ReachableSetBoundsError.
+            check_interval_bounds(
+                self.full_set, "populate_next_reachable_set (input set)",
+                self.t, self.thread)
             x = torch.mean(self.full_set.float(), axis=1).reshape((1, -1))   ##### added .float()
             eps = (self.full_set[:, 1] - self.full_set[:, 0])/2
             ptb = PerturbationLpNorm(eps = eps)
             range_tensor = BoundedTensor(x, ptb)
             # import pdb; pdb.set_trace()
-            if training:
-                # print("crown fast")
-                # tstart = time.time()
-                # lb, ub = bounded_cl_system.compute_bounds(x=(range_tensor,), method=None, IBP=True)
-                # tend = time.time()
-                # # print("first calc: {}".format(tend-tstart))
-                # tstart = time.time()
-                # lb, _ = bounded_cl_system.compute_bounds(x=(range_tensor,), method="backward", IBP=False,  bound_upper=False)
-                # tend = time.time()
-                # print("second calc: {}".format(tend-tstart))
-                lb, ub = bounded_cl_system.compute_bounds(x=(range_tensor,), method="backward")
-            else:
-                lb, ub = bounded_cl_system.compute_bounds(x=(range_tensor,), method="backward")
+            try:
+                if training:
+                    # print("crown fast")
+                    # tstart = time.time()
+                    # lb, ub = bounded_cl_system.compute_bounds(x=(range_tensor,), method=None, IBP=True)
+                    # tend = time.time()
+                    # # print("first calc: {}".format(tend-tstart))
+                    # tstart = time.time()
+                    # lb, _ = bounded_cl_system.compute_bounds(x=(range_tensor,), method="backward", IBP=False,  bound_upper=False)
+                    # tend = time.time()
+                    # print("second calc: {}".format(tend-tstart))
+                    lb, ub = bounded_cl_system.compute_bounds(x=(range_tensor,), method="backward")
+                else:
+                    lb, ub = bounded_cl_system.compute_bounds(x=(range_tensor,), method="backward")
+            except ReachableSetBoundsError:
+                raise
+            except Exception as exc:
+                # The input set passed the check above, so whatever went wrong
+                # arose inside the bound propagation (e.g. a NaN produced by the
+                # network itself). Attach t / eps / the set so the log names them.
+                raise ReachableSetBoundsError(
+                    "compute_bounds failed at t={} (thread={}), propagating to "
+                    "t={}: {}: {}\n    input set: {}\n    center x: {}\n"
+                    "    eps: {}".format(
+                        self.t, self.thread, next_reachable_set.t,
+                        type(exc).__name__, exc,
+                        self.full_set.detach().cpu().tolist(),
+                        x.detach().cpu().tolist(),
+                        eps.detach().cpu().tolist())) from exc
 
             # if next_reachable_set.populated:
             #     lb_ = torch.hstack((lb.T, next_reachable_set.full_set))
@@ -146,6 +223,12 @@ class ReachableSet:
 
 
             reach_set_range = torch.hstack((lb.T, ub.T))
+            # Catch a bad set at the step that produced it rather than one step
+            # later, where only the consumer's timestep would be reported.
+            check_interval_bounds(
+                reach_set_range,
+                "populate_next_reachable_set (bounds out of t={})".format(self.t),
+                next_reachable_set.t, self.thread)
             next_reachable_set.add_subset(reach_set_range, self.thread)
         else:
             for i, subset in self.subsets.items():

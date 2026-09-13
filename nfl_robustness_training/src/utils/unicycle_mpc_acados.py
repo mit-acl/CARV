@@ -85,7 +85,9 @@ class AcadosUnicycleMPC:
     def __init__(self, obstacles: list, dt: float = 0.2, v: float = 1.0,
                  n_horizon: int = 10, nominal_tracking: bool = True,
                  solver_name: str = 'unicycle_acados',
-                 turn_radius: float = None):
+                 turn_radius: float = None,
+                 first_step_cost: bool = False,
+                 tail_cost_weight: float = 1e-3):
         # nominal_tracking kept as parameter for call-site compatibility but
         # non-nominal path is removed — always uses NONLINEAR_LS tracking cost.
         #
@@ -103,6 +105,76 @@ class AcadosUnicycleMPC:
         self.obstacles   = obstacles if obstacles is not None else []
         self.turn_radius = turn_radius
 
+        # first_step_cost: charge the min-intervention cost only at stage 0.
+        #
+        # The default objective is sum_k (omega_k - omega_nom,k)^2 over the whole
+        # horizon, so the tail is pulled toward the NN policy even though only
+        # the first input is ever applied. Under a receding-horizon filter that
+        # is a constraint on the solver with nothing to buy: every later input
+        # is re-planned before it would be used. Dropping the tail weight gives
+        # the solver the whole horizon to find a safe continuation while still
+        # deviating minimally from what the NN wants RIGHT NOW.
+        #
+        # tail_cost_weight is small but NOT zero. The Gauss-Newton Hessian of a
+        # NONLINEAR_LS stage is J^T W J and no Levenberg-Marquardt term is
+        # configured (GAUSS_NEWTON, see solver_options below), so W = 0 would
+        # make those blocks exactly singular. That is the reason for the floor,
+        # but note it was NOT the cause of any observed failure: a 24-trial
+        # sweep over 1e-3/1e-2/1e-1 recorded ZERO solver errors at every weight.
+        #
+        # MEASURED (2026-08-31, 24 trials/arm, seed 20260831). Down-weighting
+        # the tail triples re-solve rejections (4 -> 12-14) and the reason is
+        # always rollout_rejected, never solver_error. Applied-control deviation
+        # from nominal drops with the flag on: mean |u_mpc - u_nn| 1.08 -> 0.76,
+        # max 4.20 -> 2.18. Safety was 0/24 unsafe in every arm — this is a
+        # feasibility effect, not a safety one.
+        #
+        # MECHANISM (32 trials/arm, rejections broken down by check and node):
+        #   control    13 rejects =  7 path_raw (nodes 2,5,8) +  6 term_D
+        #   firststep  24 rejects =  4 path_raw               + 20 term_D
+        # path_raw goes DOWN; the entire increase is term_D at the terminal
+        # node. The plans do not clip obstacles earlier — they fail to leave the
+        # danger region D within the horizon.
+        #
+        # Why: _run_mpc_single returns a RE-SIMULATION (solve, take u[0], step,
+        # repeat), not the OCP's own prediction. Each solve enforces its hard
+        # terminal-D constraint on ITS stage-N state, n_horizon steps beyond
+        # wherever the inner loop currently sits, while the returned trajectory
+        # only reaches step n_horizon in total. So every solve truthfully
+        # promises "clear of D in n_horizon steps", the loop advances one step,
+        # and the promise is renewed instead of kept. Whole-horizon tracking
+        # hides this because the plan follows the NN's goal-seeking path and
+        # exits D anyway; with the tail freed the controls are weaker
+        # (mean |u_mpc - u_nn| 1.08 -> 0.76) and the endpoint is still in D.
+        #
+        # NOTE the numbers above were measured on the RE-SIMULATION path and do
+        # not transfer to the one-shot path (TTTCARV_ONESHOT=1), where the
+        # returned endpoint IS the stage-N state the hard terminal constraint
+        # was applied to. Re-measure before quoting them.
+        #
+        # Fix, since implemented as the one-shot rollout: return the plan the
+        # terminal constraint actually bound. The first attempt returned
+        # opt_x_num directly, on the argument that this is sound as long as the
+        # OCP's DISCRETE model matches cl_system.dynamics. THAT ARGUMENT IS
+        # WRONG. The models do match (both are the same explicit Euler step, same
+        # dt) and it was still unsound: opt_x_num is an SQP_RTI primal iterate
+        # satisfying the LINEARIZED dynamics, and |opt_x_num - plant| measured
+        # 5.169 on plans the acceptance test had ACCEPTED. Model fidelity was
+        # never the binding gate; solver convergence was.
+        #
+        # So the one-shot path returns opt_u_seq re-simulated through
+        # cl_system.dynamics. Those states are true whatever the solver did.
+        # What convergence still buys is the terminal GUARANTEE: the hard
+        # constraint transfers to the flown endpoint only insofar as the solve
+        # converged, so a partially converged solve shows up as a term_D
+        # rejection rather than as an unsafe trajectory.
+        #
+        # first_step_cost is left OFF by default: on the re-simulation path it
+        # cost feasibility for no measured benefit. Safety was 0/32 unsafe in
+        # both arms. It is the principled cost only when u[0] alone is applied.
+        self.first_step_cost  = first_step_cost
+        self.tail_cost_weight = tail_cost_weight
+
         # Buffers — same attribute names as the do_mpc version
         self._obs_inflation_buf = np.zeros(1)
         self._nom_ctrl_buf      = np.zeros((n_horizon + 1, 1))
@@ -111,14 +183,68 @@ class AcadosUnicycleMPC:
         self._x0          = np.zeros((3, 1))
         self._step_count  = 0
         self._predicted_x = [np.zeros(3) for _ in range(n_horizon + 1)]
+        # Full optimal input sequence from the last solve. The re-simulation
+        # rollout only ever needs u[0], but a one-shot PSF solve needs the
+        # whole sequence: it is the plan whose terminal state the hard
+        # terminal constraint was actually applied to.
+        self._predicted_u = [np.zeros(1) for _ in range(n_horizon)]
+        # acados status of the most recent solve. A nonzero status means
+        # _predicted_x/_predicted_u are whatever the solver last held, not a
+        # converged plan — the one-shot path must not treat those as a
+        # prediction of anything.
+        self.last_status = 0
+
+        # ── Per-process codegen paths ─────────────────────────────────
+        # run_trials_random_obs runs N worker PROCESSES on one node and every
+        # one constructs this class. solver_name was a fixed string, so all N
+        # shared /tmp/unicycle_acados_gen and the .so built inside it -- and
+        # each worker rmtree(s) that shared directory immediately before
+        # compiling into it (just below). Concurrent workers therefore delete
+        # each other in-progress codegen, and a worker can load a library
+        # built from another process half-written sources. AcadosOcpSolver
+        # does NOT raise when this happens: the loser would get a solver that
+        # never produces a usable plan, silently, for the life of the process.
+        #
+        # CORRECTION (2026-09-11): an earlier version of this comment claimed
+        # this race was the MEASURED cause of the dead-worker mode, where a
+        # worker ran every trial with mpc_calls=0 and flew unfiltered nominal.
+        # That claim was wrong and is retracted. The 16-worker "confirmation"
+        # was underpowered -- the mode needs ~64 workers to show up at all --
+        # and a 64-worker regression arm run WITH the pid suffix in place
+        # returned 9 dead workers. The actual cause was found afterwards in
+        # alg22: budget.mpc_cost is calibrated once per process, and a worker
+        # whose single startup measurement landed above the 0.20s timestep
+        # budget could never satisfy `budget.remaining >= budget.mpc_cost`, so
+        # it skipped every MPC build for the rest of its life through an
+        # uncounted `break`. See the calibration sanity guard in alg22.py.
+        #
+        # The pid suffix stays on its own merits: a shared /tmp directory that
+        # every worker rmtree(s) immediately before compiling into it is a real
+        # hazard whether or not it ever fired. Giving each process its own
+        # directory, .so and json is what makes the rmtree below safe at all.
+        # It is hardening, not a fix for anything observed.
+        solver_name = f"{solver_name}_p{os.getpid()}"
 
         # Delete stale cached files so the new formulation is compiled fresh
         import shutil
         for path in [f'/tmp/{solver_name}_gen', f'/tmp/{solver_name}_ocp.json']:
             if os.path.exists(path):
                 shutil.rmtree(path, ignore_errors=True) if os.path.isdir(path) else os.remove(path)
+        # One codegen tree per process would otherwise accumulate in /tmp over
+        # a long pool run.
+        import atexit as _atexit
+        _atexit.register(shutil.rmtree, f"/tmp/{solver_name}_gen", True)
 
         self._solver = self._build_solver(solver_name)
+
+        # W is a numerical parameter, not part of the generated code, so this
+        # re-weights the compiled solver without a rebuild.
+        if self.first_step_cost:
+            for k in range(1, self.n_horizon):
+                self._solver.cost_set(k, 'W',
+                                      np.array([[float(self.tail_cost_weight)]]))
+            print(f"  [MPC cost] first-step only: stage 0 weight=1.0,"
+                  f" stages 1..{self.n_horizon - 1} weight={self.tail_cost_weight}")
 
     # ------------------------------------------------------------------
     # Construction
@@ -351,7 +477,7 @@ class AcadosUnicycleMPC:
     # Subsequent solves are warm-started and need only 1 RTI iteration.
     _RTI_WARMUP_ITERS = 20
 
-    def make_step(self, x0: np.ndarray) -> np.ndarray:
+    def make_step(self, x0: np.ndarray, n_rti: int = None) -> np.ndarray:
         """
         Solve the OCP from x0 using SQP_RTI.
 
@@ -373,17 +499,33 @@ class AcadosUnicycleMPC:
         # Push parameters and references
         self._push_parameters()
 
-        n_rti = self._RTI_WARMUP_ITERS if self._step_count == 0 else 1
+        if n_rti is None:
+            n_rti = self._RTI_WARMUP_ITERS if self._step_count == 0 else 1
         for _ in range(n_rti):
             status = self._solver.solve()
+        self.last_status = status
         if status not in (0, 2):
             print(f'  [acados] Solver status {status} (step {self._step_count})')
 
         for k in range(self.n_horizon + 1):
             self._predicted_x[k] = self._solver.get(k, 'x')
+        for k in range(self.n_horizon):
+            self._predicted_u[k] = self._solver.get(k, 'u')
 
         self._step_count += 1
         return self._solver.get(0, 'u').reshape(1, 1)
+
+    @property
+    def opt_u_seq(self) -> list:
+        """
+        Optimal input sequence u[0..N-1] from the most recent solve.
+
+        Applying this whole sequence open-loop from x0 reproduces opt_x_num
+        exactly, because disc_dyn_expr above is the same explicit-Euler step
+        as Unicycle_NL.forward in cl_systems/unicycle.py. That identity is
+        what lets a single solve stand in for the re-simulation rollout.
+        """
+        return [np.array(u).flatten().copy() for u in self._predicted_u]
 
     @property
     def opt_x_num(self) -> _OptXAccessor:

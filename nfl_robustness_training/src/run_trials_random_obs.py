@@ -30,7 +30,17 @@ N_TRIALS  = int(os.environ.get('TTTCARV_TRIALS', N_TRIALS))
 # which one is under test is a third knob rather than a source edit:
 #   TTTCARV_ALG=alg19_purge python run_trials_random_obs.py
 ALG_MODULE = os.environ.get('TTTCARV_ALG', 'alg14_split_terminal')
-OBS_RADIUS = 0.5
+# Scenario hardness knobs. Defaults reproduce the historical generator exactly
+# (1-5 obstacles, r=0.5): integers(1, 5+1) is the same draw as integers(1, 6),
+# so a given TTTCARV_SEED yields the same scenes as every previous run.
+#
+# Raise density/size to harden, NOT GOAL_KEEPOUT. Lowering the keep-out does
+# produce collisions, but they are the untrained NN endgame failing near the
+# origin -- the exact confound the keep-out was introduced to remove. Those
+# failures would measure the controller, not the filter.
+OBS_RADIUS = float(os.environ.get('TTTCARV_OBS_RADIUS', '0.5'))
+OBS_NMIN   = int(os.environ.get('TTTCARV_OBS_NMIN', '1'))
+OBS_NMAX   = int(os.environ.get('TTTCARV_OBS_NMAX', '5'))
 X_RANGE = (-7.0, -1.0)
 Y_RANGE = (-1.0,  2.0)
 
@@ -49,7 +59,7 @@ GOAL_KEEPOUT = float(os.environ.get('TTTCARV_GOAL_KEEPOUT', 1.5))
 
 
 def _gen_obstacles(rng):
-    n = int(rng.integers(1, 6))  # 1–5
+    n = int(rng.integers(OBS_NMIN, OBS_NMAX + 1))
     obs = []
     for _ in range(n):
         # Rejection-sample per obstacle rather than per scene so the 1–5 count
@@ -86,8 +96,22 @@ def _worker_init():
     import torch
     torch.set_num_threads(1)
 
-    sys.stdout = open(os.devnull, 'w')
-    sys.stderr = open(os.devnull, 'w')
+    # Worker stdout is discarded by default: 64 workers x 5000 trials of
+    # per-timestep prints is unusable, and interleaved writes from 64
+    # processes are not even parseable. The cost is that every diagnostic the
+    # algorithm prints -- including the [PSF] No-backup line that explains a
+    # psf_no_diverge fallback -- is invisible, which is why the dead-worker
+    # mode went unnoticed. TTTCARV_WORKER_LOG_DIR gives each worker its own
+    # file instead, so a small reproduction can be read per process.
+    _wlog = os.environ.get('TTTCARV_WORKER_LOG_DIR')
+    if _wlog:
+        os.makedirs(_wlog, exist_ok=True)
+        _f = open(os.path.join(_wlog, f'w_{os.getpid()}.log'), 'w', buffering=1)
+        sys.stdout = _f
+        sys.stderr = _f
+    else:
+        sys.stdout = open(os.devnull, 'w')
+        sys.stderr = open(os.devnull, 'w')
 
 
 # ── Regime fingerprint ──────────────────────────────────────────────────
@@ -132,11 +156,12 @@ def _machine():
             "slurm_cpus": os.environ.get("SLURM_CPUS_ON_NODE")}
 
 
-def _run_trial(args):
+def _run_trial_inner(args):
     i, seed, obstacles = args
     from REAL_integrated_sim import setup_analyzer
     from importlib import import_module
-    test = import_module(ALG_MODULE).test
+    _alg = import_module(ALG_MODULE)
+    test = _alg.test
     import time as _t
     analyzer = setup_analyzer('Unicycle_NL', 'natural_none_default')
     # Per-timestep budget ledger: one file per trial, named by seed so the
@@ -158,9 +183,68 @@ def _run_trial(args):
     fp = {"probe_before_s": probe_before, "probe_after_s": probe_after,
           "wall_s": wall,
           "wall_per_timestep_s": wall / max(len(traj), 1),
-          "pid": os.getpid()}
+          "pid": os.getpid(),
+          # Behavioural counters, not just timing: without these the
+          # fingerprint cannot answer "did these two algorithms do the same
+          # thing on this seed", which is the whole point of a paired A/B.
+          # Additive — existing fingerprint consumers ignore unknown keys.
+          "mpc_calls":       mpc_calls,
+          "psf_no_diverge":  no_diverge,
+          "psf_queue_empty": queue_empty,
+          "pt_found":        pt_found,
+          "pt_used":         pt_used}
+    # Algorithm-specific counters that do not fit the shared return tuple.
+    # A module exposes them by setting LAST_RUN_STATS at the end of test();
+    # workers are processes running trials sequentially, so reading it here
+    # cannot pick up another trial's values. Inert for modules without it.
+    fp.update(getattr(_alg, 'LAST_RUN_STATS', None) or {})
     return (i, seed, obstacles, len(traj), mpc_calls, no_diverge, queue_empty,
             pt_found, pt_used, had_collision, fp)
+
+
+# Sentinel key marking a trial that raised. Consumers test `fp.get(TRIAL_ERROR_KEY)`
+# rather than a tuple position, so the result shape is unchanged.
+TRIAL_ERROR_KEY = "error"
+
+
+def _run_trial(args):
+    """Run one trial, converting a crash into a recorded failure.
+
+    pool.imap_unordered re-raises a worker exception in the PARENT, which breaks
+    out of the consuming for-loop and discards every trial still queued or
+    in flight. On 2026-09-12 (SLURM job 22615021, array task 4) a single trial
+    raised an IndexError out of auto_LiRPA's sine relaxation at roughly trial
+    5175 of 6250 and took the remaining ~1000 trials down with it.
+
+    Catching here keeps the pool alive: the bad trial becomes a row carrying its
+    seed and traceback, and every later trial still runs. KeyboardInterrupt and
+    SystemExit are deliberately NOT caught, so Ctrl-C and scancel still work.
+    """
+    i, seed, obstacles = args
+    try:
+        return _run_trial_inner(args)
+    except Exception as exc:
+        import traceback as _tb
+        tb = _tb.format_exc()
+        err = "{}: {}".format(type(exc).__name__, exc)
+        # Deliberately NOT printed here: _worker_init points worker stdout at
+        # os.devnull unless TTTCARV_WORKER_LOG_DIR is set, so a print from this
+        # process would usually vanish. The traceback travels back in fp and the
+        # parent prints it, where stdout is the real run log.
+        try:
+            probe_after = _probe()
+        except Exception:
+            probe_after = float("nan")
+        fp = {"probe_before_s": float("nan"), "probe_after_s": probe_after,
+              "wall_s": float("nan"), "wall_per_timestep_s": float("nan"),
+              "pid": os.getpid(),
+              "mpc_calls": 0, "psf_no_diverge": 0, "psf_queue_empty": 0,
+              "pt_found": 0, "pt_used": 0,
+              TRIAL_ERROR_KEY: err, "traceback": tb}
+        # had_collision is False, but the TRIAL_ERROR_KEY above keeps this trial
+        # out of the safety record entirely -- a crashed trial is not evidence
+        # of safety and must not pad the denominator.
+        return (i, seed, obstacles, 0, 0, 0, 0, 0, 0, False, fp)
 
 
 if __name__ == "__main__":
@@ -186,7 +270,7 @@ if __name__ == "__main__":
     n_workers = min(N_WORKERS, N_TRIALS)
     print(f"Running {N_TRIALS} trials of {ALG_MODULE} across {n_workers} workers  "
           f"({_n_cpus} CPUs available)  "
-          f"(1-5 random obstacles, r={OBS_RADIUS}, "
+          f"({OBS_NMIN}-{OBS_NMAX} random obstacles, r={OBS_RADIUS}, "
           f"x∈{X_RANGE}, y∈{Y_RANGE}, "
           f"goal keep-out={GOAL_KEEPOUT})...")
 
@@ -198,6 +282,15 @@ if __name__ == "__main__":
             results_raw.append(result)
             (i, seed, obstacles, n_states, mpc_calls, no_diverge, queue_empty,
              pt_found, pt_used, had_collision, fp) = result
+            if fp.get(TRIAL_ERROR_KEY):
+                # Printed here rather than in the worker: worker stdout goes to
+                # os.devnull by default (see _worker_init), so this is the only
+                # place the traceback reaches the run log. The seed is what
+                # reproduces it: TTTCARV_TRIALS=1 with this seed re-runs it alone.
+                print(f"  Trial {i+1:>3}  seed={seed}  [FAILED]  "
+                      f"{fp[TRIAL_ERROR_KEY]}\n"
+                      f"{fp.get('traceback', '')}", flush=True)
+                continue
             status = "UNSAFE" if had_collision else "safe"
             obs_str = "  ".join(f"({o[0]:.2f},{o[1]:.2f})" for o in obstacles)
             print(f"  Trial {i+1:>3}  seed={seed}  [{status}]  "
@@ -217,8 +310,13 @@ if __name__ == "__main__":
     no_diverge_trials  = []   # (trial#, seed, count)
     queue_empty_trials = []
     pt_trials          = []   # trials where passthrough fired (found or used)
+    failed_trials      = []   # (trial#, seed, error, obs_str) -- trials that raised
     for (i, seed, obstacles, n_states, mpc_calls, no_diverge, queue_empty,
          pt_found, pt_used, had_collision, fp) in results_raw:
+        if fp.get(TRIAL_ERROR_KEY):
+            obs_str = "  ".join(f"({o[0]:.3f},{o[1]:.3f},r={o[2]})" for o in obstacles)
+            failed_trials.append((i + 1, seed, fp[TRIAL_ERROR_KEY], obs_str))
+            continue
         safety_record.append(not had_collision)
         total_no_diverge  += no_diverge
         total_queue_empty += queue_empty
@@ -238,8 +336,19 @@ if __name__ == "__main__":
             unsafe_info.append((i + 1, seed, obs_str))
 
     n_safe = sum(safety_record)
+    n_completed = len(safety_record)
     print(f"\n{'='*60}")
-    print(f"Safety record: {n_safe}/{N_TRIALS} safe  ({100*n_safe/N_TRIALS:.1f}%)")
+    print(f"Safety record: {n_safe}/{n_completed} safe"
+          f"  ({100*n_safe/max(n_completed, 1):.1f}%)")
+    if failed_trials:
+        # Loud and above the rest of the summary: a run with failed trials has a
+        # smaller denominator than it looks, and the percentage above is over
+        # completed trials only.
+        print(f"!! {len(failed_trials)}/{N_TRIALS} trials FAILED and are excluded"
+              f" from the safety record above:")
+        for trial_num, seed, err, obs_str in failed_trials:
+            print(f"    Trial {trial_num:>3}  seed={seed}  {err}")
+            print(f"         obs=[{obs_str}]")
     print(f"PSF no-diverge fallbacks:  {total_no_diverge} timesteps"
           f" across {len(no_diverge_trials)} trials")
     for trial_num, seed, count, obs_str in no_diverge_trials:
@@ -273,7 +382,10 @@ if __name__ == "__main__":
     print(f"  host={mach['host']}  cpu={mach['cpu']}")
     print(f"  workers={mach['workers']}  cpus_granted={mach['cpus_granted']}"
           f"  slurm_job={mach['slurm_job']}")
-    probes = sorted(r["probe_after_s"] for r in rows)
+    # Failed trials carry NaN probes; NaN would corrupt the sort and every
+    # quantile drawn from it, so the contention stats use completed trials only.
+    ok_rows = [r for r in rows if not r.get(TRIAL_ERROR_KEY)]
+    probes = sorted(r["probe_after_s"] for r in ok_rows)
     if probes:
         def _q(p):
             return probes[min(len(probes) - 1, int(p * len(probes)))]
@@ -287,7 +399,7 @@ if __name__ == "__main__":
         med = _q(.5)
         for lab, sel in (("faster half (less starved)", lambda v: v <= med),
                          ("slower half (more starved)", lambda v: v > med)):
-            g = [r for r in rows if sel(r["probe_after_s"])]
+            g = [r for r in ok_rows if sel(r["probe_after_s"])]
             nc = sum(1 for r in g if r["collision"])
             if g:
                 print(f"  {lab:<28} n={len(g):<5} collisions={nc}"
