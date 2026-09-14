@@ -254,10 +254,16 @@ class ReachabilityTester:
 
 
 
-    def concrete(self, start_timestep: int, end: Optional[int] = None):
+    def concrete(self, start_timestep: int, end: Optional[int] = None,
+                 time_left=None, step_price: float = 0.0):
         """
         Get concrete reachable set
         Args: start timestep, end timestep
+        time_left: optional callable returning seconds left in the caller's
+            timestep budget. Before each step after the first, propagation
+            stops if less than max(step_price, previous step's wall time) is
+            left; the result then has 'truncated': True and completed_steps <
+            end - start_timestep (bounds exist for every completed step).
         """
 
         # Get parent horizon
@@ -282,7 +288,21 @@ class ReachabilityTester:
         print(f"Starting concrete propagation: t={start_timestep} -> t={end} ({num_steps} steps)")
 
         # Loop through each iteration/timestep
+        last_wall = 0.0
         for step in range(num_steps):
+            if (step > 0 and time_left is not None
+                    and time_left() < max(step_price, last_wall)):
+                print(f"  Concrete deadline: stopped after {step}/{num_steps} steps")
+                self.time += total_time
+                return {
+                    'success': True,
+                    'time': total_time,
+                    'completed_steps': step,
+                    'truncated': True,
+                    'collision': False,
+                    'final_bounds': bounds
+                }
+            wall_start = time.perf_counter()
             current_timestep = current_parent_timestep + 1
 
             # Get the parent timestep horizon
@@ -347,6 +367,7 @@ class ReachabilityTester:
 
             # Update parent reference for next iteration
             current_parent_timestep = current_timestep
+            last_wall = time.perf_counter() - wall_start
 
 
         print(f"Concrete propagation of {num_steps} steps: \n"

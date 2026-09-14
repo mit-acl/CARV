@@ -9,6 +9,7 @@ to the original filter — only the inner MPC solver is replaced.
 """
 
 import os
+import time
 import numpy as np
 
 from mpc_safety_filter import MPCSafetyFilter, LinearMPCSafetyFilter
@@ -45,7 +46,8 @@ class UniycleMPCSafetyFilterAcados(MPCSafetyFilter):
                  tail_cost_weight: float = 1e-3,
                  oneshot: bool = False,
                  oneshot_refine: int = 2,
-                 oneshot_verify: bool = False):
+                 oneshot_verify: bool = False,
+                 oneshot_rti: int = 20):
         super().__init__(obstacles, tester, max_lookback)
         # Opt-in so alg14/alg15 keep their measured baseline behaviour.
         self.verify_input_bounds = verify_input_bounds
@@ -57,6 +59,22 @@ class UniycleMPCSafetyFilterAcados(MPCSafetyFilter):
         self.oneshot        = oneshot
         self.oneshot_refine = max(1, int(oneshot_refine))
         self.oneshot_verify = oneshot_verify
+        # SQP_RTI iterations per one-shot refine pass. Was hard-wired to
+        # _RTI_WARMUP_ITERS (20): 2 passes x 20 = 40 iterations = ~69 ms of a
+        # 71.5 ms solve on EPYC 7542 (runs/alg22_opcost, job 22706513).
+        self.oneshot_rti    = max(1, int(oneshot_rti))
+        # Budget hooks, set by the caller (None = unconstrained, the default):
+        #   solve_observer(seconds) receives every untruncated single-solve time
+        #   solve_gate() -> bool     may another solve start now?
+        #   time_left() -> seconds   left in the timestep; a hard deadline for
+        #                            the RTI loop and the re-sim rollout
+        self.solve_observer = None
+        self.solve_gate     = None
+        self.time_left      = None
+        self.deadline_hits        = 0
+        self.truncated_solves     = 0
+        self.second_start_skipped = 0
+        self._solve_truncated     = False
         # Largest observed |opt_x_num - plant re-simulation| over the run.
         # Should stay at machine epsilon; anything else means the OCP model
         # and cl_system.dynamics have drifted apart and the one-shot
@@ -203,11 +221,25 @@ class UniycleMPCSafetyFilterAcados(MPCSafetyFilter):
     def _run_mpc_single(self, initial_bounds, center, extra_inflation,
                         warm_start_omega):
         """Dispatch to the one-shot or the re-simulation rollout."""
+        if self.solve_gate is not None and not self.solve_gate():
+            self.deadline_hits += 1
+            raise MPCDeadline("deadline: no budget left to start a solve")
+        self._mpc.time_left   = self.time_left
+        self._solve_truncated = False
+        _t0 = time.perf_counter()
         if self.oneshot:
-            return self._run_mpc_single_oneshot(
+            out = self._run_mpc_single_oneshot(
                 initial_bounds, center, extra_inflation, warm_start_omega)
-        return self._run_mpc_single_resim(
-            initial_bounds, center, extra_inflation, warm_start_omega)
+        else:
+            out = self._run_mpc_single_resim(
+                initial_bounds, center, extra_inflation, warm_start_omega)
+        # Only complete solves feed the price: a truncated one is short by
+        # construction and would bias the admission price low.
+        if self._solve_truncated:
+            self.truncated_solves += 1
+        elif self.solve_observer is not None:
+            self.solve_observer(time.perf_counter() - _t0)
+        return out
 
     def _run_mpc_single_resim(self, initial_bounds, center, extra_inflation,
                               warm_start_omega):
@@ -238,7 +270,13 @@ class UniycleMPCSafetyFilterAcados(MPCSafetyFilter):
         points, controls      = [], []
         prev_predicted_states = None
 
-        for _ in range(self.n_horizon):
+        for _k in range(self.n_horizon):
+            # Each further step is one RTI iteration plus an NN query. Stop
+            # before one that cannot finish; a partial rollout is not a plan.
+            if (_k > 0 and self.time_left is not None
+                    and self.time_left() < 2.0 * self._mpc._iter_cost + 0.001):
+                self.deadline_hits += 1
+                raise MPCDeadline("deadline: re-simulation rollout ran out of timestep")
             # u_nom for the COST function tracks the NN policy at each
             # predicted state — this is the standard PSF min-intervention
             # objective. The warm-start above only seeds the initial QP
@@ -249,6 +287,9 @@ class UniycleMPCSafetyFilterAcados(MPCSafetyFilter):
                 self._fill_nom_ctrl_buf_from_states(prev_predicted_states[1:])
 
             u = self._mpc.make_step(x)
+            if self._mpc.truncated:
+                self.deadline_hits += 1
+                raise MPCDeadline("deadline: re-simulation warm-up solve cut short")
 
             prev_predicted_states = [
                 np.array(self._mpc.opt_x_num['_x', k, 0]).flatten()
@@ -351,11 +392,17 @@ class UniycleMPCSafetyFilterAcados(MPCSafetyFilter):
             # wrong here: each pass changes yref at the SAME x0, and one
             # iteration leaves a primal iterate that does not satisfy the
             # nonlinear dynamics.
-            self._mpc.make_step(x, n_rti=self._mpc._RTI_WARMUP_ITERS)
+            self._mpc.make_step(x, n_rti=self.oneshot_rti)
             predicted_states = [
                 np.array(self._mpc.opt_x_num['_x', k, 0]).flatten()
                 for k in range(self.n_horizon + 1)
             ]
+            if self._mpc.truncated:
+                # Out of timestep. The iterate is still re-simulated through the
+                # plant below and must pass the acceptance test, so returning it
+                # is sound; a further refine pass is not affordable.
+                self._solve_truncated = True
+                break
 
         controls = self._mpc.opt_u_seq
 
@@ -490,6 +537,13 @@ class UniycleMPCSafetyFilterAcados(MPCSafetyFilter):
 
         # 2) Heuristic swerve based on obstacle bearing.
         swerve = self._heuristic_swerve_sign(center.flatten())
+        if (swerve is not None and self.solve_gate is not None
+                and not self.solve_gate()):
+            # A second solve priced at a whole solve does not fit this timestep.
+            self.second_start_skipped += 1
+            swerve = None
+            if not candidates:
+                raise MPCDeadline("deadline: NN start rejected, no budget for the swerve start")
         if swerve is not None:
             sw_rollout = self._run_mpc_single(initial_bounds, center,
                                               extra_inflation,
@@ -530,6 +584,10 @@ class UniycleMPCSafetyFilterAcados(MPCSafetyFilter):
                   f"> u_max={self.u_max:.4f}")
             return False
         return True
+
+
+class MPCDeadline(Exception):
+    """A solve was refused or cut short by the caller's timestep deadline."""
 
 
 class InputBoundViolation(Exception):
@@ -593,6 +651,7 @@ def make_mpc_safety_filter_acados(tester, obstacles_list=None,
             oneshot=kwargs.get('oneshot', False),
             oneshot_refine=kwargs.get('oneshot_refine', 2),
             oneshot_verify=kwargs.get('oneshot_verify', False),
+            oneshot_rti=kwargs.get('oneshot_rti', 20),
             tail_cost_weight=kwargs.get('tail_cost_weight', 1e-3),
         )
 

@@ -193,14 +193,44 @@ class RefinementTask:
         return self.symbolic_start >= self.conflict_time
 
 
+# Receives seconds per concrete step after every propagation; set by test()
+# under TTTCARV_MPC_PRICING so concrete admission is priced on measured cost.
+_CONCRETE_OBSERVER = None
+# (time_left, step_price) callables for the per-step concrete deadline; set by
+# test() under TTTCARV_MPC_PRICING and used only by deadline scans (P2).
+_CONCRETE_DEADLINE = None
+
 def concrete_scan(tester, from_t, to_t):
     """Run concrete propagation; return (collision: bool, collision_t: int|None)."""
+    collision, ct, _ = concrete_scan_deadline(tester, from_t, to_t, deadline=False)
+    return collision, ct
+
+
+def concrete_scan_deadline(tester, from_t, to_t, deadline=True):
+    """Run concrete propagation, stopping between steps at the budget deadline.
+
+    Returns (collision, collision_t, reached): reached is the last timestep with
+    concrete bounds. Without a deadline (or with pricing off) it runs to to_t.
+    """
     if from_t >= to_t:
-        return False, None
-    result = tester.concrete(from_t, to_t)
-    if not result or not result["collision"]:
-        return False, None
-    return True, result["collision_timestep"]
+        return False, None, from_t
+    kw = {}
+    if deadline and _CONCRETE_DEADLINE is not None:
+        time_left, step_price = _CONCRETE_DEADLINE
+        kw = dict(time_left=time_left, step_price=step_price())
+    t0 = time.perf_counter()
+    result = tester.concrete(from_t, to_t, **kw)
+    wall = time.perf_counter() - t0
+    if not result:
+        return False, None, from_t
+    done = result.get('completed_steps', to_t - from_t)
+    # Price on the wall time of the whole call over the steps actually run: it
+    # includes per-step overhead, and a collision stop runs fewer steps.
+    if _CONCRETE_OBSERVER is not None and done > 0:
+        _CONCRETE_OBSERVER(wall / done)
+    if not result["collision"]:
+        return False, None, from_t + done
+    return True, result["collision_timestep"], result["collision_timestep"]
 
 
 def symbolic_step(tester, job: RefinementTask, chunk_size: int, budget):
@@ -377,7 +407,8 @@ def solve_plan_at(mpc_sf, tester, tau: int, budget=None, multi_start: bool = Fal
     falling back to a plan built from a stale bound.
     """
     if budget is not None:
-        need = budget.mpc_cost * (1.0 if multi_start else SINGLE_START_COST_FRAC)
+        need = budget.mpc_cost * (1.0 if (multi_start or budget.pricing)
+                                  else SINGLE_START_COST_FRAC)
         if budget.remaining < need:
             return False, None, None, "no_budget"
     bounds = _bounds_at(tester, tau)
@@ -603,6 +634,15 @@ def _max_valid_diverge(mpc_buffer: dict, from_t: int,
 # ── Simulation loop ────────────────────────────────────────────────────────
 
 def test(seed=None, analyzer=None, obstacles=None):
+    # Free the previous trial's objects before this trial builds its acados
+    # solver. The solver is generated and dlopen'ed under a per-pid name, so a
+    # reference cycle that keeps the old AcadosOcpSolver alive (the budget
+    # ledger's charged() wrappers create one) makes this trial load the stale
+    # library with the previous trial's obstacles baked in. Confirmed
+    # 2026-09-13 in runs/alg22_ledger_bisect; gc here restored exact parity.
+    if os.environ.get('TTTCARV_GC_PER_TRIAL', '1') != '0':
+        import gc
+        gc.collect()
     if analyzer is None:
         analyzer = setup_analyzer('Unicycle_NL', 'natural_none_default')
 
@@ -644,6 +684,8 @@ def test(seed=None, analyzer=None, obstacles=None):
     # the one-shot path rests on is checked rather than assumed. Costs one
     # extra plant rollout per solve; leave off for timing runs.
     oneshot_verify = os.environ.get('TTTCARV_ONESHOT_VERIFY', '0') != '0'
+    # SQP_RTI iterations per one-shot refine pass (default 20 = unchanged).
+    oneshot_rti    = int(os.environ.get('TTTCARV_ONESHOT_RTI', '20'))
     mpc_sf = make_mpc_safety_filter(tester, obstacles_list=obstacles, n_horizon=12,
                                     verify_input_bounds=True,
                                     verify_heading_bounds=True,
@@ -652,7 +694,8 @@ def test(seed=None, analyzer=None, obstacles=None):
                                     tail_cost_weight=tail_cost_weight,
                                     oneshot=oneshot,
                                     oneshot_refine=oneshot_refine,
-                                    oneshot_verify=oneshot_verify)
+                                    oneshot_verify=oneshot_verify,
+                                    oneshot_rti=oneshot_rti)
 
     v_nom = tester.analyzer.cl_system.dynamics.vt
     u_max = 1.0
@@ -750,6 +793,7 @@ def test(seed=None, analyzer=None, obstacles=None):
     # It was uncounted: mpc_skipped_no_budget counts the step-2 rebuild loop,
     # not this. Counted separately so the two are never conflated again.
     p1_skipped_no_budget = 0   # P1 build refused by the budget gate
+    concrete_deadline_hits = 0  # P2 scans stopped between steps at the deadline
     p1_skipped_no_bounds = 0   # P1 build impossible, concrete bounds missing
     psf_loiter_used      = 0   # no-backup step covered by the max-turn loiter
     p1_bootstrap_resim   = 0   # no-fallback build forced onto the re-sim solver
@@ -894,6 +938,29 @@ def test(seed=None, analyzer=None, obstacles=None):
         mpc_sf._run_mpc_from_bounds = budget.charged(
             mpc_sf._run_mpc_from_bounds, 'mpc')
 
+    # ── Per-solve MPC pricing + deadline (opt-in, TTTCARV_MPC_PRICING=1) ──
+    # Off: MPC admission tests remaining >= mpc_cost, one calibration probe's
+    # median, and the single-start re-solve pays SINGLE_START_FRAC of it. On:
+    # mpc_cost reads as the p99.5 of this process's measured single-solve times
+    # plus TTTCARV_BUDGET_MARGIN; every solve, including the second multi-start
+    # one, must fit before it starts; and the RTI loop / re-sim rollout stop at
+    # the timestep deadline instead of running past it.
+    mpc_pricing = os.environ.get('TTTCARV_MPC_PRICING', '0') != '0'
+    if mpc_pricing:
+        import time_budget as _tbm
+        budget.pricing        = True
+        budget.margin         = float(os.environ.get('TTTCARV_BUDGET_MARGIN', '0.003'))
+        mpc_sf.solve_observer = _tbm.record_solve
+        mpc_sf.solve_gate     = lambda: budget.remaining >= budget.mpc_cost
+        mpc_sf.time_left      = lambda: budget.remaining - budget.margin
+    # Concrete propagation is priced the same way (budget.concrete_cost becomes
+    # the p95 measured seconds per step, and the margin is held back).
+    globals()['_CONCRETE_OBSERVER'] = _tbm.record_concrete if mpc_pricing else None
+    # P2 stops between concrete steps when the next one may not fit.
+    globals()['_CONCRETE_DEADLINE'] = ((lambda: budget.remaining - budget.margin,
+                                        lambda: budget.concrete_cost)
+                                       if mpc_pricing else None)
+
     while current_timestep < MAX_TIME:
         budget.start_timestep()
         t_next   = current_timestep + 1
@@ -932,7 +999,7 @@ def test(seed=None, analyzer=None, obstacles=None):
             concrete_until = current_timestep
             # Held back from the rebuild loop so the re-solve below can always
             # pay for itself. Zero when there is no re-solve to protect.
-            resolve_reserve = (budget.mpc_cost * SINGLE_START_COST_FRAC
+            resolve_reserve = (budget.mpc_cost * (1.0 if budget.pricing else SINGLE_START_COST_FRAC)
                                if (receding and RESOLVE_RESERVE) else 0.0)
             while budget.can_afford('concrete'):
                 if concrete_until >= MAX_TIME:
@@ -1267,7 +1334,7 @@ def test(seed=None, analyzer=None, obstacles=None):
                 concrete_until + budget.max_affordable_concrete(),
                 scan_ceil, MAX_TIME
             )
-            collision, ct = concrete_scan(tester, concrete_until, end)
+            collision, ct, reached = concrete_scan_deadline(tester, concrete_until, end)
             if collision:
                 conflict_time = ct
                 print(f"  [P2] Conflict detected at t={conflict_time}")
@@ -1286,7 +1353,10 @@ def test(seed=None, analyzer=None, obstacles=None):
                     pending_job = RefinementTask(current_timestep, conflict_time)
                 concrete_until = ct
                 break
-            concrete_until = end
+            concrete_until = reached
+            if reached < end:
+                concrete_deadline_hits += 1
+                break
 
         # ---- P3: Build MPC buffer forward toward conflict_time -------
         if conflict_time is not None:
@@ -1670,6 +1740,15 @@ def test(seed=None, analyzer=None, obstacles=None):
         'psf_loiter':               int(PSF_LOITER),
         'resolve_reserve':          int(RESOLVE_RESERVE),
         'mpc_cost_s':               float(budget.mpc_cost),
+        'mpc_cost_cal_s':           float(budget._mpc_cost_cal),
+        'concrete_cost_s':          float(budget.concrete_cost),
+        'concrete_cost_cal_s':      float(budget._concrete_cost_cal),
+        'mpc_pricing':              int(mpc_pricing),
+        'oneshot_rti':              int(oneshot_rti),
+        'mpc_deadline_hits':        int(mpc_sf.deadline_hits),
+        'mpc_truncated_solves':     int(mpc_sf.truncated_solves),
+        'mpc_second_start_skipped': int(mpc_sf.second_start_skipped),
+        'concrete_deadline_hits':   int(concrete_deadline_hits),
         # If first_step_cost turns the MPC into a nominal passthrough — the
         # optimizer parking omega_0 at omega_nom and deferring avoidance to the
         # free tail — then the applied control collapses onto the NN control and

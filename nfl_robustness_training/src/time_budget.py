@@ -2,6 +2,7 @@
 Time budget for TTT-CARV.
 Calibrate at startup, then query what you can afford each timestep.
 """
+import collections
 import os
 import time
 import math
@@ -13,8 +14,13 @@ class TimeBudget:
         self.timestep_budget = timestep_budget
         self.symbolic_costs = {}   # horizon -> seconds
         self.backward_costs = {}   # horizon -> seconds
-        self.concrete_cost = 0.0   # per-step cost (seconds per concrete step)
-        self.mpc_cost = 0.040      # conservative estimate per MPC solve (seconds)
+        self._concrete_cost_cal = 0.0   # calibrated per-step cost (seconds per concrete step)
+        self._mpc_cost_cal = 0.040  # calibrated/estimated cost per MPC solve (seconds)
+        # Per-solve pricing (opt-in). When on, mpc_cost reads as a high quantile
+        # of this process's measured single-solve wall times plus `margin`,
+        # instead of the calibration probe's median. See solve_price().
+        self.pricing = False
+        self.margin  = 0.0
         self._start = None
         self._log = []             # [(operation_name, elapsed)] for current timestep
         self._excluded = 0.0       # time excluded from budget (non-algorithmic overhead)
@@ -146,6 +152,26 @@ class TimeBudget:
     def remaining(self):
         return max(0.0, self.timestep_budget - self.elapsed)
 
+    @property
+    def mpc_cost(self):
+        if self.pricing:
+            return solve_price(self._mpc_cost_cal) + self.margin
+        return self._mpc_cost_cal
+
+    @mpc_cost.setter
+    def mpc_cost(self, value):
+        self._mpc_cost_cal = value
+
+    @property
+    def concrete_cost(self):
+        if self.pricing:
+            return max(self._concrete_cost_cal, concrete_price(self._concrete_cost_cal))
+        return self._concrete_cost_cal
+
+    @concrete_cost.setter
+    def concrete_cost(self, value):
+        self._concrete_cost_cal = value
+
     # ─── Queries ─────────────────────────────────────────────────────
 
     def can_afford(self, operation, horizon=None):
@@ -156,7 +182,8 @@ class TimeBudget:
 
     def max_affordable_concrete(self):
         """Number of concrete steps affordable in remaining budget."""
-        return int(self.remaining // self.concrete_cost)
+        # margin is 0 unless pricing is on, so the default is unchanged.
+        return int(max(0.0, self.remaining - self.margin) // self.concrete_cost)
 
 
     def max_affordable_symbolic(self):
@@ -242,7 +269,7 @@ class TimeBudget:
 
     def _cost(self, operation, horizon=None):
         if operation == 'concrete':
-            return self.concrete_cost
+            return self.concrete_cost + self.margin
         elif operation == 'symbolic':
             return self.symbolic_costs.get(horizon, float('inf'))
         elif operation == 'backward':
@@ -313,3 +340,67 @@ def calibrated_costs(make_tester, make_mpc_probe=None, max_symbolic_horizon=5):
         print(f"[calibrate] failed ({e}) — falling back to the static table")
         _CALIBRATION = fallback
     return _CALIBRATION
+
+
+# ─── Measured-cost pricing (MPC solves, concrete steps) ──────────────────
+
+class _PriceTable:
+    """Recent wall times of one kind of operation in this process, kept across
+    trials (a pool worker runs its trials sequentially), priced at a quantile.
+
+    Admission priced at what an operation really costs on this machine is what
+    stops admitted work from running past the timestep. A calibration median
+    does not: on EPYC 7542 the MPC probe read 57-78 ms while single one-shot
+    solves ran median 71.5 / p99 96 / max 104 ms (runs/alg22_opcost, job
+    22706513), and P2's concrete chunk, sized as remaining // median per-step
+    cost, overshot in 443 of the 1833 over-budget ledger steps.
+    """
+    MIN_SAMPLES = 50
+
+    def __init__(self, window, quantile):
+        self.samples  = collections.deque(maxlen=window)
+        self.quantile = quantile
+        self._appends = 0
+        self._at      = -1
+        self._price   = None
+
+    def record(self, seconds):
+        self.samples.append(float(seconds))
+        self._appends += 1
+
+    def price(self, calibrated):
+        if len(self.samples) < self.MIN_SAMPLES:
+            # Too few samples for a quantile: the worst seen so far, and never
+            # less than 1.25x the calibration.
+            return max(1.25 * calibrated, max(self.samples, default=0.0))
+        if self._at != self._appends:
+            self._price = float(np.quantile(self.samples, self.quantile))
+            self._at    = self._appends
+        return self._price
+
+
+# MPC: one complete single solve (a multi-start build pays per solve).
+_SOLVE_PRICE = _PriceTable(int(os.environ.get('TTTCARV_PRICE_WINDOW', '1000')),
+                           float(os.environ.get('TTTCARV_PRICE_QUANTILE', '0.995')))
+# Concrete: seconds per propagated step, one sample per concrete call. A chunk
+# of N steps is a sum, so a lower quantile than a single solve already covers it.
+_CONCRETE_PRICE = _PriceTable(int(os.environ.get('TTTCARV_PRICE_WINDOW', '1000')),
+                              float(os.environ.get('TTTCARV_CONCRETE_QUANTILE', '0.95')))
+
+
+def record_solve(seconds):
+    _SOLVE_PRICE.record(seconds)
+
+
+def solve_price(calibrated):
+    """Seconds to reserve for one MPC solve."""
+    return _SOLVE_PRICE.price(calibrated)
+
+
+def record_concrete(seconds_per_step):
+    _CONCRETE_PRICE.record(seconds_per_step)
+
+
+def concrete_price(calibrated):
+    """Seconds to reserve per concrete propagation step."""
+    return _CONCRETE_PRICE.price(calibrated)

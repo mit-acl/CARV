@@ -25,6 +25,7 @@ which can be indefinite when obstacle constraints are active.
 """
 
 import os
+import time
 import ctypes
 import numpy as np
 import casadi as ca
@@ -477,6 +478,15 @@ class AcadosUnicycleMPC:
     # Subsequent solves are warm-started and need only 1 RTI iteration.
     _RTI_WARMUP_ITERS = 20
 
+    # Wall-clock deadline hook (opt-in). time_left: zero-arg callable returning
+    # the seconds left in the caller's timestep, or None for no deadline. The
+    # RTI loop then stops before an iteration it cannot finish and sets
+    # `truncated`. That is safe because no caller trusts the iterate: plans are
+    # re-simulated through the plant and must pass the acceptance test.
+    time_left  = None
+    truncated  = False
+    _iter_cost = 0.002   # EWMA of one SQP_RTI iteration (seconds)
+
     def make_step(self, x0: np.ndarray, n_rti: int = None) -> np.ndarray:
         """
         Solve the OCP from x0 using SQP_RTI.
@@ -501,8 +511,16 @@ class AcadosUnicycleMPC:
 
         if n_rti is None:
             n_rti = self._RTI_WARMUP_ITERS if self._step_count == 0 else 1
-        for _ in range(n_rti):
+        self.truncated = False
+        status = self.last_status
+        for i in range(n_rti):
+            if (i > 0 and self.time_left is not None
+                    and self.time_left() < 1.5 * self._iter_cost):
+                self.truncated = True
+                break
+            _t = time.perf_counter()
             status = self._solver.solve()
+            self._iter_cost = 0.9 * self._iter_cost + 0.1 * (time.perf_counter() - _t)
         self.last_status = status
         if status not in (0, 2):
             print(f'  [acados] Solver status {status} (step {self._step_count})')
