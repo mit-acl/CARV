@@ -1,39 +1,38 @@
 """
-Algorithm 21 — PSF with Forward MPC Buffer, D removed as a passthrough gate
+Reach_PSF_FINAL -- reachability-based predictive safety filter (PSF) for the
+unicycle with a neural-network (NN) controller.
 
-Ablation on alg20. D (the danger radius sqrt(r^2 + 2rR)) is KEPT where it
-carries the safety argument -- build_mpc_backup still requires the backup's
-TERMINAL node to clear D, so the max-turn loiter stays control-invariant and
-persistent feasibility is unchanged. What is removed is D used as a
-PRECONDITION for passthrough, in the three places alg20 tested it:
-  - scan_window no longer requires the candidate tau to be outside D,
-  - P1 is no longer skipped when the RSOA at t+1 overlaps D,
-  - P3b no longer requires a D-region ahead before scanning past a wall.
-Passthrough's licence was never the D geometry in the first place -- it is the
-concrete raw-clearance scan over the gap, as the PASSTHROUGH branch states --
-so these three gates were restricting the search without backing the guarantee.
-collides_danger() survives as diagnostics only.
+Every 0.2 s timestep the filter decides whether the NN's control is safe to
+apply. It is safe when a verified MPC backup plan exists from the next state
+(mpc_buffer[t+1]): the robot can then always switch to that plan later.
+
+Reachable sets (RSOA) come in two kinds:
+  concrete  cheap, looser bounds, propagated one step at a time
+  symbolic  expensive, tighter bounds, computed in chunks that may take
+            several timesteps of budget
 
 States:
-  NOMINAL      — no conflict found. PSF buffer maintained as 1 step lookahead.
-  PRE_CONFLICT — RSOA collides with obstacle. PSF buffer filled towards it. nominal applied
-                 while mpc_buffer[t+1] is valid.
-  MPC_ACTIVE   — PSF condition failed; executing precomputed backup;
-                 revert when mpc_buffer[t+1] becomes valid again.
+  NOMINAL       no conflict ahead; keep a backup ready at t+1.
+  PRE_CONFLICT  the concrete RSOA hits an obstacle at conflict_time. Build
+                backups forward toward it and try to rule it out symbolically.
+  MPC_ACTIVE    no backup at t+1, so the backup plan flies the robot
+                (re-solved every step) until a backup at t+1 exists again.
 
-Changes from alg12:
-The MPC intermediate steps can be inside danger area as long as its outside obstacle. Only the terminal rsoa of must be outside.
+Work each timestep, in priority order, each only if the budget allows:
+  P1   make sure mpc_buffer[t+1] exists (the safety check itself)
+  P2   concrete scan forward, up to conflict_time or MAX_TIME
+  P3   build backups forward toward conflict_time - 1
+  P3b  if P3 hit an infeasible build (a "wall"), look past it for a valid one
+  P4   symbolic refinement of the conflict
 
-Budget priorities:
-  P1 — Ensure mpc_buffer[t+1] exists (PSF check).
-  P2 — Concrete scan forward (feeds MPC buffer with real bounds).
-  P3 — Propagate MPC buffer forward toward conflict_time.
-  P4 — Symbolic verification (continuous; deconflict or tighten bounds).
+A backup is accepted when every intermediate node clears the raw obstacle
+radius r and the terminal node clears the danger radius D = sqrt(r^2 + 2rR),
+from where a max-turn loiter can keep clear of the obstacle.
 
-Obstacles are in the form: [center_x, center_y, radius]
+Obstacles are [center_x, center_y, radius].
 
-To call with a specific np seed:
-    python alg12_mpc_every_timestep.py <seed_number>
+Usage (from the repo root):
+    python nfl_robustness_training/src/Reach_PSF_FINAL_NL.py <seed> x,y,r ...
 """
 
 from REAL_integrated_sim import setup_analyzer, ReachabilityTester
@@ -52,116 +51,46 @@ CYAN    = "\033[36m"
 RESET   = "\033[0m"
 
 
-# ── alg22: receding-horizon active phase ───────────────────────────────────
-# This file is alg21_remove_D_req.py with the MPC ACTIVE phase changed from
-# open-loop (fly one committed plan for the whole phase) to receding horizon
-# (re-solve from the current bound each timestep, apply u[0]).
-# TTTCARV_RECEDING=0 restores the alg21 behaviour exactly, so the two can be
-# compared on identical seeds. Everything outside the control-selection step
-# is alg21 verbatim.
+# ── Configuration ──────────────────────────────────────────────────────────
+# Settings come from TTTCARV_* environment variables. Not every default is the
+# final configuration: the final run (results_alg22/alg22_results.md) sets
+# TTTCARV_ONESHOT=1, TTTCARV_ONESHOT_RTI=10, TTTCARV_MPC_PRICING=1,
+# TTTCARV_BUDGET_MARGIN=0.003, TTTCARV_PSF_TAIL=1, TTTCARV_ONESHOT_VERIFY=1 and
+# TTTCARV_SINGLE_START_FRAC=0.50.
 
-# Per-trial counters that do not fit test()'s shared return tuple (changing
-# that tuple would break every other algN module the driver can load).
-# run_trials_random_obs merges this into the fingerprint row after each trial;
-# workers are processes running trials sequentially, so it cannot be read
-# across trials.
+# Extra per-trial stats. test() returns a fixed tuple shared with the other
+# algorithms, so everything else goes here; the trial runner merges it into the
+# results row after each trial.
 LAST_RUN_STATS: dict = {}
 
-# budget.mpc_cost is calibrated on build_mpc_backup, which runs
-# _run_mpc_from_bounds with multi_start=True. The per-timestep re-solve uses a
-# single warm start, so gating it on the full mpc_cost would demand more budget
-# than it needs and skip the re-solve as "no_budget" on timesteps that could
-# easily afford it, which would understate the receding path in an A/B.
-#
-# CORRECTION (2026-09-11). The 0.25 default was written when
-# _run_mpc_multi_start ran FOUR warm starts (NN rollout, omega=+1, -1, 0). It
-# no longer does: it runs the NN warm start, returns immediately if that
-# already clears D, and otherwise tries ONE bearing-based swerve -- two solves
-# max, often one (see _run_mpc_multi_start own docstring). So the calibration
-# measures 1-2 solves and a single-start re-solve costs between 1/2 and 1/1 of
-# mpc_cost, not 1/4. 0.25 UNDER-reserves: it admits re-solves on timesteps that
-# cannot actually afford them, overrunning the 0.20s timestep budget. It errs
-# toward doing more work rather than skipping it, which is why no A/B caught
-# it. 0.5 is the worst-case-correct value; the env knob exists to measure what
-# changing it costs before changing the default.
+# Share of mpc_cost charged for a single-start re-solve when pricing is OFF.
+# mpc_cost is calibrated on a multi-start build (1-2 solves), so the true share
+# is 0.5-1.0 and 0.25 under-reserves. Ignored with TTTCARV_MPC_PRICING=1, which
+# charges every solve its measured price.
 SINGLE_START_COST_FRAC = float(os.environ.get('TTTCARV_SINGLE_START_FRAC', '0.25'))
 
-# Reserve budget for the active-phase re-solve before the revert-check rebuild
-# loop is allowed to spend it (2026-09-11).
-#
-# The two consumers are not peers. The rebuild loop serves minimal intervention
-# -- "can we hand control back to the NN?" -- and losing it costs one extra
-# timestep on MPC, recoverable next timestep because the loop runs again. The
-# re-solve determines the certificate behind the input applied THIS timestep,
-# and losing it is not recoverable: the input goes to the plant either way, it
-# just goes uncertified. Letting the first starve the second is a priority
-# inversion.
-#
-# MEASURED: fail_no_budget as a share of active timesteps runs 0.02%-0.92%
-# across the 16/32/64-worker load sweep but 15.8% (1050 events) on node4001,
-# the most contended node measured. It scales with contention, which is the
-# worst possible property for a safety path.
-#
-# Reserve rather than REORDER. The revert check can `continue` out of the
-# timestep before the re-solve is ever reached, so running it first saves a
-# whole solve on every timestep where the filter successfully reverts. Hoisting
-# the re-solve would burn a solve exactly where it is provably unnecessary.
-# MEASURED AND REJECTED (2026-09-11). Default OFF: the reserve is inert by
-# construction, because the two consumers never compete. The rebuild loop's
-# FIRST build is the revert test at t_next; if it comes back VALID the revert
-# fires and `continue`s before the re-solve is reached, and if INFEASIBLE the
-# loop breaks after that one build. So every build the reserve could take is
-# lookahead on a timestep that reverts, and the budget resets each timestep, so
-# it cannot starve the next one either. The purge at the top of the active phase
-# then discards lookahead past t+1 on the following active timestep anyway.
-#
-# Confirmed on 10,000 trials, one node, alternating blocks, paired seeds
-# (runs/alg22_reserve2): the reserve yielded 2032 builds and moved active
-# timesteps -0.6% / +0.3%, fail_no_budget 5 -> 5, u_diff_n 0.2%. Nothing.
-#
-# The knob stays so the result can be re-derived, and because the exemption
-# would matter if the revert test ever stopped being the loop's first build.
+# Hold back budget for the active-phase re-solve so the rebuild loop cannot
+# spend it. Off by default: it measured as having no effect, because the loop's
+# first build is the revert test, which either reverts (so no re-solve is
+# needed) or fails and ends the loop.
 RESOLVE_RESERVE = os.environ.get('TTTCARV_RESOLVE_RESERVE', '0') != '0'
 
-# Terminal safe controller (Algorithm 1 branch 3), used ONLY at the no-backup
-# site. When there is no plan to apply, the choice is between the raw NN
-# control -- unfiltered, at the moment the filter said it was unsafe -- and a
-# max-turn loiter.
-#
-# What actually certifies it is ONE-STEP MARGIN, not circle invariance. The
-# gate requires the current RSOA to clear D = sqrt(r^2 + 2rR) = 1.118; one
-# plant step moves at most v*dt = 0.2, so the next state is >= 0.918 from every
-# obstacle centre, clear of r = 0.5 whatever the control. The filter then
-# re-plans on the next timestep. D's circle-invariance argument holds only when
-# the turn is chosen AWAY from the obstacle: with the fixed u=+u_max below,
-# ~35% of headings on the D boundary give a left circle that passes through the
-# obstacle, so repeated loiter steps are not covered. Measured: at most one
-# loiter per trial, psf_unrecoverable = 0, and 0 loiters in 12,500 trials once
-# BOOTSTRAP_RESIM is on (job 22638543).
+# Last resort when there is no backup at all: a max-turn loiter instead of the
+# raw NN control, used only if the current RSOA clears D. One step moves at most
+# v*dt = 0.2 and D - 0.2 = 0.918 > r = 0.5, so that step cannot collide whatever
+# the control; the filter re-plans on the next step. Repeated loiter steps are
+# not covered by this argument.
 PSF_LOITER = os.environ.get('TTTCARV_PSF_LOITER', '1') != '0'
 
-# Force the reliable (re-simulation) solver for the ONE build that has no
-# safety net. Mid-flight, a rejected build is absorbed: t_diverge still points
-# at a valid backup banked earlier, psf_valid passes, and the step is covered.
-# At t=0 the buffer is structurally empty -- td=never_set -- so a single
-# rejection goes straight to the no-backup branch. Every psf_no_diverge event
-# on record in a healthy run sits at t=0 for exactly this reason.
-#
-# TTTCARV_ONESHOT trades convergence for cost: the one-shot path solves the OCP
-# once so the terminal-D constraint binds on the endpoint actually returned,
-# but when SQP_RTI stops short the plant rollout drifts off the solver's
-# iterate and the real endpoint lands inside D (rejected:term_D). ~11% of
-# one-shot solves return a non-OK acados status. That is an acceptable price
-# where a fallback exists and a bad one where none does.
-#
-# So: cheap solver everywhere it is safe to be cheap, reliable solver at the
-# one site where failure is unrecoverable. Inert when TTTCARV_ONESHOT=0.
+# When there is no earlier backup to fall back on (e.g. t=0, empty buffer),
+# build the t+1 backup with the slower re-simulation solver instead of the
+# one-shot solver. The one-shot solver is cheaper but sometimes stops short and
+# its plan ends inside D. Elsewhere that rejection is covered by an existing
+# backup; here it would leave none. No effect when TTTCARV_ONESHOT=0.
 BOOTSTRAP_RESIM = os.environ.get('TTTCARV_BOOTSTRAP_RESIM', '1') != '0'
 
-# Deadband for the turn-direction flip probes. Controls near zero have no
-# meaningful sign -- a plan drifting through omega=0 is not changing which
-# side of an obstacle it passes -- so pairs where either control is inside
-# the deadband are not counted as a pair at all, rather than as non-flips.
+# Turn-direction flip diagnostics ignore controls with |u| below this; a
+# near-zero turn has no meaningful direction.
 FLIP_DEADBAND = 0.05
 
 
@@ -193,24 +122,25 @@ class RefinementTask:
         return self.symbolic_start >= self.conflict_time
 
 
-# Receives seconds per concrete step after every propagation; set by test()
-# under TTTCARV_MPC_PRICING so concrete admission is priced on measured cost.
+# Hooks set by test() when TTTCARV_MPC_PRICING=1 (None otherwise):
+#   _CONCRETE_OBSERVER(sec_per_step)  records the measured concrete cost
+#   _CONCRETE_DEADLINE                (time_left, step_price) callables that let
+#                                     P2 stop between steps before budget runs out
 _CONCRETE_OBSERVER = None
-# (time_left, step_price) callables for the per-step concrete deadline; set by
-# test() under TTTCARV_MPC_PRICING and used only by deadline scans (P2).
 _CONCRETE_DEADLINE = None
 
 def concrete_scan(tester, from_t, to_t):
-    """Run concrete propagation; return (collision: bool, collision_t: int|None)."""
+    """Concrete propagation with no deadline. Returns (collision, collision_t)."""
     collision, ct, _ = concrete_scan_deadline(tester, from_t, to_t, deadline=False)
     return collision, ct
 
 
 def concrete_scan_deadline(tester, from_t, to_t, deadline=True):
-    """Run concrete propagation, stopping between steps at the budget deadline.
+    """Concrete propagation that may stop early at the budget deadline.
 
-    Returns (collision, collision_t, reached): reached is the last timestep with
-    concrete bounds. Without a deadline (or with pricing off) it runs to to_t.
+    Returns (collision, collision_t, reached); reached is the last timestep that
+    now has concrete bounds. Runs all the way to to_t if deadline=False or
+    pricing is off.
     """
     if from_t >= to_t:
         return False, None, from_t
@@ -224,8 +154,8 @@ def concrete_scan_deadline(tester, from_t, to_t, deadline=True):
     if not result:
         return False, None, from_t
     done = result.get('completed_steps', to_t - from_t)
-    # Price on the wall time of the whole call over the steps actually run: it
-    # includes per-step overhead, and a collision stop runs fewer steps.
+    # Cost = wall time of the whole call / steps completed (includes overhead;
+    # a collision stop completes fewer steps).
     if _CONCRETE_OBSERVER is not None and done > 0:
         _CONCRETE_OBSERVER(wall / done)
     if not result["collision"]:
@@ -235,9 +165,12 @@ def concrete_scan_deadline(tester, from_t, to_t, deadline=True):
 
 def symbolic_step(tester, job: RefinementTask, chunk_size: int, budget):
     """
-    Advance job by one chunk within budget.
-    Returns (updated_job, result_dict|None).
-    result_dict is non-None only when the job completes this call.
+    Advance the symbolic job by one chunk, if the budget allows.
+
+    A chunk usually costs more than one timestep's budget. If it doesn't fit,
+    this timestep's remaining budget is banked in job.time_invested instead, and
+    the chunk runs once banked time + the current budget covers it.
+    Returns (job, result); result is set only when the job finishes.
     """
     steps = min(chunk_size, job.conflict_time - job.symbolic_start)
     cost  = budget.symbolic_costs.get(steps, float('inf'))
@@ -257,9 +190,9 @@ def symbolic_step(tester, job: RefinementTask, chunk_size: int, budget):
 def extend_mpc_sequence(mpc_sf, mpc_state: dict, min_safe_horizon: int,
                         max_time: int, ctrl_idx: int = 0, budget=None):
     """
-    Extend the MPC control queue from the end of the current trajectory.
-    Falls back along the existing trajectory if extension from endpoint fails.
-    Same as alg11.
+    Append controls to the committed MPC plan (fallback when a re-solve fails).
+    Solves from the end of the plan; if that fails, from progressively earlier
+    points on it (lookback), replacing the tail.
     """
     committed_at = mpc_state['committed_at']
     controls     = mpc_state['controls']
@@ -294,21 +227,17 @@ def extend_mpc_sequence(mpc_sf, mpc_state: dict, min_safe_horizon: int,
             print(f"  [MPC extend] Failed at lookback={lb}: {e}")
             continue
 
-        # Split-terminal: the extension continues the committed backup PATH, so
-        # intermediate nodes need only clear the RAW radius (they may enter D).
-        # But the appended segment must TERMINATE outside D (the danger set),
-        # or persistent feasibility breaks — Lemma 2's induction needs every
-        # committed plan to end where the loiter is control-invariant. So:
-        #   (1) raw-collision-free prefix length  → how far the path stays ∉ O,
-        #   (2) within that prefix, the last node that is also outside D
-        #       → the only admissible terminal for the appended segment.
+        # The new segment may pass through D but not the raw obstacle, and like
+        # any backup it must end outside D. Find:
+        #   safe_count  how many new nodes stay clear of the raw obstacle
+        #   term_count  the last of those that is also outside D (the new end)
         safe_count = 0
         for b in new_traj_bounds[1:]:
             if mpc_sf._collides_raw(b):
                 break
             safe_count += 1
 
-        # Latest index in 1..safe_count whose bound clears D (valid terminal).
+        # Last node in the raw-safe prefix that clears D.
         term_count = 0
         for k in range(1, safe_count + 1):
             if not mpc_sf._collides_D(new_traj_bounds[k]):
@@ -340,27 +269,20 @@ def extend_mpc_sequence(mpc_sf, mpc_state: dict, min_safe_horizon: int,
 # PSF helpers
 
 def psf_valid(mpc_buffer: dict, t: int):
-    """ Returns true if mpc_buffer at time t exists and is collision free."""
+    """True if a valid backup starting at t is stored."""
     return mpc_buffer.get(t) is not None
 
 
 def _rollout_verdict(mpc_sf, traj_bounds):
     """
-    The acceptance test for an MPC rollout, in one place, reporting WHICH check
-    failed and WHERE. Returns (ok, kind, node, n_nodes).
+    Acceptance test for an MPC plan, shared by backup builds and re-solves.
+    Returns (ok, kind, node, n_nodes).
 
       kind  None | 'empty' | 'path_raw' | 'term_D'
-      node  1-based index of the offending PATH node; n_nodes for the terminal
+      node  1-based index of the failing node (n_nodes for the terminal)
 
-    Split-terminal semantics: every PATH node (stages 1..N-1) must clear the
-    raw obstacle radius (the plan may pass THROUGH the danger region D), and
-    the TERMINAL node must clear D so the max-turn loiter is control-invariant
-    from there.
-
-    build_mpc_backup and solve_plan_at both go through this, so a plan the
-    receding controller applies and a backup the PSF certifies mean the same
-    thing. If they were allowed to drift, an A/B against alg21 would be
-    measuring the difference between two acceptance tests, not the control law.
+    Intermediate nodes must clear the raw obstacle radius (they may pass
+    through D); the terminal node must clear D.
     """
     if traj_bounds is None or len(traj_bounds) < 2:
         return False, 'empty', -1, 0
@@ -393,18 +315,12 @@ def _bounds_contain(outer, inner, tol: float = 1e-9) -> bool:
 
 def solve_plan_at(mpc_sf, tester, tau: int, budget=None, multi_start: bool = False):
     """
-    Solve an MPC plan from the bounds at tau and return it WITHOUT touching
-    mpc_buffer. Returns (ok, controls, traj_bounds, label).
+    Solve an MPC plan from the bounds at tau without storing it in mpc_buffer.
+    Returns (ok, controls, traj_bounds, label).
 
-    Deliberately kept out of mpc_buffer: that dict is the PSF's record of where
-    the robot may diverge from nominal, and psf_valid() is a presence test.
-    Writing a plan for the current timestep into it would read as a revert
-    certificate and change the PSF's decisions, which is not what this is for.
-
-    multi_start defaults False because this runs on every active timestep,
-    where build_mpc_backup runs once per tau; the NN warm start alone is a
-    quarter of the cost. The caller retries with multi_start=True before
-    falling back to a plan built from a stale bound.
+    Used by the active-phase re-solve. It stays out of mpc_buffer because any
+    entry there counts as a backup and would change PSF decisions.
+    Single-start by default (cheaper); the caller retries with multi_start=True.
     """
     if budget is not None:
         need = budget.mpc_cost * (1.0 if (multi_start or budget.pricing)
@@ -424,28 +340,18 @@ def solve_plan_at(mpc_sf, tester, tau: int, budget=None, multi_start: bool = Fal
         return False, None, None, "empty_plan"
     ok, kind, node, n_nodes = _rollout_verdict(mpc_sf, traj_bounds)
     if not ok:
-        # Coarse bucket before "(", detail inside — so the existing
-        # split('(')[0] reason counter keeps working unchanged.
+        # Coarse reason before "(", details inside, so counters can split on "(".
         return False, None, None, f"rollout_rejected({kind}@{node}/{n_nodes})"
     return True, list(controls), list(traj_bounds), "VALID"
 
 def build_mpc_backup(mpc_sf, tester, mpc_buffer: dict, tau: int, reasons: dict = None):
     """
-    Solve MPC backup starting from concrete bounds at timestep tau.
-    Stores (controls, traj_bounds) in mpc_buffer[tau] if collision-free,
-    else None. Returns True if a valid backup was found.
+    Solve an MPC backup from the concrete bounds at tau and store it:
+    mpc_buffer[tau] = (controls, traj_bounds) if it passes the acceptance test,
+    else None. Returns True if valid.
 
-    reasons: optional dict[tau -> str]. When a build is rejected the diagnostic
-    label ('path_raw[...]' / 'term_D ...') is recorded there so callers can
-    report WHY there is no backup instead of guessing. Kept out of mpc_buffer
-    on purpose: psf_valid() tests `is not None`, so a non-None reason stored in
-    the buffer would read as a valid backup.
-
-    VALID (split-terminal semantics):
-      - every PATH node (stages 1..N-1) must clear the raw obstacle radius r
-        (the backup may pass THROUGH the danger region D), and
-      - the TERMINAL node (stage N) must clear D, so the max-turn loiter is
-        control-invariant from there → persistent feasibility.
+    reasons (optional dict tau -> str) records why a build was rejected. It is
+    separate from mpc_buffer because any non-None buffer entry counts as valid.
     """
     h = tester.horizons.get(tau)
     if h is None:
@@ -461,17 +367,16 @@ def build_mpc_backup(mpc_sf, tester, mpc_buffer: dict, tau: int, reasons: dict =
         elapsed = time.time() - _t0
         *path_bounds, terminal_bound = traj_bounds[1:]
 
-        # Diagnostic: identify which check fired and the offending bound.
-        # path_raw — some intermediate node hit the raw obstacle radius
-        # term_D   — terminal node hit the danger inflation D
+        # Find which check failed, for the diagnostic label:
+        #   path_raw  an intermediate node hits the raw obstacle
+        #   term_D    the terminal node is inside D
         path_hit = next(
             ((i, b) for i, b in enumerate(path_bounds, start=1)
              if mpc_sf._collides_raw(b)),
             None
         )
         term_hit = mpc_sf._collides_D(terminal_bound)
-        # path_hit / term_hit stay for the diagnostic label below; the verdict
-        # itself comes from the shared test so it cannot drift from solve_plan_at.
+        # The verdict itself comes from the shared acceptance test.
         collision = not _rollout_ok(mpc_sf, traj_bounds)
 
         if collision:
@@ -543,10 +448,9 @@ def _bounds_at(tester, t):
 
 def collides_danger(bounds: np.ndarray, obstacles: list,
                     R: float = 1.0) -> bool:
-    """Overlap against the danger / uncertainty region D = sqrt(r^2 + 2rR).
-    D is the inflated obstacle radius where MPC can't guarantee avoidance;
-    outside D is the invariant safe region. r = obstacle radius,
-    R = curvature radius. R = 1 for current dynamics.
+    """True if the box overlaps any obstacle's danger radius D = sqrt(r^2 + 2rR).
+    r is the obstacle radius and R the turning radius (1 here). From outside D a
+    max-turn loiter can keep clear of the obstacle.
     """
     return any(_box_circle_overlap(bounds, obs[0], obs[1],
                                    np.sqrt(obs[2]**2 + 2 * obs[2] * R))
@@ -563,26 +467,13 @@ def scan_window(tester, mpc_sf, mpc_buffer: dict, obstacles: list,
                      wall_tau: int, scan_limit: int, budget,
                      R: float = 1.0, reasons: dict = None) -> Optional[int]:
     """
-    Scan beyond an MPC INFEASIBLE "wall" for a tau with a valid MPC backup.
-    Returns that tau as the new t_diverge, else None.
+    Passthrough search: look past an infeasible build (a "wall") for a tau that
+    has a valid backup. Returns that tau as the new t_diverge, or None.
 
-    alg21: D-membership is NO LONGER a precondition. alg20 attempted a build at
-    tau only when the RSOA there was outside D, on the theory that a build from
-    inside D must fail. But D constrains the MPC's TERMINAL node, not its launch
-    state: a backup launched from inside D can still route out and terminate
-    outside it. Gating on D therefore skipped taus that were in fact feasible,
-    and dropping the gate costs at most a build attempt that build_mpc_backup
-    would reject anyway -- budget, not soundness. The two real preconditions are
-    unchanged and still enforced:
-      - raw-clearance at tau (checked below; a tau already in collision is not a
-        place to fly to), and
-      - build_mpc_backup returning VALID, which still requires the terminal node
-        to clear D.
-
-    R is retained in the signature for call-site compatibility; it no longer
-    affects the scan.
-
-    scan_limit is inclusive: the earlier of the last pre-collision step and the last step with bounds.
+    For each tau from wall_tau+1 to scan_limit (inclusive): give up if the RSOA
+    there hits a raw obstacle, otherwise use an existing valid backup or try to
+    build one. tau itself may be inside D; only a backup's terminal node must
+    clear D. R is unused (kept for the call signature).
     """
     for tau in range(wall_tau + 1, scan_limit + 1):
         if tau not in tester.horizons:
@@ -617,13 +508,10 @@ def _purge_infeasible(mpc_buffer: dict, after_t: int):
 
 def _max_valid_diverge(mpc_buffer: dict, from_t: int,
                        below: Optional[int] = None) -> Optional[int]:
-    """Return the largest key >= from_t with a valid (non-None) buffer entry.
+    """Largest key >= from_t with a valid backup, or None.
 
-    below: exclusive ceiling, normally conflict_time. concrete_scan only
-    certifies raw-clearance for t < conflict_time, so a t_diverge at or beyond
-    it would let PASSTHROUGH fly nominal across a step already known to
-    collide. Entries above the ceiling are usually stale: built before the
-    conflict was discovered and never re-examined.
+    below (exclusive) is normally conflict_time: nominal is only verified safe
+    before conflict_time, so a backup at or past it is not a passthrough target.
     """
     keys = [k for k, v in mpc_buffer.items()
             if k >= from_t and v is not None
@@ -634,12 +522,9 @@ def _max_valid_diverge(mpc_buffer: dict, from_t: int,
 # ── Simulation loop ────────────────────────────────────────────────────────
 
 def test(seed=None, analyzer=None, obstacles=None):
-    # Free the previous trial's objects before this trial builds its acados
-    # solver. The solver is generated and dlopen'ed under a per-pid name, so a
-    # reference cycle that keeps the old AcadosOcpSolver alive (the budget
-    # ledger's charged() wrappers create one) makes this trial load the stale
-    # library with the previous trial's obstacles baked in. Confirmed
-    # 2026-09-13 in runs/alg22_ledger_bisect; gc here restored exact parity.
+    # Free the previous trial's acados solver first. Its library is loaded under
+    # a per-process name, so a leftover reference cycle would make this trial
+    # reuse the old solver with the previous trial's obstacles.
     if os.environ.get('TTTCARV_GC_PER_TRIAL', '1') != '0':
         import gc
         gc.collect()
@@ -658,33 +543,21 @@ def test(seed=None, analyzer=None, obstacles=None):
         ]
 
     tester = ReachabilityTester(analyzer, obstacles, seed=seed)
-    # TTTCARV_FIRST_STEP_COST=1 charges the min-intervention cost only at
-    # stage 0 instead of over the whole horizon. Independent of TTTCARV_RECEDING
-    # so the two can be separated in an A/B, though it is the receding loop that
-    # makes it principled: only u[0] is ever applied, so only u[0] needs to stay
-    # close to nominal, and the freed tail gives the solver more room to find a
-    # safe continuation.
+    # TTTCARV_FIRST_STEP_COST=1: the stay-close-to-NN cost applies only to the
+    # first control (the only one applied under receding horizon).
     first_step_cost = os.environ.get('TTTCARV_FIRST_STEP_COST', '0') != '0'
-    # Tunable because the first measured run at 1e-3 showed 3/5 re-solves
-    # failing with SQP_RTI QP errors on a seed that had 0 failures without the
-    # flag — the near-singular tail Hessian the constant is there to prevent.
-    # Sweep it rather than guess.
+    # Small cost on the remaining controls when FIRST_STEP_COST is on, to keep
+    # the QP well conditioned.
     tail_cost_weight = float(os.environ.get('TTTCARV_TAIL_COST_WEIGHT', '1e-3'))
-    # TTTCARV_ONESHOT=1 makes each backup ONE OCP solve whose own predicted
-    # trajectory is returned, instead of n_horizon solves re-simulated forward
-    # one step at a time. The re-simulation never lets any solve's hard
-    # terminal-D constraint land on the endpoint it returns, which is what
-    # produced the terminal-D rejections; the one-shot plan is constrained by
-    # construction. It is also ~n_horizon times cheaper. Combined with
-    # TTTCARV_RECEDING=1 this is the standard PSF: solve once per timestep,
-    # apply u[0], re-solve.
+    # TTTCARV_ONESHOT=1: a backup is one OCP solve that returns the solver's own
+    # trajectory, instead of n_horizon solves re-simulated one step at a time.
+    # Much cheaper, and the terminal-D constraint applies to the returned end.
     oneshot        = os.environ.get('TTTCARV_ONESHOT', '0') != '0'
     oneshot_refine = int(os.environ.get('TTTCARV_ONESHOT_REFINE', '2'))
-    # Measures |opt_x_num - plant re-simulation| so the model-fidelity claim
-    # the one-shot path rests on is checked rather than assumed. Costs one
-    # extra plant rollout per solve; leave off for timing runs.
+    # Compare the one-shot trajectory with a plant re-simulation (diagnostic;
+    # costs one extra rollout per solve).
     oneshot_verify = os.environ.get('TTTCARV_ONESHOT_VERIFY', '0') != '0'
-    # SQP_RTI iterations per one-shot refine pass (default 20 = unchanged).
+    # SQP_RTI iterations per one-shot refine pass (final run: 10).
     oneshot_rti    = int(os.environ.get('TTTCARV_ONESHOT_RTI', '20'))
     mpc_sf = make_mpc_safety_filter(tester, obstacles_list=obstacles, n_horizon=12,
                                     verify_input_bounds=True,
@@ -714,33 +587,12 @@ def test(seed=None, analyzer=None, obstacles=None):
     budget.concrete_cost  = concrete_cost
     budget.mpc_cost       = mpc_cost
 
-    # ── Calibration sanity guard (2026-09-11) ─────────────────────────────
-    # mpc_cost is measured once per process, during the startup stampede when
-    # 64 workers initialise acados and TF at the same instant. Measured spread
-    # on node5000: healthy median 0.066s, max 0.174s, and one worker 0.295s.
-    # An estimate above the WHOLE timestep budget is not a steady-state cost,
-    # it is a startup transient — but the gate `remaining >= mpc_cost` reads it
-    # as "an MPC build can never be afforded" and is then false forever, since
-    # remaining starts at timestep_budget. That silently disables the safety
-    # filter for the entire life of the process.
-    #
-    # Clamping is the conservative direction here, which is not the obvious
-    # one. An optimistic mpc_cost risks overrunning a single timestep — bounded,
-    # and visible in wall_per_timestep_s. A pessimistic one disables safety
-    # outright and is invisible. So prefer the bounded failure.
-    #
-    # THRESHOLD CORRECTED 2026-09-12. Testing `mpc_cost >= timestep_budget` is
-    # too loose, and the old clamp TARGET (0.9 * budget = 0.18s) fails its own
-    # test. P1 must first propagate concrete bounds to t+1 -- it cannot build a
-    # backup without them -- so by the time it checks `remaining >= mpc_cost`,
-    # concrete_cost is already spent. The real requirement is
-    #     mpc_cost + concrete_cost <= timestep_budget.
-    # Measured case (runs/alg22_wdbg2, worker 1783205): mpc=0.1782s,
-    # concrete=0.0235s. 0.1782 < 0.20 so the old guard passed it, then P1 spent
-    # 0.0259s on bounds and tested 0.174 >= 0.1782 -> false. That worker could
-    # never build at t=0 and produced 7 of the 11 psf_no_diverge events in its
-    # run. 0.18 + 0.0235 = 0.2035 > 0.20, so the old clamp could put a worker
-    # INTO this state while claiming to rescue it.
+    # ── Calibration guard ─────────────────────────────────────────────────
+    # mpc_cost is calibrated once per process and can be inflated by startup
+    # contention. P1 spends concrete_cost on bounds before it checks
+    # remaining >= mpc_cost, so if mpc_cost >= timestep_budget - concrete_cost
+    # the t+1 build could never run and the filter would silently be off.
+    # Clamp it below that.
     mpc_cost_clamped = 0
     _headroom = budget.timestep_budget - concrete_cost
     if mpc_cost >= _headroom:
@@ -766,7 +618,7 @@ def test(seed=None, analyzer=None, obstacles=None):
     pending_job:       Optional[RefinementTask] = None
     wall_tau:          Optional[int]             = None   # first INFEASIBLE tau hit in P3; reset each iteration
 
-    # ── MPC execution state (mirrors alg11) ───────────────────────────────
+    # ── MPC execution state ───────────────────────────────────────────────
     mpc_state = {
         'committed_at':  None,
         'conflict_time': None,
@@ -780,18 +632,8 @@ def test(seed=None, analyzer=None, obstacles=None):
     u_diffs          = []   # |u_mpc - u_nn| per timestep; 0.0 when nominal
     mpc_calls        = 0    # number of PSF activations
     psf_no_diverge   = 0    # PSF failed, no valid t_diverge at all
-    # WHY there was no backup. The counter alone cannot distinguish "the build
-    # was never attempted because the budget was spent" from "the build ran and
-    # the acceptance test rejected it" -- and those need opposite fixes. The
-    # printed diagnostic goes to the worker's stdout, which is /dev/null unless
-    # TTTCARV_WORKER_LOG_DIR is set, so on the alg22 10k the reason for the one
-    # event was lost. Recorded in the fingerprint from here on.
+    # psf_no_diverge broken down by cause (never built vs rejected build).
     psf_no_diverge_reasons: dict = {}   # short key -> count
-    # P1's budget gate is the only path that leaves mpc_buffer[t+1] *absent*
-    # with no reason recorded, which is exactly what every observed
-    # psf_no_diverge diagnostic shows (buf[t+1]=absent, td=never_set).
-    # It was uncounted: mpc_skipped_no_budget counts the step-2 rebuild loop,
-    # not this. Counted separately so the two are never conflated again.
     p1_skipped_no_budget = 0   # P1 build refused by the budget gate
     concrete_deadline_hits = 0  # P2 scans stopped between steps at the deadline
     p1_skipped_no_bounds = 0   # P1 build impossible, concrete bounds missing
@@ -802,79 +644,49 @@ def test(seed=None, analyzer=None, obstacles=None):
     psf_unrecoverable    = 0   # no backup AND current RSOA already inside D
     psf_queue_empty  = 0    # PSF failed, t_diverge valid but queue empty after extend
     psf_stale_refused = 0   # PSF failed, only a stale (ctrl_idx>0) plan existed
-    passthrough_found = 0   # P3b scan_window returned a raw-clear τ with a valid backup
-    passthrough_used  = 0   # PSF PASSTHROUGH branch executed (nominal, no backup at t+1)
-    passthrough_found = 0   # P3b scan_window returned a τ outside D after a wall
-    passthrough_used  = 0   # PSF PASSTHROUGH branch executed (nominal while in D)
+    passthrough_found = 0   # P3b found a valid backup past a wall
+    passthrough_used  = 0   # steps flown nominal with no backup at t+1 (one exists ahead)
 
-    # ── Receding-horizon active phase (alg22) ─────────────────────────────
-    # TTTCARV_RECEDING=0 restores alg21's open-loop active phase, which makes
-    # this file a behavioural no-op against alg21 — the regression check that
-    # the copy did not drift anywhere outside the control-selection step.
+    # ── Active-phase options ──────────────────────────────────────────────
+    # TTTCARV_RECEDING=1 (default): in MPC_ACTIVE, re-solve from the current
+    # bound every step and apply u[0]. 0 flies the committed plan open loop.
     receding = os.environ.get('TTTCARV_RECEDING', '1') != '0'
-    # TTTCARV_PSF_TAIL=1 makes the failure path branch 2 of Algorithm 1 in the
-    # PSF literature. A plan committed at k_bar certifies exactly n_horizon
-    # controls, and the terminal constraint is what makes its shifted tail a
-    # feasible solution to the shrunk problem — so on a failed re-solve the
-    # stored u*[k - k_bar] needs no new solve to be safe, but ONLY while
-    # k - k_bar < N. alg21 instead calls extend_mpc_sequence and rides on
-    # indefinitely, which manufactures plan past the horizon the terminal
-    # constraint ever covered, from a predicted rather than a measured bound.
-    # Off by default so the receding arm stays byte-comparable to its last run.
+    # TTTCARV_PSF_TAIL=1 (final run): if a re-solve fails, fly the committed
+    # plan without extending it while it is within its N-step horizon, the part
+    # its terminal constraint covers. Off by default.
     psf_tail = os.environ.get('TTTCARV_PSF_TAIL', '0') != '0'
     mpc_resolved             = 0  # active timesteps whose input came from a fresh solve
     mpc_resolve_failed       = 0  # active timesteps that fell back to the committed plan
     mpc_fallback_uncertified = 0  # fallbacks where the current RSOA left traj_bounds[idx]
     mpc_tail_exhausted       = 0  # k - k_bar reached N: certificate spent, branch 3 due
-    # Why a re-solve failed. "the solver failed" and "the solver returned a plan
-    # that violates the terminal constraint" are different problems with
-    # different fixes, and mpc_resolve_failed alone cannot tell them apart.
+    # Why re-solves failed (e.g. no_budget, rollout_rejected, solver_error).
     mpc_fail_reason: dict = {}
-    # Which acceptance check rejected the plan, and at which node. Separates
-    # "the plan clipped an obstacle early" from "the plan never got out of D by
-    # the end of the horizon" — different problems with different fixes.
+    # Which acceptance check rejected a re-solved plan, and at which node.
     mpc_reject_detail: dict = {}
-    # Homotopy-jump probe. The per-step re-solve warm-starts from a fresh NN
-    # rollout (warm_start_omega=None), not from the previous solution, so
-    # nothing structurally carries the previous step left/right choice
-    # forward. If the solver is flipping between the two ways around an
-    # obstacle, the applied turn direction alternates. Two views:
-    #   applied_u_* -- sign of the input actually applied, on consecutive
-    #                  active timesteps. This is what the robot does.
-    #   plan_flips  -- sign of the mean of a fresh plan vs the mean of the
-    #                  tail of the plan it replaces. This is what the solver
-    #                  decided, and it fires even when u[0] happens to agree.
-    # *_pairs is the denominator: comparisons where both sides cleared the
-    # deadband. A flip RATE needs it; a flip count alone is uninterpretable.
+    # Turn-direction flip diagnostics: does the controller keep switching which
+    # way it goes around an obstacle?
+    #   applied_u_*  sign of the applied input on consecutive active steps
+    #   plan_*       sign of a new plan's mean vs the old plan's remaining tail
+    # *_pairs counts comparisons where both values are outside FLIP_DEADBAND.
     applied_u_flips    = 0
     applied_u_pairs    = 0
     plan_flips         = 0
     plan_pairs         = 0
     _prev_applied_u    = None
     _prev_applied_t    = None
-    # Times the backup-build loop stopped because the timestep budget could not
-    # cover one more MPC build. Uncounted until 2026-09-11, and that is the whole
-    # reason the dead-worker mode survived five sessions: mpc_cost is calibrated
-    # ONCE per process, so when that single measurement lands above
-    # timestep_budget the gate is false on every timestep of every trial the
-    # worker ever runs. The filter never builds a backup, the process flies
-    # unfiltered nominal, and the results look ordinary. Nothing incremented,
-    # nothing printed, nothing in the fingerprint.
+    # Active-phase backup builds skipped for lack of budget. Also flags a worker
+    # whose mpc_cost calibration disabled the filter (see LAST_RUN_STATS below).
     mpc_skipped_no_budget = 0
-    # Subset of the above: builds skipped purely to honour resolve_reserve.
+    # Subset skipped only to keep RESOLVE_RESERVE.
     mpc_build_yielded_to_resolve = 0
     print(f"[alg22] receding-horizon active phase: {'ON' if receding else 'OFF (alg21 parity)'}"
           f"   first-step-only cost: {'ON' if first_step_cost else 'OFF'}"
           f"{f' (tail_w={tail_cost_weight:g})' if first_step_cost else ''}"
           f"   bounded tail (Alg1 branch 2): {'ON' if psf_tail else 'OFF'}")
 
-    # ── RSOA certificate dump (off unless TTTCARV_RSOA_DUMP names a path) ──
-    # Every executed timestep leaves through real_state_empirical or
-    # real_state_mpc, so wrapping those two is the only placement that cannot
-    # miss a branch — the six call sites in the loop are covered by
-    # construction rather than by my having found all of them. The record is
-    # taken *before* the step so it holds the bounds as they stood when the
-    # step was authorized, not as they were later re-propagated.
+    # ── RSOA certificate dump (only if TTTCARV_RSOA_DUMP is a path) ─────────
+    # Every step goes through real_state_empirical or real_state_mpc, so wrapping
+    # those two logs every step. Bounds are recorded before the step is applied.
     _rsoa_path = os.environ.get('TTTCARV_RSOA_DUMP')
     rsoa_log   = []
     if _rsoa_path:
@@ -902,10 +714,8 @@ def test(seed=None, analyzer=None, obstacles=None):
                        'committed_at': mpc_state['committed_at'],
                        'bound_t': _bnd(t), 'real_t': _real(t)}
                 if kind == 'mpc' and mpc_state['committed_at'] is not None:
-                    # traj_bounds[k] is the backup's bound at committed_at + k.
-                    # extend_mpc_sequence splices this list, so the index can go
-                    # stale; the checker reports a missing entry rather than
-                    # assuming one.
+                    # traj_bounds[k] is the plan's bound at committed_at + k; it
+                    # may be missing if the plan was extended.
                     tb, i = mpc_state['traj_bounds'], t - mpc_state['committed_at']
                     rec['backup_idx']      = i
                     rec['backup_len']      = len(tb)
@@ -923,11 +733,9 @@ def test(seed=None, analyzer=None, obstacles=None):
         tester.real_state_empirical = _wrap(tester.real_state_empirical, 'empirical')
         tester.real_state_mpc       = _wrap(tester.real_state_mpc,       'mpc')
 
-    # ── Per-timestep budget ledger (opt-in via TTTCARV_BUDGET_DUMP) ──────
-    # Charges the four kinds of work the budget actually prices, so a timestep
-    # can be scored both as-is and with the deferrable symbolic refinement
-    # removed. Wrapping the bound methods catches every call site; the residual
-    # (elapsed minus the charges) is Python/geometry overhead.
+    # ── Per-timestep budget ledger (only if TTTCARV_BUDGET_DUMP is a path) ──
+    # Records time spent on symbolic, concrete, plant-step and MPC work each
+    # timestep, so steps can be scored with symbolic time taken out.
     _budget_path = os.environ.get('TTTCARV_BUDGET_DUMP')
     if _budget_path:
         budget.ledger_enabled       = True
@@ -938,13 +746,13 @@ def test(seed=None, analyzer=None, obstacles=None):
         mpc_sf._run_mpc_from_bounds = budget.charged(
             mpc_sf._run_mpc_from_bounds, 'mpc')
 
-    # ── Per-solve MPC pricing + deadline (opt-in, TTTCARV_MPC_PRICING=1) ──
-    # Off: MPC admission tests remaining >= mpc_cost, one calibration probe's
-    # median, and the single-start re-solve pays SINGLE_START_FRAC of it. On:
-    # mpc_cost reads as the p99.5 of this process's measured single-solve times
-    # plus TTTCARV_BUDGET_MARGIN; every solve, including the second multi-start
-    # one, must fit before it starts; and the RTI loop / re-sim rollout stop at
-    # the timestep deadline instead of running past it.
+    # ── Measured-cost budget (TTTCARV_MPC_PRICING=1, final run) ───────────
+    # Off: an MPC solve runs if remaining >= mpc_cost from the one-time
+    # calibration. On:
+    #   - mpc_cost      = p99.5 of this process's recent solve times + margin
+    #   - concrete_cost = p95 of measured seconds per concrete step + margin
+    #   - every solve (including the second multi-start one) must fit before it starts
+    #   - the RTI loop, re-sim rollout and P2 concrete scan stop at the deadline
     mpc_pricing = os.environ.get('TTTCARV_MPC_PRICING', '0') != '0'
     if mpc_pricing:
         import time_budget as _tbm
@@ -953,10 +761,7 @@ def test(seed=None, analyzer=None, obstacles=None):
         mpc_sf.solve_observer = _tbm.record_solve
         mpc_sf.solve_gate     = lambda: budget.remaining >= budget.mpc_cost
         mpc_sf.time_left      = lambda: budget.remaining - budget.margin
-    # Concrete propagation is priced the same way (budget.concrete_cost becomes
-    # the p95 measured seconds per step, and the margin is held back).
     globals()['_CONCRETE_OBSERVER'] = _tbm.record_concrete if mpc_pricing else None
-    # P2 stops between concrete steps when the next one may not fit.
     globals()['_CONCRETE_DEADLINE'] = ((lambda: budget.remaining - budget.margin,
                                         lambda: budget.concrete_cost)
                                        if mpc_pricing else None)
@@ -976,29 +781,21 @@ def test(seed=None, analyzer=None, obstacles=None):
             ctrl_idx = current_timestep - mpc_state['committed_at']
             queue    = mpc_state['controls']
 
-            # Clear future horizons; then interleave: one concrete step -> one MPC build, repeat while budget allows.
-            # This is to check if we can revert to nominal.
-            # If we apply concrete now and mpc build is valid in the next timestep, we are safe to revert
+            # The robot has left the nominal trajectory, so future bounds and the
+            # backups built from them are stale: drop them. Then alternate one
+            # concrete step and one backup build while budget allows; a valid
+            # build at t+1 means we can revert to nominal.
 
             for _t in list(tester.horizons.keys()):
                 if _t > current_timestep:
                     del tester.horizons[_t]
-                    # INVARIANT: a certificate in mpc_buffer is only meaningful
-                    # while the horizon it was derived from is live. The robot
-                    # has deviated from the nominal plan, so every future
-                    # horizon is stale -- and so is every backup built from one.
-                    # Dropping them here is fail-safe by construction: The rebuild loop below runs
-                    # AFTER this purge, so backups re-derived from the actually
-                    # flown state survive untouched.
-
                     mpc_buffer.pop(_t, None)
                     mpc_reason.pop(_t, None)
 
-            # Update mpc_horizon_until to the current timestep to match the purge point, so we don't create a gap in buffer
+            # Keep the horizon counters consistent with the purge.
             mpc_horizon_until = min(mpc_horizon_until, current_timestep)
             concrete_until = current_timestep
-            # Held back from the rebuild loop so the re-solve below can always
-            # pay for itself. Zero when there is no re-solve to protect.
+            # Budget held back for the re-solve (only with RESOLVE_RESERVE).
             resolve_reserve = (budget.mpc_cost * (1.0 if budget.pricing else SINGLE_START_COST_FRAC)
                                if (receding and RESOLVE_RESERVE) else 0.0)
             while budget.can_afford('concrete'):
@@ -1009,22 +806,9 @@ def test(seed=None, analyzer=None, obstacles=None):
                 concrete_until += 1
                 if collision:
                     break
-                # One MPC build for this timestep.
-                #
-                # The build at t_next is NOT speculative: it is the revert test
-                # itself, the exact entry psf_valid() reads below. It must never
-                # be traded for the re-solve, and it cannot usefully be, because
-                # the two are mutually exclusive -- if it comes back VALID the
-                # revert fires and `continue`s before the re-solve is reached,
-                # and if it comes back INFEASIBLE the loop breaks here after one
-                # build. Every LATER build is lookahead buffer for after the
-                # revert, and that is the only work the reserve should touch.
-                #
-                # Reserving against the first build instead (as the version
-                # measured in runs/alg22_reserve did) blocks the revert
-                # decision, so the filter cannot hand control back: active
-                # timesteps went 2496 -> 5834 on 2500 trials while
-                # mpc_fallback_uncertified barely moved, 425 -> 404.
+                # One backup build. The first one (at t+1) is the revert test,
+                # so resolve_reserve never holds it back; later builds are
+                # lookahead for after the revert.
                 need = budget.mpc_cost + (0.0 if concrete_until == t_next
                                           else resolve_reserve)
                 if concrete_until in tester.horizons and budget.remaining >= need:
@@ -1037,25 +821,17 @@ def test(seed=None, analyzer=None, obstacles=None):
                     if not valid:
                         break  # cannot revert to nominal, so stop building backups
                 else:
-                    # Only a budget shortfall is worth counting; falling off the
-                    # end of tester.horizons is the loop's normal exit.
+                    # Running out of bounds is the normal exit; only count budget shortfalls.
                     if concrete_until in tester.horizons:
                         mpc_skipped_no_budget += 1
-                        # A speculative lookahead build that was affordable on
-                        # its own and was given up only to keep the re-solve
-                        # payable. Separating this from a genuine shortfall is
-                        # what makes the reserve measurable: it is the price
-                        # paid, and it should show up against a fall in
-                        # fail_no_budget. The revert test at t_next is exempt
-                        # above and so can never land here.
+                        # Affordable on its own, skipped only to keep resolve_reserve.
                         if budget.remaining >= budget.mpc_cost:
                             mpc_build_yielded_to_resolve += 1
                     break  # no MPC budget remaining
 
             
             mpc_horizon_until = max(mpc_horizon_until, t_next)
-            # PSF reversion: if backup from t+1 (from the concrete RSOA) is valid, return to nominal.
-            # Build forward buffer with remaining budget so we have lookahead buffer if we can revert
+            # Revert: a valid backup at t+1 means nominal is safe again.
             if psf_valid(mpc_buffer, t_next):
                 print(f"{CYAN}[PSF REVERT] t={current_timestep}  mpc_buffer[{t_next}] valid"
                       f"  mpc_hz={mpc_horizon_until} — reverting to nominal{RESET}")
@@ -1064,26 +840,18 @@ def test(seed=None, analyzer=None, obstacles=None):
                 mpc_state['committed_at']  = None
                 mpc_state['conflict_time'] = None
 
-                # Reset pending_job to start from the new post-MPC position.
-                # The mpc changed trajectory so prev symbolic propagation is now inaccurate
-                # conflict_time is kept. P4 will re-verify from here.
+                # The trajectory changed, so restart symbolic refinement from t+1
+                # (conflict_time is kept).
                 pending_job = (RefinementTask(t_next, conflict_time)
                                if conflict_time is not None else None)
 
-                # Only clear INFEASIBLE (None) entries beyond t_next. VALID entries
-                # were built in section above and remain valid backup buffers
+                # Drop infeasible entries past t+1; valid ones stay as lookahead.
                 _purge_infeasible(mpc_buffer, t_next)
                 t_diverge         = _max_valid_diverge(mpc_buffer, current_timestep,
                                                        below=conflict_time)
                 if t_diverge is None or t_diverge < t_next:
-                    # This branch is entered *because* psf_valid(mpc_buffer, t_next),
-                    # and that backup was built this timestep from the concrete RSOA
-                    # re-propagated after the maneuver. conflict_time, by contrast,
-                    # was computed under the pre-maneuver trajectory and is stale
-                    # here by construction (that is why pending_job re-verifies from
-                    # t_next). Letting a stale ceiling veto a just-verified backup
-                    # leaves t_diverge=None, and the filter then falls through to
-                    # unconditional nominal for the remainder of the run.
+                    # conflict_time was computed for the old trajectory, so it must
+                    # not exclude the backup at t+1 that was just verified.
                     print(f"  [PSF REVERT] ceiling conflict_time={conflict_time}"
                           f" excluded the just-verified backup at τ={t_next}"
                           f" (would give t_diverge={t_diverge}) — using τ={t_next}")
@@ -1096,27 +864,20 @@ def test(seed=None, analyzer=None, obstacles=None):
                 current_timestep += 1
                 continue
 
-            # ── Receding-horizon control selection (alg22) ────────────────
-            # alg21 applies queue[t - committed_at]: one plan, flown open loop
-            # for the whole active phase. The certificate behind that input is
-            # traj_bounds[ctrl_idx], computed from the RSOA at committed_at —
-            # but the set the robot is actually in is the Kalman bound written
-            # by real_state_mpc each step, which is not guaranteed to stay
-            # inside it. Re-solving from the current bound and applying only
-            # u[0] keeps the applied input backed by the set the robot is in.
+            # ── Receding horizon: re-solve from the current bound, apply u[0] ──
+            # The committed plan's bounds come from an older RSOA; re-solving keeps
+            # the applied input backed by the set the robot is actually in.
             resolved = False
             if receding:
                 ok, r_ctrls, r_traj, r_label = solve_plan_at(
                     mpc_sf, tester, current_timestep, budget)
                 if (not ok and r_label != "no_budget"
                         and budget.remaining >= budget.mpc_cost):
-                    # One retry from the wider warm-start set before accepting a
-                    # plan built from a stale bound.
+                    # Single-start failed (not for budget): retry with multi-start.
                     ok, r_ctrls, r_traj, r_label = solve_plan_at(
                         mpc_sf, tester, current_timestep, budget, multi_start=True)
                 if ok:
-                    # Compare the new plan against the tail of the one it
-                    # replaces BEFORE overwriting mpc_state.
+                    # Compare with the old plan's tail before overwriting it.
                     _old_tail = [float(np.asarray(c).flatten()[0])
                                  for c in (mpc_state.get("controls") or [])[ctrl_idx:]]
                     _new_all  = [float(np.asarray(c).flatten()[0]) for c in r_ctrls]
@@ -1131,8 +892,7 @@ def test(seed=None, analyzer=None, obstacles=None):
                                       f" plan reverses turn direction: old tail"
                                       f" mean {_a:+.3f} -> new plan mean"
                                       f" {_b:+.3f}{RESET}")
-                    # Re-committing resets committed_at, so ctrl_idx restarts at
-                    # 0 and can never index past a control that was not applied.
+                    # Re-commit at the current step, so ctrl_idx is 0.
                     mpc_state['committed_at'] = current_timestep
                     mpc_state['controls']     = r_ctrls
                     mpc_state['traj_bounds']  = r_traj
@@ -1157,19 +917,11 @@ def test(seed=None, analyzer=None, obstacles=None):
                           f" t={mpc_state['committed_at']}  ctrl_idx={ctrl_idx}{RESET}")
 
             if not resolved:
-                # Fallback, and alg21's only path: ride the committed plan.
-                # Extend whenever <= n_horizon controls remain. Placed after the
-                # revert check: no point extending a queue we're about to abandon.
-                #
-                # Under psf_tail the extend is withheld while the committed
-                # plan's own certificate still covers this index. ctrl_idx is
-                # exactly k - k_bar, so the bound of Algorithm 1's branch 2 is
-                # ctrl_idx < n_horizon; inside it the stored control is the
-                # shifted tail and is safe without a solve. At the bound the
-                # certificate is spent and branch 3 (the terminal controller)
-                # is what the algorithm calls for. That is not implemented, so
-                # the old extend still runs — but as a counted, named departure
-                # from the algorithm rather than the silent default.
+                # No fresh plan: keep flying the committed plan, extending it when
+                # <= n_horizon controls remain. With PSF_TAIL, don't extend while
+                # ctrl_idx < n_horizon (still covered by the plan's own terminal
+                # constraint); past that, extend anyway and count it as
+                # mpc_tail_exhausted.
                 tail_ok = (receding and psf_tail
                            and ctrl_idx < mpc_sf.n_horizon
                            and ctrl_idx < len(queue))
@@ -1188,16 +940,13 @@ def test(seed=None, analyzer=None, obstacles=None):
 
                     # Apply queued MPC control
                     if ctrl_idx >= len(queue):
-                        #shouldnt run if everything is working
+                        # Should not happen.
                         print(f"[MPC] ERROR: queue still exhausted after extend — ABORT")
                         break
 
-                # The fallback input is certified only while the bound the robot
-                # is actually in sits inside the bound the plan predicted for
-                # this index. Outside that, traj_bounds[ctrl_idx] describes a set
-                # the robot is not in and its clearance check is void. Still the
-                # best available action, so it is applied — but counted, never
-                # silently treated as verified.
+                # The fallback input is only certified if the current RSOA lies
+                # inside the bound the plan predicted for this step. Apply it
+                # anyway, but count it.
                 if receding and ctrl_idx > 0:
                     _tb  = mpc_state['traj_bounds']
                     _now = _bounds_at(tester, current_timestep)
@@ -1210,9 +959,8 @@ def test(seed=None, analyzer=None, obstacles=None):
                               f"  (seed={seed}, t={current_timestep}){RESET}")
 
             ctrl = queue[ctrl_idx]
-            # Only consecutive active timesteps are comparable: a gap means the
-            # filter went back to nominal in between, and a sign change across
-            # that gap is the NN doing, not the solver.
+            # Count flips only across consecutive active steps; a gap means
+            # nominal ran in between.
             _u0 = float(np.asarray(ctrl).flatten()[0])
             if (_prev_applied_u is not None
                     and _prev_applied_t == current_timestep - 1
@@ -1236,8 +984,7 @@ def test(seed=None, analyzer=None, obstacles=None):
         #  NOMINAL / PRE_CONFLICT PHASE
         # ═════════════════════════════════════════════════════════════════
 
-        # Stale conflict check — if we've already navigated past conflict_time
-        # safely, clear it so we don't stay in PRE_CONFLICT forever.
+        # Already past conflict_time without incident: clear the stale conflict.
         if conflict_time is not None and current_timestep > conflict_time:
             print(f"{GREEN}[STALE] conflict_time={conflict_time} is in the past"
                   f" (t={current_timestep}) — clearing{RESET}")
@@ -1250,42 +997,23 @@ def test(seed=None, analyzer=None, obstacles=None):
               f"  concrete_until={concrete_until}  mpc_hz={mpc_horizon_until}"
               f"  conflict={conflict_time}  t_diverge={t_diverge}  [{phase}]{RESET}")
 
-        # -- P1: Ensure mpc_buffer[t+1] exists (Safety Filter) --
+        # ---- P1: make sure mpc_buffer[t+1] exists (the safety check) ----
 
-        # alg21: P1 always runs. alg20 skipped the t+1 build whenever the robot
-        # was in passthrough AND the RSOA at t+1 overlapped D, to avoid paying
-        # mpc_cost for a build it assumed was doomed. That assumption came from
-        # the same D-as-precondition reasoning dropped in scan_window, and it
-        # cost more than it saved: skipping the build is what KEEPS passthrough
-        # alive, because the only way to leave passthrough early is to find a
-        # backup at t+1. Running P1 unconditionally can only shorten the stretch
-        # flown without a backup in hand. The budget guard below still applies,
-        # so the extra work is bounded rather than unconditional.
-
-        # Wall at conflict_time. concrete_scan certified that RSOA(conflict_time)
-        # intersects a raw obstacle, so at tau >= conflict_time the robot may
-        # already be in collision and "a backup starting from tau" has no valid
-        # answer. build_mpc_backup would not notice: it unpacks traj_bounds[1:],
-        # dropping the launch bound before the raw check, so a maneuver departing
-        # from inside an obstacle still reads VALID. Refuse to build instead.
+        # No backup can start at or past conflict_time: the RSOA there may already
+        # overlap the obstacle, and build_mpc_backup doesn't check the start node.
+        # Record the reason instead of building.
         past_wall = conflict_time is not None and t_next >= conflict_time
         if past_wall and t_next not in mpc_reason:
             mpc_reason[t_next] = (f"conflict_wall(t+1={t_next} >= conflict_time="
                                   f"{conflict_time}; RSOA there is not raw-clear)")
 
-        # Normal P1 operations
+        # Build the backup at t+1 if it is missing.
         if t_next not in mpc_buffer and not past_wall:
             # Ensure concrete bounds exist at t+1
             if t_next not in tester.horizons:
                 concrete_scan(tester, concrete_until, t_next)
                 concrete_until = max(concrete_until, t_next)
-            # Two distinct signatures reach the no-backup branch. `buf[t+1]=absent
-            # mpc_hz=-1` means the budget gate below refused the build -- seen
-            # only on starved workers, so it is handled by running uncontended
-            # rather than by overrunning the budget. `buf[t+1]=None` means the
-            # build RAN and its plan was rejected -- the healthy-run case,
-            # addressed by BOOTSTRAP_RESIM. Both read `td=never_set`: the buffer
-            # is empty only at t=0, which is why every recorded event sits there.
+            # Is there a later valid backup to fall back on if this build fails?
             _have_fallback = (t_diverge is not None
                               and t_diverge > current_timestep
                               and psf_valid(mpc_buffer, t_diverge))
@@ -1293,10 +1021,8 @@ def test(seed=None, analyzer=None, obstacles=None):
             if t_next not in tester.horizons:
                 p1_skipped_no_bounds += 1
             elif _afford:
-                # No fallback ahead: this build is load-bearing, so pay for the
-                # solver that converges rather than the one that is cheap.
-                # Restored in `finally` -- an exception here must not leave the
-                # filter permanently on the expensive path.
+                # No fallback: use the slower re-sim solver, which fails less often
+                # (BOOTSTRAP_RESIM). Restore the setting even if the build raises.
                 _os_saved = mpc_sf.oneshot
                 _resim_forced = (BOOTSTRAP_RESIM and not _have_fallback
                                  and _os_saved)
@@ -1307,15 +1033,9 @@ def test(seed=None, analyzer=None, obstacles=None):
                     valid = build_mpc_backup(mpc_sf, tester, mpc_buffer, t_next, mpc_reason)
                 finally:
                     mpc_sf.oneshot = _os_saved
-                # Counted in every arm, whatever solver ran: this is the rate
-                # the solver choice is meant to move, and unlike psf_no_diverge
-                # it is sampled on every trial rather than once per ~10k.
+                # Diagnostics: failed builds with no fallback, and at t=0.
                 if not _have_fallback and not valid:
                     p1_bootstrap_infeasible += 1
-                # _have_fallback is false far more often than at t=0 -- every
-                # time the robot catches up to t_diverge -- and most of those
-                # failures are harmless (nominal passthrough covers them). Only
-                # t=0 has a structurally empty buffer, so count it on its own.
                 if current_timestep == 0 and not valid:
                     p1_t0_infeasible += 1
                 mpc_horizon_until = max(mpc_horizon_until, t_next)
@@ -1327,7 +1047,7 @@ def test(seed=None, analyzer=None, obstacles=None):
             else:
                 p1_skipped_no_budget += 1
 
-        # ---- P2: Concrete scan forward (stop at conflict_time) -----
+        # ---- P2: concrete scan forward, up to conflict_time ----
         scan_ceil = conflict_time if conflict_time is not None else MAX_TIME
         while concrete_until < scan_ceil and budget.can_afford('concrete'):
             end = min(
@@ -1338,11 +1058,9 @@ def test(seed=None, analyzer=None, obstacles=None):
             if collision:
                 conflict_time = ct
                 print(f"  [P2] Conflict detected at t={conflict_time}")
-                # A t_diverge established before this conflict was known may now
-                # sit at or beyond it. Nominal is only concrete-certified for
-                # t < conflict_time, so re-derive t_diverge under the new
-                # ceiling. Neither the P1 wall nor P3/P3b's bounds can catch
-                # this: t_diverge was already set when conflict_time moved.
+                # A t_diverge set before this conflict was known may be at or
+                # past it. Nominal is only verified before conflict_time, so
+                # pull t_diverge back below it.
                 if t_diverge is not None and t_diverge >= conflict_time:
                     _stale = t_diverge
                     t_diverge = _max_valid_diverge(mpc_buffer, current_timestep,
@@ -1354,11 +1072,11 @@ def test(seed=None, analyzer=None, obstacles=None):
                 concrete_until = ct
                 break
             concrete_until = reached
-            if reached < end:
+            if reached < end:  # stopped early at the deadline
                 concrete_deadline_hits += 1
                 break
 
-        # ---- P3: Build MPC buffer forward toward conflict_time -------
+        # ---- P3: build backups forward toward conflict_time ----
         if conflict_time is not None:
             mpc_horizon_until = max(mpc_horizon_until, current_timestep)
             while (mpc_horizon_until < conflict_time - 1
@@ -1379,14 +1097,8 @@ def test(seed=None, analyzer=None, obstacles=None):
                     wall_tau = tau
                     break
 
-        #  P3b: Passthrough scan beyond infeasible wall
-        # alg21: invoked after ANY wall. alg20 first required a D-region ahead
-        # (some bound overlapping D but not the raw obstacle), which made a wall
-        # with no D-region ahead unrecoverable even when a perfectly good backup
-        # sat one tau further on -- an INFEASIBLE build has causes other than D
-        # (path_raw, solver error, a vacuous heading bound), and none of them
-        # imply the next tau is bad. scan_window is already budget-guarded and
-        # aborts on the first raw collision, so the unconditional call is bounded.
+        # ---- P3b: passthrough scan past an infeasible build (a "wall") ----
+        # One infeasible tau says little about the next, so look further ahead.
         if wall_tau is not None and budget.remaining >= budget.mpc_cost:
             scan_limit = (min(conflict_time - 1, concrete_until)
                           if conflict_time is not None
@@ -1401,7 +1113,7 @@ def test(seed=None, analyzer=None, obstacles=None):
                 passthrough_found += 1
                 print(f"  [P3b] Passthrough t_diverge -> {t_diverge}")
 
-        # ── P4: Symbolic. Still run even after confirmation
+        # ---- P4: symbolic refinement (keeps going after a confirmed conflict) ----
         if (pending_job is not None
                 and budget.can_afford('symbolic', 1)):
             print(f"  [P4] Symbolic: t={pending_job.symbolic_start} → t={pending_job.conflict_time}")
@@ -1410,9 +1122,8 @@ def test(seed=None, analyzer=None, obstacles=None):
 
             if result is not None:
                 if result["collision"]:
-                    # Symbolic tightened bounds so drop INFEASIBLE entries so
-                    # P3 retries them with tighter bounds (may extend t_diverge).
-                    # VALID entries remain safe
+                    # Conflict confirmed with tighter bounds: drop infeasible
+                    # entries so P3 retries them (valid entries stay).
                     print(f"  [P4] Conflict confirmed at t={conflict_time} — retrying INFEASIBLE entries")
                     _purge_infeasible(mpc_buffer, current_timestep)
                     # Pull mpc_horizon_until back to t_diverge so P3 re-scans the
@@ -1421,9 +1132,7 @@ def test(seed=None, analyzer=None, obstacles=None):
                     # Reset job for continuous refinement
                     pending_job       = RefinementTask(current_timestep, conflict_time)
                 else:
-                    # Deconflicted -  clear conflict state but keep VALID buffer
-                    # entries; they're still collision-free and serve as backups
-                    # if a new conflict appears immediately after.
+                    # Deconflicted: clear the conflict but keep valid backups.
                     print(f"  [P4] Deconflicted! Clearing conflict state")
                     conflict_time = None
                     pending_job   = None
@@ -1434,24 +1143,9 @@ def test(seed=None, analyzer=None, obstacles=None):
         #  PSF DECISION: nominal or activate MPC backup
         # ══════════════════════════════════════════════════════════════════
         if psf_valid(mpc_buffer, t_next):
-            # PSF satisfied —> nominal control is safe
-            #
-            # Record t_next as the divergence point. This branch is entered
-            # *because* mpc_buffer[t_next] is valid, so t_next IS a certified
-            # place to diverge; not writing it down is what lets the clock
-            # overtake t_diverge. P1 normally raises it (same rule, same
-            # place), but P1 is skipped whenever buffer[t_next] was already
-            # built on an earlier timestep — and that is precisely when this
-            # branch fires without it. Once current_timestep > t_diverge the
-            # activation site computes ctrl_idx > 0 and joins a plan whose
-            # first controls were never applied, so traj_bounds[ctrl_idx]
-            # describes a trajectory the robot is not on.
-            #
-            # Only ever raises t_diverge, exactly as P1 does, so a pending
-            # passthrough target further ahead is left alone. After the
-            # increment below the invariant t_diverge >= current_timestep
-            # holds, which makes ctrl_idx > 0 unreachable rather than merely
-            # unobserved.
+            # PSF OK: nominal is safe. Record t+1 as a divergence point (only ever
+            # raising t_diverge) so the clock never overtakes it; otherwise a
+            # later activation could join a plan partway through.
             if t_diverge is None or t_diverge < t_next:
                 t_diverge = t_next
             u_diffs.append(0.0)
@@ -1463,22 +1157,13 @@ def test(seed=None, analyzer=None, obstacles=None):
         elif (t_diverge is not None and t_diverge > current_timestep
                 and psf_valid(mpc_buffer, t_diverge)):
             # Passthrough: no backup at t+1, but a valid one exists at t_diverge.
-            #
-            # Tripwire for the invariant this branch rests on. Flying nominal to
-            # t_diverge is only certified because concrete_scan proved every step
-            # below conflict_time is raw-clear. P1's wall, P3's loop bound, P3b's
-            # scan_limit and P2's clamp each maintain it; none of them is checked
-            # here, so a fifth path to t_diverge must fail loudly, not silently.
+            # Flying nominal until then is safe only because the concrete scan
+            # showed every step before conflict_time is obstacle-free.
             assert conflict_time is None or t_diverge < conflict_time, (
                 f"PASSTHROUGH gap [{current_timestep},{t_diverge}] spans the "
                 f"conflict at t={conflict_time}: nominal is not concrete-certified "
                 f"over this gap")
-            #
-            # Report the REAL reason there is no backup at t+1. alg20 had a
-            # further arm here for the skip_p1 route ("inside D"); with P1 no
-            # longer skipped on D membership, every no-backup case now reaches
-            # this branch having actually attempted a build, so mpc_reason holds
-            # the true cause (path_raw, term_D, solver_error, conflict_wall).
+            # Log why there is no backup at t+1.
             if t_next in mpc_reason:
                 _why = f"no backup at t+1: {mpc_reason[t_next]}"
             elif t_next not in mpc_buffer:
@@ -1486,8 +1171,7 @@ def test(seed=None, analyzer=None, obstacles=None):
             else:
                 _why = "no backup at t+1: reason unrecorded"
 
-            # State the basis for flying nominal this step. The guarantee is
-            # concrete raw-clearance over the gap, NOT the D geometry.
+            # Log what makes nominal safe this step.
             _basis = (f"nominal concrete-clear through t={concrete_until} (no conflict)"
                       if conflict_time is None
                       else f"nominal concrete-clear to conflict t={conflict_time}")
@@ -1501,22 +1185,10 @@ def test(seed=None, analyzer=None, obstacles=None):
             current_timestep += 1
 
         else:
-            # PSF fails — need MPC backup from t_diverge
-            #
-            # A backup is a plan from a specific state at a specific time:
-            # controls[k] and traj_bounds[k] both assume controls[0..k-1] were
-            # the inputs actually applied. Joining a plan at ctrl_idx > 0 means
-            # those inputs were NOT applied — the filter flew nominal over
-            # those steps — so traj_bounds[ctrl_idx] describes a state the
-            # robot is not in, and every clearance check made against it is
-            # void. t_diverge persists across loop iterations, so it can point
-            # at a plan committed on an earlier timestep; that is a stale
-            # pointer, not a backup.
-            #
-            # Prefer the plan committed at this exact timestep. If there isn't
-            # one, refuse rather than fly a plan whose bounds do not describe
-            # the robot: fall through to the no-backup branch, which at least
-            # reports the condition instead of hiding it.
+            # PSF failed: switch to a backup plan.
+            # A plan only describes the robot from the step it was built for
+            # (controls[k] assumes controls[0..k-1] were applied), so use the
+            # backup for this exact step and refuse a stale t_diverge.
             if (t_diverge is not None and t_diverge != current_timestep
                     and psf_valid(mpc_buffer, current_timestep)):
                 print(f"{RED}[PSF ACTIVATE] stale t_diverge={t_diverge} at"
@@ -1575,9 +1247,7 @@ def test(seed=None, analyzer=None, obstacles=None):
                         tester.real_state_empirical(current_timestep, t_next)
                         current_timestep += 1
             else:
-                # No valid backup yet — mpc_buffer[t+1] not ready (P1 stalled)
-                # Apply nominal and warn; P1 will catch up next timestep.
-                # SHOULD NOT RUN IF WORKING!!!!!
+                # No usable backup at all (should not happen in a healthy run).
                 _bnext   = tester.horizons[t_next].get_tight_bound() if t_next in tester.horizons else None
                 _in_D    = (_bnext is not None and collides_danger(_bnext, obstacles, turning_radius))
                 _in_raw  = (_bnext is not None and collides_raw(_bnext, obstacles))
@@ -1594,15 +1264,8 @@ def test(seed=None, analyzer=None, obstacles=None):
                       f"  bnext_in_D={_in_D}  bnext_in_raw={_in_raw}"
                       f"  conflict={conflict_time}  mpc_hz={mpc_horizon_until}"
                       f"  (seed={seed}){RESET}")
-                # TERMINAL SAFE CONTROLLER.
-                #
-                # Predicate is the CURRENT bound, not _bnext. _bnext is the RSOA
-                # under the nominal NN control; applying the loiter instead sends
-                # the robot somewhere that bound does not describe, so it cannot
-                # certify this step. The current RSOA does: if it clears D, a
-                # max-turn circle from anywhere inside it stays outside the raw
-                # obstacle indefinitely, which is the invariance the split
-                # terminal constraint is built on.
+                # Terminal safe controller (see PSF_LOITER). Uses the CURRENT RSOA;
+                # the next-step RSOA assumes NN control, not the loiter.
                 _bcur = (tester.horizons[current_timestep].get_tight_bound()
                          if current_timestep in tester.horizons else None)
                 _cur_clears_D = (_bcur is not None
@@ -1715,18 +1378,13 @@ def test(seed=None, analyzer=None, obstacles=None):
         'applied_u_pairs':          applied_u_pairs,
         'plan_flips':               plan_flips,
         'plan_pairs':               plan_pairs,
-        # Dead-worker detector. mpc_cost_clamped==1 means this process's
-        # once-per-process calibration exceeded the timestep budget and would
-        # have disabled the filter outright before the guard existed;
-        # mpc_skipped_no_budget counts every build the budget gate refused.
-        # A trial with mpc_calls==0 and mpc_skipped_no_budget>0 was flown
-        # unfiltered and must not be scored as a filter result.
+        # mpc_cost_clamped=1: this process's calibration was clamped. A trial
+        # with mpc_calls==0 and mpc_skipped_no_budget>0 flew unfiltered and
+        # should not be scored.
         'mpc_cost_clamped':         mpc_cost_clamped,
         'mpc_skipped_no_budget':    mpc_skipped_no_budget,
         'mpc_build_yielded':        mpc_build_yielded_to_resolve,
-        # An unfiltered step taken at a moment the filter had decided it needed
-        # to intervene. Zero is the only acceptable value; the reason breakdown
-        # is what says whether the cause is budget or the acceptance test.
+        # Unfiltered steps where the filter wanted to intervene (should be 0), by cause.
         'psf_no_diverge_reasons':   dict(psf_no_diverge_reasons),
         'psf_stale_refused':        psf_stale_refused,
         'p1_skipped_no_budget':     p1_skipped_no_budget,
@@ -1749,10 +1407,7 @@ def test(seed=None, analyzer=None, obstacles=None):
         'mpc_truncated_solves':     int(mpc_sf.truncated_solves),
         'mpc_second_start_skipped': int(mpc_sf.second_start_skipped),
         'concrete_deadline_hits':   int(concrete_deadline_hits),
-        # If first_step_cost turns the MPC into a nominal passthrough — the
-        # optimizer parking omega_0 at omega_nom and deferring avoidance to the
-        # free tail — then the applied control collapses onto the NN control and
-        # these go to ~0 while MPC is still nominally "active".
+        # Size of the intervention |u_mpc - u_nn| on active steps.
         'u_diff_max':               float(max(u_diffs, default=0.0)),
         'u_diff_mean_active':       float(
             sum(d for d in u_diffs if d > 0.0)
