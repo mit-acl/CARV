@@ -139,19 +139,20 @@ Neither filter went through. Both went around. No crashes in any setting
 
 | Noise | Corridor free width | Mine | R2 |
 |---|---|---|---|
-| ±0.15 | 1.0 m | 25.4% | 23.3% |
-| ±0.15 | 1.8 m | 25.6% | 26.7% |
-| ±0.05 | 1.0 m | 23.9% | 23.2% |
-| ±0.05 | 1.8 m | 28.1% | 25.8% |
-| ±0.017 | 1.0 m | 22.7% | 22.8% |
-| ±0.017 | 1.8 m | 27.3% | 25.8% |
+| ±0.15 | 1.0 m | 22.9% | 23.2% |
+| ±0.15 | 1.8 m | 25.4% | 26.6% |
+| ±0.05 | 1.0 m | 22.7% | 23.2% |
+| ±0.05 | 1.8 m | 25.2% | 25.8% |
+| ±0.017 | 1.0 m | 23.1% | 22.6% |
+| ±0.017 | 1.8 m | 25.6% | 25.9% |
 
-**These numbers are noisy for my filter.** I re-ran the exact same code on the
-exact same scenes at low noise, and my filter's rate moved by 7 to 18
-percentage points (for example 23% in one run, 40% in another). The reason: how
-far ahead it checks depends on how much computing fits into each 0.2 s step,
-and that changes from run to run. R2 doesn't have this problem. So treat
-"mine" as anywhere from about R2's level to clearly worse, never better.
+Every gap is within about 1 percentage point, so it's a tie.
+
+Both columns come from the same job on the same machine, so they're
+comparable. Across separate jobs, my filter's numbers move by up to about 6
+points (for example 22.4%, 22.7% and 28.6% for the same setting). How far ahead
+it checks depends on how much computing fits into each 0.2 s step, and that
+varies between runs. R2's numbers repeat almost exactly.
 
 **Why mine didn't go in:** its reach boxes grow quickly, from 7 cm to 43 cm wide
 in 3 to 4 steps. By the time they reach the entrance, they're wider than the

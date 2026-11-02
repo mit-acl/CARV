@@ -136,6 +136,17 @@ SHRINK = os.environ.get('TTTCARV_GP_SHRINK', '0') != '0'
 # returns whenever the NN's input admits a safe continuation, so it gives the
 # baseline its best-case intervention rate independent of our cost design.
 PIN = os.environ.get('TTTCARV_GP_PIN', '0') != '0'
+# TTTCARV_GP_PIN_RAW=1 (alg43): pin stage 0 to the RAW nn(ctr), not clip(nn, +-U_MAX).
+# The plant has no input limit and ours passes the unsaturated NN through, so
+# this is the matched action space. Stages 1..N keep the +-U_MAX box (the
+# terminal loiter and D only need the filter's own turn capability), and the
+# |omega| <= U_MAX audit is applied to those stages only.
+PIN_RAW = os.environ.get('TTTCARV_GP_PIN_RAW', '0') != '0'
+# TTTCARV_GP_PRESTART=1 (alg43): one zero-delay solve from x_hat_0 BEFORE motion, landing at
+# k=0, then the normal pipeline. Without it G2/G3/R2 have no plan at k=0 and fly the loiter,
+# while ours builds its t=0 backup before acting (alg28 P1 at current_timestep 0).
+PRESTART = os.environ.get('TTTCARV_GP_PRESTART', '0') != '0'
+PIN_TOL = float(os.environ.get('TTTCARV_GP_PIN_TOL', '1e-6'))  # stage-0 match; flown plan is re-simulated, so any tol is sound
 # TTTCARV_GP_FIRSTSTEP=1: the textbook PSF objective |u_0 - u_NN|^2. Stages
 # 1..N-1 keep weight TTTCARV_GP_TAILW (default 1e-3), not 0: with Gauss-Newton
 # and no LM term a zero weight makes those Hessian blocks singular. 0 (default)
@@ -505,6 +516,9 @@ def test(seed=None, analyzer=None, obstacles=None, pos_min=0.0, vel_min=-1.0):
     u_diffs_clip = []
     was_filtered = False
     pending = None           # dict(apply_at, ok, plan, kind, f, t0)
+    # alg41 scoring: nn at the centre each solve decided on, and the one landed this step.
+    refbox = dict(u=None, land=None)
+    ud_clip, ud_pred, ud_predclip = [], [], []
     busy_until = -1.0
 
     def solve(xs, box, t0, deadline=None):
@@ -531,12 +545,16 @@ def test(seed=None, analyzer=None, obstacles=None, pos_min=0.0, vel_min=-1.0):
         else:
             b0 = np.stack([xs, xs], axis=1)
             ctr = np.asarray(xs, dtype=float)
+        refbox['u'] = nn(ctr)
         w0 = time.perf_counter()
         ok, reason, plan = False, 'solver_error', None
         if PIN and sysm.name == 'unicycle':
             st['pin_tries'] += 1
-            up = float(np.clip(nn(ctr), -U_MAX, U_MAX))
+            up = float(nn(ctr)) if PIN_RAW else float(np.clip(nn(ctr), -U_MAX, U_MAX))
             ac = mpc_sf._mpc._solver
+            vib = mpc_sf.verify_input_bounds
+            if PIN_RAW:
+                mpc_sf.verify_input_bounds = False
             try:
                 ac.constraints_set(0, 'lbu', np.array([up]))
                 ac.constraints_set(0, 'ubu', np.array([up]))
@@ -553,6 +571,23 @@ def test(seed=None, analyzer=None, obstacles=None, pos_min=0.0, vel_min=-1.0):
                             mpc_sf._mpc._stage_infl = None
                     if controls is None or len(controls) == 0:
                         continue
+                    if PIN_RAW:
+                        cs = [float(np.asarray(c).flatten()[0]) for c in controls]
+                        # stage 0 must be the pin (acados may return an unconverged
+                        # iterate); stages 1..N must respect the box.
+                        bad = None
+                        if not all(np.isfinite(cs)):
+                            bad = 'nonfinite'
+                        elif abs(cs[0] - up) > PIN_TOL:
+                            bad = 'stage0'
+                            st['pin_raw_s0_err_max'] = max(st.get('pin_raw_s0_err_max', 0.0), abs(cs[0] - up))
+                        elif max((abs(c) for c in cs[1:]), default=0.0) > U_MAX + 1e-6:
+                            bad = 'tail'
+                        if bad is not None:
+                            st['pin_raw_reject'] = st.get('pin_raw_reject', 0) + 1
+                            st[f'pin_raw_rej_{bad}'] = st.get(f'pin_raw_rej_{bad}', 0) + 1
+                            st['pin_raw_rej_absnn_gt1'] = st.get('pin_raw_rej_absnn_gt1', 0) + int(abs(up) > U_MAX)
+                            continue
                     states = [ctr] + [np.asarray(q, dtype=float).flatten() for q in pts]
                     if ROBUST:
                         tb = _tube_boxes(states, tube[:len(states)], e_th)
@@ -562,6 +597,7 @@ def test(seed=None, analyzer=None, obstacles=None, pos_min=0.0, vel_min=-1.0):
                         st['pin_ok'] += 1
                         break
             finally:
+                mpc_sf.verify_input_bounds = vib
                 ac.constraints_set(0, 'lbu', np.array([-U_MAX]))
                 ac.constraints_set(0, 'ubu', np.array([U_MAX]))
         for ms in (([False, True] if MULTISTART else [False]) if not ok else []):
@@ -693,6 +729,7 @@ def test(seed=None, analyzer=None, obstacles=None, pos_min=0.0, vel_min=-1.0):
     def land(k):
         """Apply the pending result at the current instant; returns the kind."""
         nonlocal cache, cmd, pending
+        refbox['land'] = pending.get('uref')
         if pending['ok']:
             cache = pending['plan']
             loiter['side'] = None
@@ -730,11 +767,18 @@ def test(seed=None, analyzer=None, obstacles=None, pos_min=0.0, vel_min=-1.0):
         T = k * dt
         xh = x.copy() if NOISE == 'none' else (S[:, 0] + S[:, 1]) / 2.0
         u_nn = nn(xh)
+        refbox['land'] = None
         pieces = []            # (duration, omega) over [T, T+dt)
         pin_pieces = []        # was each piece the pinned NN command?
         events = []
         applied_kind = 'hold'
 
+        if PRESTART and k == 0 and not NAIVE and pending is None:
+            ok0, plan0, reason0, _w0 = solve(xh, S, 0, _deadline())
+            pending = dict(apply_at=T, ok=ok0, plan=plan0, reason=reason0, f=0.0,
+                           uref=refbox['u'])
+            events.append(('prestart', reason0))
+            st['prestart_ok'] = st.get('prestart_ok', 0) + int(ok0)
         # ── a result due at this tick takes effect first ──────────────────
         if pending is not None and pending['apply_at'] <= T + EPS:
             applied_kind = land(k)
@@ -749,7 +793,8 @@ def test(seed=None, analyzer=None, obstacles=None, pos_min=0.0, vel_min=-1.0):
                 land_step = int(np.floor((T + delta) / dt + EPS))
                 if plan is not None:
                     plan.t0 = land_step
-                pending = dict(apply_at=T + delta, ok=ok, plan=plan, reason=reason, f=None)
+                pending = dict(apply_at=T + delta, ok=ok, plan=plan, reason=reason, f=None,
+                               uref=refbox['u'])
                 busy_until = T + delta
             else:  # G2 / G3 / R2: plan for the tick the new command takes effect
                 delta = ASSUMED if MEASURED else DELAY
@@ -784,7 +829,8 @@ def test(seed=None, analyzer=None, obstacles=None, pos_min=0.0, vel_min=-1.0):
                 if MEASURED and wall > ASSUMED:
                     st['deadline_miss'] += 1
                     ok, plan, reason = False, None, 'deadline_miss'
-                pending = dict(apply_at=T + delta, ok=ok, plan=plan, reason=reason, f=f)
+                pending = dict(apply_at=T + delta, ok=ok, plan=plan, reason=reason, f=f,
+                               uref=refbox['u'])
                 busy_until = T + delta
             events.append(('solve', reason))
             if pending['apply_at'] <= T + EPS:          # delta = 0
@@ -827,6 +873,12 @@ def test(seed=None, analyzer=None, obstacles=None, pos_min=0.0, vel_min=-1.0):
             st['activations'] += 1
         was_filtered = filtered
         u_diffs.append(abs(u_avg - u_nn))
+        _c = lambda u: float(np.clip(u, -U_MAX, U_MAX))
+        _ur = refbox['land'] if refbox['land'] is not None else u_nn
+        ud_clip.append(abs(_c(u_avg) - _c(u_nn)))
+        ud_pred.append(abs(u_avg - _ur))
+        ud_predclip.append(abs(_c(u_avg) - _c(_ur)))
+        st['nn_sat_steps'] = st.get('nn_sat_steps', 0) + int(abs(u_nn) > U_MAX + 0.05)
         # Mode-based: engaged unless the whole step flew the pinned NN input.
         st['eng_steps'] += int(not (pin_pieces and all(pin_pieces)))
         # |applied - NN| with the NN clipped into the filter's input set, so
@@ -908,7 +960,7 @@ def test(seed=None, analyzer=None, obstacles=None, pos_min=0.0, vel_min=-1.0):
 
         if trace is not None:
             trace.append(dict(k=k, x=x.tolist(), xh=np.asarray(xh).tolist(),
-                              u_nn=u_nn, pieces=pieces, kind=applied_kind, cert_ok=cert_ok,
+                              u_nn=u_nn, u_ref=_ur, u_avg=u_avg, pieces=pieces, kind=applied_kind, cert_ok=cert_ok,
                               events=events, off=off,
                               cache_t0=None if cache is None else cache.t0,
                               cache_states=None if cache is None else
@@ -932,11 +984,15 @@ def test(seed=None, analyzer=None, obstacles=None, pos_min=0.0, vel_min=-1.0):
     st['u_diff_len'] = len(u_diffs)
     st['u_diff_clip_gt'] = {str(t): int(sum(1 for d in u_diffs_clip if d > t))
                             for t in (0.0, 0.01, 0.05, 0.1)}
+    for _nm, _l in (('clip', ud_clip), ('pred', ud_pred), ('predclip', ud_predclip)):
+        st[f'u_diff_gt_{_nm}'] = {str(t): int(sum(1 for d in _l if d > t))
+                                 for t in (0.0, 0.01, 0.05, 0.1)}
+    st.setdefault('nn_sat_steps', 0)
     LAST_RUN_STATS.clear()
     LAST_RUN_STATS.update({f'gp_{a}': b for a, b in st.items()})
 
     if trace is not None:
-        with open(os.environ['TTTCARV_GP_TRACE'], 'w') as fh:
+        with open(os.environ['TTTCARV_GP_TRACE'].replace('{seed}', str(seed)), 'w') as fh:
             json.dump(dict(seed=seed, system=sysm.name,
                            obstacles=[np.asarray(o).tolist() for o in obstacles],
                            stats=st, trace=trace, final=x.tolist()), fh)
