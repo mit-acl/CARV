@@ -1,0 +1,5 @@
+Stated before the run (2026-10-21). Scene: same corridor, starting 3 m ahead (NN path k=15..33).
+R2 start is feasible (point-state loiter search finds a 12-step plan from all 8 traced starts).
+Prediction: R2 0 collisions; refuses to enter the corridor (no 12-step plan ends in a loiter-feasible
+state inside it), loiters in front, overrides the NN for most of the episode (>30%), rarely reaches the exit.
+Ours 0 collisions, overrides <2%, flies the NN through (concrete scan clears the corridor).

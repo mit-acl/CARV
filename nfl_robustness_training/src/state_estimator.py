@@ -184,11 +184,11 @@ class ExtendedKalmanEstimator(StateEstimator):
         else:
             u = np.asarray(control_input).flatten()
 
-        # Nonlinear state prediction
-        self.x = self._dynamics(self.x, u)
-
-        # Linearize and propagate covariance
+        # Linearize at the prior state x_k, before it is overwritten
         F = self.jacobian_F(self.x, u)
+
+        # Nonlinear state prediction and covariance propagation
+        self.x = self._dynamics(self.x, u)
         self.P = F @ self.P @ F.T + self.Q
 
         # Update bounds

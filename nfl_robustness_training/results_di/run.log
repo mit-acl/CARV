@@ -1,0 +1,1061 @@
+  Created analyzer for DoubleIntegrator
+  Time horizon: 30, Max symbolic steps: 10
+Using Linear Kalman Filter
+  [split terminal DI] path: p>=0.000, v>=-0.900   terminal: brake-to-rest invariant (buffer=0.050)
+Warning: Please note that the following versions of CasADi  are officially supported: 3.6.3 or 3.5.6 or 3.5.5 or 3.5.4 or 3.5.3 or 3.5.2 or 3.5.1 or 3.4.5 or 3.4.0.
+ If there is an incompatibility with the CasADi generated code, please consider changing your CasADi version.
+Version 3.7.2 currently in use.
+Using Linear Kalman Filter
+==================== Empirical (Kalman) ====================
+  From t=0 to t=1
+  Tightest overlapped volume at t = 1: 0.066270
+
+==================== Empirical (Kalman) ====================
+  From t=1 to t=2
+  Tightest overlapped volume at t = 2: 0.039401
+
+==================== Empirical (Kalman) ====================
+  From t=2 to t=3
+  Tightest overlapped volume at t = 3: 0.029237
+
+==================== Empirical (Kalman) ====================
+  From t=3 to t=4
+  Tightest overlapped volume at t = 4: 0.024213
+
+==================== Empirical (Kalman) ====================
+  From t=4 to t=5
+  Tightest overlapped volume at t = 5: 0.021401
+
+==================== Empirical (Kalman) ====================
+  From t=5 to t=6
+  Tightest overlapped volume at t = 6: 0.019718
+
+==================== Empirical (Kalman) ====================
+ Warning: Collision detected at t=7
+ Bounds: [[ 2.03339196  2.17238846]
+ [-0.91941729 -0.78510308]]
+ Obstacles: [array([ 0.,  0., -2.])]
+
+==================== Empirical (Kalman) ====================
+ Warning: Collision detected at t=8
+ Bounds: [[ 1.87345728  2.01002264]
+ [-0.92136835 -0.78956913]]
+ Obstacles: [array([ 0.,  0., -2.])]
+
+==================== Empirical (Kalman) ====================
+ Warning: Collision detected at t=9
+ Bounds: [[ 1.69233766  1.8272988 ]
+ [-0.90537285 -0.77522824]]
+ Obstacles: [array([ 0.,  0., -2.])]
+
+==================== Empirical (Kalman) ====================
+  From t=9 to t=10
+  Tightest overlapped volume at t = 10: 0.017279
+
+==================== Symbolic ====================
+  Parent Volume: 0.25
+  From t=0 to t=1 (k=1 steps)
+  Computed in 0.0934s
+  Volume: 0.308024
+  Tightest volume: 0.050903
+==================== Symbolic ====================
+  Parent Volume: 0.25
+  From t=0 to t=1 (k=1 steps)
+  Computed in 0.0044s
+  Volume: 0.308024
+  Tightest volume: 0.050903
+==================== Symbolic ====================
+  Parent Volume: 0.25
+  From t=0 to t=1 (k=1 steps)
+  Computed in 0.0042s
+  Volume: 0.308024
+  Tightest volume: 0.050903
+==================== Symbolic ====================
+  Parent Volume: 0.25
+  From t=0 to t=2 (k=2 steps)
+  Computed in 0.0131s
+  Volume: 0.360670
+  Tightest volume: 0.039401
+==================== Symbolic ====================
+  Parent Volume: 0.25
+  From t=0 to t=2 (k=2 steps)
+  Computed in 0.0115s
+  Volume: 0.360670
+  Tightest volume: 0.039401
+==================== Symbolic ====================
+  Parent Volume: 0.25
+  From t=0 to t=2 (k=2 steps)
+  Computed in 0.0113s
+  Volume: 0.360670
+  Tightest volume: 0.039401
+==================== Symbolic ====================
+  Parent Volume: 0.25
+  From t=0 to t=3 (k=3 steps)
+  Computed in 0.0265s
+  Volume: 0.415807
+  Tightest volume: 0.029237
+==================== Symbolic ====================
+  Parent Volume: 0.25
+  From t=0 to t=3 (k=3 steps)
+  Computed in 0.0225s
+  Volume: 0.415807
+  Tightest volume: 0.029237
+==================== Symbolic ====================
+  Parent Volume: 0.25
+  From t=0 to t=3 (k=3 steps)
+  Computed in 0.0226s
+  Volume: 0.415807
+  Tightest volume: 0.029237
+==================== Symbolic ====================
+  Parent Volume: 0.25
+  From t=0 to t=4 (k=4 steps)
+  Computed in 0.0435s
+  Volume: 0.416778
+  Tightest volume: 0.024213
+==================== Symbolic ====================
+  Parent Volume: 0.25
+  From t=0 to t=4 (k=4 steps)
+  Computed in 0.0374s
+  Volume: 0.416778
+  Tightest volume: 0.024213
+==================== Symbolic ====================
+  Parent Volume: 0.25
+  From t=0 to t=4 (k=4 steps)
+  Computed in 0.0374s
+  Volume: 0.416778
+  Tightest volume: 0.024213
+==================== Symbolic ====================
+  Parent Volume: 0.25
+  From t=0 to t=5 (k=5 steps)
+  Computed in 0.0645s
+  Volume: 0.345657
+  Tightest volume: 0.021401
+ Warning: Collision detected at t=5
+ Bounds: [[ 1.8872783   2.770115  ]
+ [-0.9371792  -0.54564947]]
+ Obstacles: [array([ 0.,  0., -2.])]
+
+==================== Symbolic ====================
+  Parent Volume: 0.25
+  From t=0 to t=5 (k=5 steps)
+  Computed in 0.0558s
+  Volume: 0.345657
+  Tightest volume: 0.021401
+ Warning: Collision detected at t=5
+ Bounds: [[ 1.8872783   2.770115  ]
+ [-0.9371792  -0.54564947]]
+ Obstacles: [array([ 0.,  0., -2.])]
+
+==================== Symbolic ====================
+  Parent Volume: 0.25
+  From t=0 to t=5 (k=5 steps)
+  Computed in 0.0550s
+  Volume: 0.345657
+  Tightest volume: 0.021401
+ Warning: Collision detected at t=5
+ Bounds: [[ 1.8872783   2.770115  ]
+ [-0.9371792  -0.54564947]]
+ Obstacles: [array([ 0.,  0., -2.])]
+
+==================== Concrete ====================
+Starting concrete propagation: t=0 -> t=15 (15 steps)
+  Step 1/15 to t=1 done in 0.0050s, vol=0.308024
+  Step 2/15 to t=2 done in 0.0042s, vol=0.060981
+  Step 3/15 to t=3 done in 0.0042s, vol=0.031147
+  Step 4/15 to t=4 done in 0.0042s, vol=0.028434
+  Step 5/15 to t=5 done in 0.0042s, vol=0.021390
+  Step 6/15 to t=6 done in 0.0044s, vol=0.017141
+  Step 7/15 to t=7 done in 0.0042s, vol=0.014332
+  Step 8/15 to t=8 done in 0.0042s, vol=0.012461
+  Step 9/15 to t=9 done in 0.0042s, vol=0.011185
+  Step 10/15 to t=10 done in 0.0042s, vol=0.010130
+  Step 11/15 to t=11 done in 0.0042s, vol=0.007912
+  Step 12/15 to t=12 done in 0.0042s, vol=0.007993
+  Step 13/15 to t=13 done in 0.0042s, vol=0.008180
+  Step 14/15 to t=14 done in 0.0042s, vol=0.008564
+  Step 15/15 to t=15 done in 0.0042s, vol=0.009118
+Concrete propagation of 15 steps: 
+total time=0.0637s
+bounds= [[ 0.8396158   0.9946093 ]
+ [-0.5601372  -0.50130653]]
+final vol @t=15: 0.009118
+
+==================== Concrete ====================
+Starting concrete propagation: t=0 -> t=15 (15 steps)
+  Step 1/15 to t=1 done in 0.0042s, vol=0.308024
+  Step 2/15 to t=2 done in 0.0041s, vol=0.060981
+  Step 3/15 to t=3 done in 0.0042s, vol=0.031147
+  Step 4/15 to t=4 done in 0.0042s, vol=0.028434
+  Step 5/15 to t=5 done in 0.0042s, vol=0.021390
+  Step 6/15 to t=6 done in 0.0042s, vol=0.017141
+  Step 7/15 to t=7 done in 0.0041s, vol=0.014332
+  Step 8/15 to t=8 done in 0.0042s, vol=0.012461
+  Step 9/15 to t=9 done in 0.0042s, vol=0.011185
+  Step 10/15 to t=10 done in 0.0042s, vol=0.010130
+  Step 11/15 to t=11 done in 0.0046s, vol=0.007912
+  Step 12/15 to t=12 done in 0.0042s, vol=0.007993
+  Step 13/15 to t=13 done in 0.0041s, vol=0.008180
+  Step 14/15 to t=14 done in 0.0042s, vol=0.008564
+  Step 15/15 to t=15 done in 0.0041s, vol=0.009118
+Concrete propagation of 15 steps: 
+total time=0.0628s
+bounds= [[ 0.8396158   0.9946093 ]
+ [-0.5601372  -0.50130653]]
+final vol @t=15: 0.009118
+
+==================== Concrete ====================
+Starting concrete propagation: t=0 -> t=15 (15 steps)
+  Step 1/15 to t=1 done in 0.0042s, vol=0.308024
+  Step 2/15 to t=2 done in 0.0042s, vol=0.060981
+  Step 3/15 to t=3 done in 0.0042s, vol=0.031147
+  Step 4/15 to t=4 done in 0.0042s, vol=0.028434
+  Step 5/15 to t=5 done in 0.0042s, vol=0.021390
+  Step 6/15 to t=6 done in 0.0042s, vol=0.017141
+  Step 7/15 to t=7 done in 0.0042s, vol=0.014332
+  Step 8/15 to t=8 done in 0.0042s, vol=0.012461
+  Step 9/15 to t=9 done in 0.0042s, vol=0.011185
+  Step 10/15 to t=10 done in 0.0042s, vol=0.010130
+  Step 11/15 to t=11 done in 0.0042s, vol=0.007912
+  Step 12/15 to t=12 done in 0.0042s, vol=0.007993
+  Step 13/15 to t=13 done in 0.0042s, vol=0.008180
+  Step 14/15 to t=14 done in 0.0042s, vol=0.008564
+  Step 15/15 to t=15 done in 0.0046s, vol=0.009118
+Concrete propagation of 15 steps: 
+total time=0.0629s
+bounds= [[ 0.8396158   0.9946093 ]
+ [-0.5601372  -0.50130653]]
+final vol @t=15: 0.009118
+
+  [acados-di] Solver status 4 (step 0)
+  [MPC build] τ=1  VALID  took 0.028s
+  [MPC build] τ=1  VALID  took 0.035s
+  [MPC build] τ=1  VALID  took 0.035s
+[calibrate] 0.8s  concrete=0.0042s  mpc=0.0349s  symbolic={1: 0.0043, 2: 0.0114, 3: 0.0226, 4: 0.0374, 5: 0.0554}
+
+==================== Initial State ====================
+ReachableSetHorizon(t=0, num_calcs=1, tight_vol=0.250000)
+
+[32mCURRENT TIMESTEP ==== 0  concrete_until=0  mpc_hz=-1  conflict=None  t_diverge=None  [NOMINAL][0m
+==================== Concrete ====================
+Starting concrete propagation: t=0 -> t=1 (1 steps)
+  Step 1/1 to t=1 done in 0.0049s, vol=0.308024
+Concrete propagation of 1 steps: 
+total time=0.0049s
+bounds= [[ 2.4325516   3.029978  ]
+ [-0.44489223  0.07069346]]
+final vol @t=1: 0.308024
+
+  [MPC build] τ=1  VALID  took 0.035s
+  [P1] mpc_buffer[1] = VALID  t_diverge=1
+==================== Concrete ====================
+Starting concrete propagation: t=1 -> t=39 (38 steps)
+  Step 1/38 to t=2 done in 0.0048s, vol=0.371500
+  Step 2/38 to t=3 done in 0.0042s, vol=0.462135
+  Step 3/38 to t=4 done in 0.0042s, vol=0.552224
+ Warning: Collision detected at t=4
+ Stopping concrete propagation.
+ Bounds: [[ 2.0186138   2.9203887 ]
+ [-0.94883037 -0.33645636]]
+ Obstacles: [array([ 0.,  0., -2.])]
+
+  [P2] Conflict detected at t=4
+  [MPC build] τ=2  VALID  took 0.042s
+  [P3] mpc_buffer[2] VALID  t_diverge → 2
+  [acados-di] Solver status 4 (step 1)
+  [MPC build] τ=3  VALID  took 0.035s
+  [P3] mpc_buffer[3] VALID  t_diverge → 3
+  [P4] Symbolic: t=0 → t=4
+==================== Symbolic ====================
+  Parent Volume: 0.25
+  From t=0 to t=4 (k=4 steps)
+  Computed in 0.0394s
+  Volume: 0.416778
+  Tightest volume: 0.416778
+  [P4] Deconflicted! Clearing conflict state
+  [PSF NOMINAL] t=0  PSF OK (buffer[1] valid)  Budget: 0.171s / 0.200s
+==================== Empirical (Kalman) ====================
+  From t=0 to t=1
+  Tightest overlapped volume at t = 1: 0.042237
+
+
+[32mCURRENT TIMESTEP ==== 1  concrete_until=4  mpc_hz=3  conflict=None  t_diverge=3  [NOMINAL][0m
+==================== Concrete ====================
+Starting concrete propagation: t=4 -> t=40 (36 steps)
+  Step 1/36 to t=5 done in 0.0046s, vol=0.466188
+ Warning: Collision detected at t=5
+ Stopping concrete propagation.
+ Bounds: [[ 1.8683802  2.7906704]
+ [-0.9870449 -0.4815769]]
+ Obstacles: [array([ 0.,  0., -2.])]
+
+  [P2] Conflict detected at t=5
+  [acados-di] Solver status 4 (step 1)
+  [MPC build] τ=4  VALID  took 0.045s
+  [P3] mpc_buffer[4] VALID  t_diverge → 4
+  [P4] Symbolic: t=1 → t=5
+==================== Symbolic ====================
+  Parent Volume: 0.04223688691854477
+  From t=1 to t=5 (k=4 steps)
+  Computed in 0.0470s
+  Volume: 0.056179
+  Tightest volume: 0.056179
+ Warning: Collision detected at t=5
+ Bounds: [[ 2.3454602   2.6774466 ]
+ [-0.9216691  -0.75244975]]
+ Obstacles: [array([ 0.,  0., -2.])]
+
+  [P4] Conflict confirmed at t=5 — retrying INFEASIBLE
+  [PSF NOMINAL] t=1  PSF OK (buffer[2] valid)  Budget: 0.097s / 0.200s
+==================== Empirical (Kalman) ====================
+  From t=1 to t=2
+  Tightest overlapped volume at t = 2: 0.037439
+
+
+[34mCURRENT TIMESTEP ==== 2  concrete_until=5  mpc_hz=4  conflict=5  t_diverge=4  [PRE_CONFLICT][0m
+  [P4] Symbolic: t=1 → t=5
+==================== Symbolic ====================
+  Parent Volume: 0.04223688691854477
+  From t=1 to t=5 (k=4 steps)
+  Computed in 0.0688s
+  Volume: 0.056179
+  Tightest volume: 0.056179
+ Warning: Collision detected at t=5
+ Bounds: [[ 2.3454602   2.6774466 ]
+ [-0.9216691  -0.75244975]]
+ Obstacles: [array([ 0.,  0., -2.])]
+
+  [P4] Conflict confirmed at t=5 — retrying INFEASIBLE
+  [PSF NOMINAL] t=2  PSF OK (buffer[3] valid)  Budget: 0.069s / 0.200s
+==================== Empirical (Kalman) ====================
+  From t=2 to t=3
+  Tightest overlapped volume at t = 3: 0.029237
+
+
+[34mCURRENT TIMESTEP ==== 3  concrete_until=5  mpc_hz=4  conflict=5  t_diverge=4  [PRE_CONFLICT][0m
+  [P4] Symbolic: t=2 → t=5
+==================== Symbolic ====================
+  Parent Volume: 0.03743922710418701
+  From t=2 to t=5 (k=3 steps)
+  Computed in 0.0241s
+  Volume: 0.044871
+  Tightest volume: 0.041977
+ Warning: Collision detected at t=5
+ Bounds: [[ 2.4087594  2.695597 ]
+ [-0.9218712 -0.7654374]]
+ Obstacles: [array([ 0.,  0., -2.])]
+
+  [P4] Conflict confirmed at t=5 — retrying INFEASIBLE
+  [PSF NOMINAL] t=3  PSF OK (buffer[4] valid)  Budget: 0.025s / 0.200s
+==================== Empirical (Kalman) ====================
+  From t=3 to t=4
+  Tightest overlapped volume at t = 4: 0.024213
+
+
+[34mCURRENT TIMESTEP ==== 4  concrete_until=5  mpc_hz=4  conflict=5  t_diverge=4  [PRE_CONFLICT][0m
+  [P4] Symbolic: t=3 → t=5
+==================== Symbolic ====================
+  Parent Volume: 0.02923695743083954
+  From t=3 to t=5 (k=2 steps)
+  Computed in 0.0149s
+  Volume: 0.030498
+  Tightest volume: 0.030498
+ Warning: Collision detected at t=5
+ Bounds: [[ 2.4119067  2.6362119]
+ [-0.9172191 -0.7812535]]
+ Obstacles: [array([ 0.,  0., -2.])]
+
+  [P4] Conflict confirmed at t=5 — retrying INFEASIBLE
+[31m[PSF ACTIVATE] t=4 — backup from t_diverge=4  ctrl_idx=0  u=[0.2343][0m
+==================== MPC Step (Kalman) ====================
+  [MPC KF step] t=4 → t=5
+    prev state: x=2.7067  y=-0.7349
+    new  bounds: x=2.5644  y=-0.688
+  MPC step t=4→t=5  u=[0.2343]
+  Tightest overlapped volume at t = 5: 0.021401
+
+[35mMPC ACTIVE ==== t=5  committed_at=4  conflict=5  t_diverge=4[0m
+==================== Concrete ====================
+Starting concrete propagation: t=5 -> t=6 (1 steps)
+  Step 1/1 to t=6 done in 0.0133s, vol=0.020572
+Concrete propagation of 1 steps: 
+total time=0.0133s
+bounds= [[ 2.3309433  2.5020053]
+ [-0.8544011 -0.734138 ]]
+final vol @t=6: 0.020572
+
+  [acados-di] Solver status 4 (step 1)
+  [MPC build] τ=6  VALID  took 0.045s
+  [MPC PSF] τ=6 VALID  t_diverge=6
+==================== Concrete ====================
+Starting concrete propagation: t=6 -> t=7 (1 steps)
+  Step 1/1 to t=7 done in 0.0048s, vol=0.020152
+ Warning: Collision detected at t=7
+ Stopping concrete propagation.
+ Bounds: [[ 2.1570642   2.3463619 ]
+ [-0.9065719  -0.80011505]]
+ Obstacles: [array([ 0.,  0., -2.])]
+
+[36m[PSF REVERT] t=5 — reverting to nominal[0m
+  [PSF REVERT] ceiling conflict_time=5 excluded the just-verified backup at τ=6 (would give t_diverge=None) — using τ=6
+==================== Empirical (Kalman) ====================
+  From t=5 to t=6
+  Tightest overlapped volume at t = 6: 0.016669
+
+[32m[STALE] conflict_time=5 in the past — clearing[0m
+
+[32mCURRENT TIMESTEP ==== 6  concrete_until=6  mpc_hz=6  conflict=None  t_diverge=6  [NOMINAL][0m
+  [acados-di] Solver status 4 (step 1)
+  [MPC build] τ=7  INFEASIBLE(start_raw(p_lo=+2.1571 v_lo=-0.9066; RSOA at tau already violates the constraint))
+  [P1] mpc_buffer[7] = INFEASIBLE  t_diverge=6
+==================== Concrete ====================
+Starting concrete propagation: t=6 -> t=40 (34 steps)
+  Step 1/34 to t=7 done in 0.0047s, vol=0.016080
+ Warning: Collision detected at t=7
+ Stopping concrete propagation.
+ Bounds: [[ 2.157064    2.3143268 ]
+ [-0.9023636  -0.80011505]]
+ Obstacles: [array([ 0.,  0., -2.])]
+
+  [P2] Conflict detected at t=7
+  [P4] Symbolic: t=6 → t=7
+==================== Symbolic ====================
+  Parent Volume: 0.016669167205691338
+  From t=6 to t=7 (k=1 steps)
+  Computed in 0.0045s
+  Volume: 0.016080
+  Tightest volume: 0.016080
+ Warning: Collision detected at t=7
+ Bounds: [[ 2.157064    2.3143268 ]
+ [-0.9023636  -0.80011505]]
+ Obstacles: [array([ 0.,  0., -2.])]
+
+  [P4] Conflict confirmed at t=7 — retrying INFEASIBLE
+[31m[PSF ACTIVATE] t=6 — backup from t_diverge=6  ctrl_idx=0  u=[0.022][0m
+==================== MPC Step (Kalman) ====================
+  [MPC KF step] t=6 → t=7
+    prev state: x=2.4158  y=-0.7981
+    new  bounds: x=2.2566  y=-0.7937
+  MPC step t=6→t=7  u=[0.022]
+  Tightest overlapped volume at t = 7: 0.018669
+
+[35mMPC ACTIVE ==== t=7  committed_at=6  conflict=7  t_diverge=6[0m
+==================== Concrete ====================
+Starting concrete propagation: t=7 -> t=8 (1 steps)
+  Step 1/1 to t=8 done in 0.0077s, vol=0.017948
+Concrete propagation of 1 steps: 
+total time=0.0077s
+bounds= [[ 1.9944998  2.154538 ]
+ [-0.8936441 -0.7814983]]
+final vol @t=8: 0.017948
+
+  [acados-di] Solver status 4 (step 1)
+  [MPC build] τ=8  VALID  took 0.045s
+  [MPC PSF] τ=8 VALID  t_diverge=8
+==================== Concrete ====================
+Starting concrete propagation: t=8 -> t=9 (1 steps)
+  Step 1/1 to t=9 done in 0.0047s, vol=0.017630
+Concrete propagation of 1 steps: 
+total time=0.0047s
+bounds= [[ 1.8182799   1.995345  ]
+ [-0.8892473  -0.78967893]]
+final vol @t=9: 0.017630
+
+  [MPC build] τ=9  VALID  took 0.040s
+  [MPC PSF] τ=9 VALID  t_diverge=9
+==================== Concrete ====================
+Starting concrete propagation: t=9 -> t=10 (1 steps)
+  Step 1/1 to t=10 done in 0.0047s, vol=0.018071
+Concrete propagation of 1 steps: 
+total time=0.0047s
+bounds= [[ 1.6449275   1.836825  ]
+ [-0.86673224 -0.7725622 ]]
+final vol @t=10: 0.018071
+
+  [MPC build] τ=10  VALID  took 0.036s
+  [MPC PSF] τ=10 VALID  t_diverge=10
+==================== Concrete ====================
+Starting concrete propagation: t=10 -> t=11 (1 steps)
+  Step 1/1 to t=11 done in 0.0046s, vol=0.019078
+Concrete propagation of 1 steps: 
+total time=0.0046s
+bounds= [[ 1.4775825  1.6832714]
+ [-0.8308433 -0.7380898]]
+final vol @t=11: 0.019078
+
+  [MPC build] τ=11  VALID  took 0.036s
+  [MPC PSF] τ=11 VALID  t_diverge=11
+==================== Concrete ====================
+Starting concrete propagation: t=11 -> t=12 (1 steps)
+  Step 1/1 to t=12 done in 0.0046s, vol=0.020578
+Concrete propagation of 1 steps: 
+total time=0.0046s
+bounds= [[ 1.318363    1.537572  ]
+ [-0.78610814 -0.69223416]]
+final vol @t=12: 0.020578
+
+[36m[PSF REVERT] t=7 — reverting to nominal[0m
+  [PSF REVERT] ceiling conflict_time=7 excluded the just-verified backup at τ=8 (would give t_diverge=None) — using τ=8
+==================== Empirical (Kalman) ====================
+  From t=7 to t=8
+  Tightest overlapped volume at t = 8: 0.014050
+
+[32m[STALE] conflict_time=7 in the past — clearing[0m
+
+[32mCURRENT TIMESTEP ==== 8  concrete_until=8  mpc_hz=8  conflict=None  t_diverge=8  [NOMINAL][0m
+==================== Concrete ====================
+Starting concrete propagation: t=8 -> t=40 (32 steps)
+  Step 1/32 to t=9 done in 0.0043s, vol=0.013687
+  Step 2/32 to t=10 done in 0.0042s, vol=0.013870
+  Step 3/32 to t=11 done in 0.0124s, vol=0.014527
+  Step 4/32 to t=12 done in 0.0042s, vol=0.015571
+  Step 5/32 to t=13 done in 0.0042s, vol=0.016524
+  Step 6/32 to t=14 done in 0.0137s, vol=0.017493
+  Step 7/32 to t=15 done in 0.0042s, vol=0.018768
+  Step 8/32 to t=16 done in 0.0275s, vol=0.020376
+  Step 9/32 to t=17 done in 0.0044s, vol=0.022284
+  Step 10/32 to t=18 done in 0.0042s, vol=0.025210
+  Step 11/32 to t=19 done in 0.0042s, vol=0.029831
+  Step 12/32 to t=20 done in 0.0042s, vol=0.035009
+  Step 13/32 to t=21 done in 0.0046s, vol=0.040977
+  Step 14/32 to t=22 done in 0.0042s, vol=0.045537
+  Step 15/32 to t=23 done in 0.0042s, vol=0.048569
+  Step 16/32 to t=24 done in 0.0042s, vol=0.051474
+  Step 17/32 to t=25 done in 0.0042s, vol=0.054791
+  Step 18/32 to t=26 done in 0.0042s, vol=0.058664
+  Step 19/32 to t=27 done in 0.0042s, vol=0.063125
+  Step 20/32 to t=28 done in 0.0042s, vol=0.068214
+  Step 21/32 to t=29 done in 0.0042s, vol=0.073976
+ Warning: Collision detected at t=29
+ Stopping concrete propagation.
+ Bounds: [[-0.00931259  0.48391166]
+ [-0.16348815 -0.01350267]]
+ Obstacles: [array([ 0.,  0., -1.])]
+
+  [P2] Conflict detected at t=29
+  [MPC build] τ=9  VALID  took 0.036s
+  [P3] mpc_buffer[9] VALID  t_diverge → 9
+  [P4] Symbolic: t=8 → t=29
+  [PSF NOMINAL] t=8  PSF OK (buffer[9] valid)  Budget: 0.168s / 0.200s
+==================== Empirical (Kalman) ====================
+ Warning: Collision detected at t=9
+ Bounds: [[ 1.83894043  1.97390156]
+ [-0.92108793 -0.79094331]]
+ Obstacles: [array([ 0.,  0., -2.])]
+
+
+[34mCURRENT TIMESTEP ==== 9  concrete_until=29  mpc_hz=9  conflict=29  t_diverge=9  [PRE_CONFLICT][0m
+  [MPC build] τ=10  VALID  took 0.045s
+  [P3] mpc_buffer[10] VALID  t_diverge → 10
+  [MPC build] τ=11  VALID  took 0.045s
+  [P3] mpc_buffer[11] VALID  t_diverge → 11
+  [MPC build] τ=12  VALID  took 0.036s
+  [P3] mpc_buffer[12] VALID  t_diverge → 12
+  [MPC build] τ=13  VALID  took 0.035s
+  [P3] mpc_buffer[13] VALID  t_diverge → 13
+  [MPC build] τ=14  VALID  took 0.036s
+  [P3] mpc_buffer[14] VALID  t_diverge → 14
+  [PSF NOMINAL] t=9  PSF OK (buffer[10] valid)  Budget: 0.197s / 0.200s
+==================== Empirical (Kalman) ====================
+  From t=9 to t=10
+  Tightest overlapped volume at t = 10: 0.011205
+
+
+[34mCURRENT TIMESTEP ==== 10  concrete_until=29  mpc_hz=14  conflict=29  t_diverge=14  [PRE_CONFLICT][0m
+  [MPC build] τ=15  VALID  took 0.045s
+  [P3] mpc_buffer[15] VALID  t_diverge → 15
+  [MPC build] τ=16  VALID  took 0.045s
+  [P3] mpc_buffer[16] VALID  t_diverge → 16
+  [MPC build] τ=17  VALID  took 0.036s
+  [P3] mpc_buffer[17] VALID  t_diverge → 17
+  [MPC build] τ=18  VALID  took 0.036s
+  [P3] mpc_buffer[18] VALID  t_diverge → 18
+  [MPC build] τ=19  VALID  took 0.035s
+  [P3] mpc_buffer[19] VALID  t_diverge → 19
+  [PSF NOMINAL] t=10  PSF OK (buffer[11] valid)  Budget: 0.197s / 0.200s
+==================== Empirical (Kalman) ====================
+  From t=10 to t=11
+  Tightest overlapped volume at t = 11: 0.010868
+
+
+[34mCURRENT TIMESTEP ==== 11  concrete_until=29  mpc_hz=19  conflict=29  t_diverge=19  [PRE_CONFLICT][0m
+  [MPC build] τ=20  VALID  took 0.045s
+  [P3] mpc_buffer[20] VALID  t_diverge → 20
+  [MPC build] τ=21  VALID  took 0.045s
+  [P3] mpc_buffer[21] VALID  t_diverge → 21
+  [MPC build] τ=22  VALID  took 0.038s
+  [P3] mpc_buffer[22] VALID  t_diverge → 22
+  [MPC build] τ=23  VALID  took 0.036s
+  [P3] mpc_buffer[23] VALID  t_diverge → 23
+  [MPC build] τ=24  VALID  took 0.035s
+  [P3] mpc_buffer[24] VALID  t_diverge → 24
+  [PSF NOMINAL] t=11  PSF OK (buffer[12] valid)  Budget: 0.199s / 0.200s
+==================== Empirical (Kalman) ====================
+  From t=11 to t=12
+  Tightest overlapped volume at t = 12: 0.010881
+
+
+[34mCURRENT TIMESTEP ==== 12  concrete_until=29  mpc_hz=24  conflict=29  t_diverge=24  [PRE_CONFLICT][0m
+  [MPC build] τ=25  VALID  took 0.046s
+  [P3] mpc_buffer[25] VALID  t_diverge → 25
+  [MPC build] τ=26  VALID  took 0.045s
+  [P3] mpc_buffer[26] VALID  t_diverge → 26
+  [MPC build] τ=27  VALID  took 0.036s
+  [P3] mpc_buffer[27] VALID  t_diverge → 27
+  [acados-di] Solver status 4 (step 2)
+  [MPC build] τ=28  VALID  took 0.035s
+  [P3] mpc_buffer[28] VALID  t_diverge → 28
+  [P4] Symbolic: t=8 → t=29
+==================== Symbolic ====================
+  Parent Volume: 0.014050203375518322
+  From t=8 to t=13 (k=5 steps)
+  Computed in 0.0605s
+  Volume: 0.007692
+  Tightest volume: 0.007692
+  [PSF NOMINAL] t=12  PSF OK (buffer[13] valid)  Budget: 0.222s / 0.200s
+==================== Empirical (Kalman) ====================
+  From t=12 to t=13
+  Tightest overlapped volume at t = 13: 0.005820
+
+
+[34mCURRENT TIMESTEP ==== 13  concrete_until=29  mpc_hz=28  conflict=29  t_diverge=28  [PRE_CONFLICT][0m
+  [P4] Symbolic: t=13 → t=29
+==================== Symbolic ====================
+  Parent Volume: 0.005819789599627256
+  From t=13 to t=18 (k=5 steps)
+  Computed in 0.0873s
+  Volume: 0.004476
+  Tightest volume: 0.004476
+  [PSF NOMINAL] t=13  PSF OK (buffer[14] valid)  Budget: 0.088s / 0.200s
+==================== Empirical (Kalman) ====================
+  From t=13 to t=14
+  Tightest overlapped volume at t = 14: 0.010829
+
+
+[34mCURRENT TIMESTEP ==== 14  concrete_until=29  mpc_hz=28  conflict=29  t_diverge=28  [PRE_CONFLICT][0m
+  [P4] Symbolic: t=18 → t=29
+==================== Symbolic ====================
+  Parent Volume: 0.004475833382457495
+  From t=18 to t=23 (k=5 steps)
+  Computed in 0.0938s
+  Volume: 0.004730
+  Tightest volume: 0.004730
+  [PSF NOMINAL] t=14  PSF OK (buffer[15] valid)  Budget: 0.094s / 0.200s
+==================== Empirical (Kalman) ====================
+  From t=14 to t=15
+  Tightest overlapped volume at t = 15: 0.011011
+
+
+[34mCURRENT TIMESTEP ==== 15  concrete_until=29  mpc_hz=28  conflict=29  t_diverge=28  [PRE_CONFLICT][0m
+  [P4] Symbolic: t=23 → t=29
+==================== Symbolic ====================
+  Parent Volume: 0.00472958805039525
+  From t=23 to t=28 (k=5 steps)
+  Computed in 0.1032s
+  Volume: 0.003911
+  Tightest volume: 0.003911
+  [PSF NOMINAL] t=15  PSF OK (buffer[16] valid)  Budget: 0.103s / 0.200s
+==================== Empirical (Kalman) ====================
+  From t=15 to t=16
+  Tightest overlapped volume at t = 16: 0.011357
+
+
+[34mCURRENT TIMESTEP ==== 16  concrete_until=29  mpc_hz=28  conflict=29  t_diverge=28  [PRE_CONFLICT][0m
+  [P4] Symbolic: t=28 → t=29
+==================== Symbolic ====================
+  Parent Volume: 0.003910785540938377
+  From t=28 to t=29 (k=1 steps)
+  Computed in 0.0046s
+  Volume: 0.004180
+  Tightest volume: 0.004180
+  [P4] Deconflicted! Clearing conflict state
+  [PSF NOMINAL] t=16  PSF OK (buffer[17] valid)  Budget: 0.005s / 0.200s
+==================== Empirical (Kalman) ====================
+  From t=16 to t=17
+  Tightest overlapped volume at t = 17: 0.011513
+
+
+[32mCURRENT TIMESTEP ==== 17  concrete_until=29  mpc_hz=28  conflict=None  t_diverge=28  [NOMINAL][0m
+==================== Concrete ====================
+Starting concrete propagation: t=29 -> t=40 (11 steps)
+  Step 1/11 to t=30 done in 0.0095s, vol=0.004479
+  Step 2/11 to t=31 done in 0.0042s, vol=0.004809
+  Step 3/11 to t=32 done in 0.0613s, vol=0.005170
+  Step 4/11 to t=33 done in 0.0045s, vol=0.005564
+  Step 5/11 to t=34 done in 0.0042s, vol=0.005991
+  Step 6/11 to t=35 done in 0.0042s, vol=0.006455
+  Step 7/11 to t=36 done in 0.0042s, vol=0.006957
+  Step 8/11 to t=37 done in 0.0042s, vol=0.007502
+  Step 9/11 to t=38 done in 0.0042s, vol=0.008095
+  Step 10/11 to t=39 done in 0.0042s, vol=0.008738
+  Step 11/11 to t=40 done in 0.0042s, vol=0.009436
+Concrete propagation of 11 steps: 
+total time=0.1088s
+bounds= [[ 0.08504878  0.2782059 ]
+ [-0.03131895  0.01753362]]
+final vol @t=40: 0.009436
+
+  [PSF NOMINAL] t=17  PSF OK (buffer[18] valid)  Budget: 0.110s / 0.200s
+==================== Empirical (Kalman) ====================
+  From t=17 to t=18
+  Tightest overlapped volume at t = 18: 0.004439
+
+
+[32mCURRENT TIMESTEP ==== 18  concrete_until=40  mpc_hz=28  conflict=None  t_diverge=28  [NOMINAL][0m
+  [PSF NOMINAL] t=18  PSF OK (buffer[19] valid)  Budget: 0.000s / 0.200s
+==================== Empirical (Kalman) ====================
+  From t=18 to t=19
+  Tightest overlapped volume at t = 19: 0.014113
+
+
+[32mCURRENT TIMESTEP ==== 19  concrete_until=40  mpc_hz=28  conflict=None  t_diverge=28  [NOMINAL][0m
+  [PSF NOMINAL] t=19  PSF OK (buffer[20] valid)  Budget: 0.000s / 0.200s
+==================== Empirical (Kalman) ====================
+  From t=19 to t=20
+  Tightest overlapped volume at t = 20: 0.014966
+
+
+[32mCURRENT TIMESTEP ==== 20  concrete_until=40  mpc_hz=28  conflict=None  t_diverge=28  [NOMINAL][0m
+  [PSF NOMINAL] t=20  PSF OK (buffer[21] valid)  Budget: 0.000s / 0.200s
+==================== Empirical (Kalman) ====================
+  From t=20 to t=21
+  Tightest overlapped volume at t = 21: 0.015855
+
+
+[32mCURRENT TIMESTEP ==== 21  concrete_until=40  mpc_hz=28  conflict=None  t_diverge=28  [NOMINAL][0m
+  [PSF NOMINAL] t=21  PSF OK (buffer[22] valid)  Budget: 0.000s / 0.200s
+==================== Empirical (Kalman) ====================
+  From t=21 to t=22
+  Tightest overlapped volume at t = 22: 0.014860
+
+
+[32mCURRENT TIMESTEP ==== 22  concrete_until=40  mpc_hz=28  conflict=None  t_diverge=28  [NOMINAL][0m
+  [PSF NOMINAL] t=22  PSF OK (buffer[23] valid)  Budget: 0.000s / 0.200s
+==================== Empirical (Kalman) ====================
+  From t=22 to t=23
+  Tightest overlapped volume at t = 23: 0.004358
+
+
+[32mCURRENT TIMESTEP ==== 23  concrete_until=40  mpc_hz=28  conflict=None  t_diverge=28  [NOMINAL][0m
+  [PSF NOMINAL] t=23  PSF OK (buffer[24] valid)  Budget: 0.000s / 0.200s
+==================== Empirical (Kalman) ====================
+  From t=23 to t=24
+  Tightest overlapped volume at t = 24: 0.016653
+
+
+[32mCURRENT TIMESTEP ==== 24  concrete_until=40  mpc_hz=28  conflict=None  t_diverge=28  [NOMINAL][0m
+  [PSF NOMINAL] t=24  PSF OK (buffer[25] valid)  Budget: 0.000s / 0.200s
+==================== Empirical (Kalman) ====================
+  From t=24 to t=25
+  Tightest overlapped volume at t = 25: 0.016361
+
+
+[32mCURRENT TIMESTEP ==== 25  concrete_until=40  mpc_hz=28  conflict=None  t_diverge=28  [NOMINAL][0m
+  [PSF NOMINAL] t=25  PSF OK (buffer[26] valid)  Budget: 0.000s / 0.200s
+==================== Empirical (Kalman) ====================
+  From t=25 to t=26
+  Tightest overlapped volume at t = 26: 0.016716
+
+
+[32mCURRENT TIMESTEP ==== 26  concrete_until=40  mpc_hz=28  conflict=None  t_diverge=28  [NOMINAL][0m
+  [PSF NOMINAL] t=26  PSF OK (buffer[27] valid)  Budget: 0.000s / 0.200s
+==================== Empirical (Kalman) ====================
+  From t=26 to t=27
+  Tightest overlapped volume at t = 27: 0.016031
+
+
+[32mCURRENT TIMESTEP ==== 27  concrete_until=40  mpc_hz=28  conflict=None  t_diverge=28  [NOMINAL][0m
+  [PSF NOMINAL] t=27  PSF OK (buffer[28] valid)  Budget: 0.000s / 0.200s
+==================== Empirical (Kalman) ====================
+  From t=27 to t=28
+  Tightest overlapped volume at t = 28: 0.003911
+
+
+[32mCURRENT TIMESTEP ==== 28  concrete_until=40  mpc_hz=28  conflict=None  t_diverge=28  [NOMINAL][0m
+  [MPC build] τ=29  VALID  took 0.046s
+  [P1] mpc_buffer[29] = VALID  t_diverge=29
+  [PSF NOMINAL] t=28  PSF OK (buffer[29] valid)  Budget: 0.046s / 0.200s
+==================== Empirical (Kalman) ====================
+  From t=28 to t=29
+  Tightest overlapped volume at t = 29: 0.004173
+
+
+[32mCURRENT TIMESTEP ==== 29  concrete_until=40  mpc_hz=29  conflict=None  t_diverge=29  [NOMINAL][0m
+  [MPC build] τ=30  VALID  took 0.045s
+  [P1] mpc_buffer[30] = VALID  t_diverge=30
+  [PSF NOMINAL] t=29  PSF OK (buffer[30] valid)  Budget: 0.045s / 0.200s
+==================== Empirical (Kalman) ====================
+  From t=29 to t=30
+  Tightest overlapped volume at t = 30: 0.004048
+
+
+[32mCURRENT TIMESTEP ==== 30  concrete_until=40  mpc_hz=30  conflict=None  t_diverge=30  [NOMINAL][0m
+  [MPC build] τ=31  VALID  took 0.045s
+  [P1] mpc_buffer[31] = VALID  t_diverge=31
+  [PSF NOMINAL] t=30  PSF OK (buffer[31] valid)  Budget: 0.046s / 0.200s
+==================== Empirical (Kalman) ====================
+  From t=30 to t=31
+  Tightest overlapped volume at t = 31: 0.004418
+
+
+[32mCURRENT TIMESTEP ==== 31  concrete_until=40  mpc_hz=31  conflict=None  t_diverge=31  [NOMINAL][0m
+  [MPC build] τ=32  VALID  took 0.045s
+  [P1] mpc_buffer[32] = VALID  t_diverge=32
+  [PSF NOMINAL] t=31  PSF OK (buffer[32] valid)  Budget: 0.045s / 0.200s
+==================== Empirical (Kalman) ====================
+  From t=31 to t=32
+  Tightest overlapped volume at t = 32: 0.004787
+
+
+[32mCURRENT TIMESTEP ==== 32  concrete_until=40  mpc_hz=32  conflict=None  t_diverge=32  [NOMINAL][0m
+  [MPC build] τ=33  VALID  took 0.045s
+  [P1] mpc_buffer[33] = VALID  t_diverge=33
+  [PSF NOMINAL] t=32  PSF OK (buffer[33] valid)  Budget: 0.046s / 0.200s
+==================== Empirical (Kalman) ====================
+  From t=32 to t=33
+  Tightest overlapped volume at t = 33: 0.004957
+
+
+[32mCURRENT TIMESTEP ==== 33  concrete_until=40  mpc_hz=33  conflict=None  t_diverge=33  [NOMINAL][0m
+  [MPC build] τ=34  VALID  took 0.046s
+  [P1] mpc_buffer[34] = VALID  t_diverge=34
+  [PSF NOMINAL] t=33  PSF OK (buffer[34] valid)  Budget: 0.046s / 0.200s
+==================== Empirical (Kalman) ====================
+  From t=33 to t=34
+  Tightest overlapped volume at t = 34: 0.004838
+
+
+[32mCURRENT TIMESTEP ==== 34  concrete_until=40  mpc_hz=34  conflict=None  t_diverge=34  [NOMINAL][0m
+  [MPC build] τ=35  VALID  took 0.045s
+  [P1] mpc_buffer[35] = VALID  t_diverge=35
+  [PSF NOMINAL] t=34  PSF OK (buffer[35] valid)  Budget: 0.046s / 0.200s
+==================== Empirical (Kalman) ====================
+  From t=34 to t=35
+  Tightest overlapped volume at t = 35: 0.005328
+
+
+[32mCURRENT TIMESTEP ==== 35  concrete_until=40  mpc_hz=35  conflict=None  t_diverge=35  [NOMINAL][0m
+  [MPC build] τ=36  VALID  took 0.046s
+  [P1] mpc_buffer[36] = VALID  t_diverge=36
+  [PSF NOMINAL] t=35  PSF OK (buffer[36] valid)  Budget: 0.046s / 0.200s
+==================== Empirical (Kalman) ====================
+  From t=35 to t=36
+  Tightest overlapped volume at t = 36: 0.005528
+
+
+[32mCURRENT TIMESTEP ==== 36  concrete_until=40  mpc_hz=36  conflict=None  t_diverge=36  [NOMINAL][0m
+  [MPC build] τ=37  VALID  took 0.045s
+  [P1] mpc_buffer[37] = VALID  t_diverge=37
+  [PSF NOMINAL] t=36  PSF OK (buffer[37] valid)  Budget: 0.046s / 0.200s
+==================== Empirical (Kalman) ====================
+  From t=36 to t=37
+  Tightest overlapped volume at t = 37: 0.005738
+
+
+[32mCURRENT TIMESTEP ==== 37  concrete_until=40  mpc_hz=37  conflict=None  t_diverge=37  [NOMINAL][0m
+  [MPC build] τ=38  VALID  took 0.045s
+  [P1] mpc_buffer[38] = VALID  t_diverge=38
+  [PSF NOMINAL] t=37  PSF OK (buffer[38] valid)  Budget: 0.045s / 0.200s
+==================== Empirical (Kalman) ====================
+  From t=37 to t=38
+  Tightest overlapped volume at t = 38: 0.005960
+
+
+[32mCURRENT TIMESTEP ==== 38  concrete_until=40  mpc_hz=38  conflict=None  t_diverge=38  [NOMINAL][0m
+  [MPC build] τ=39  VALID  took 0.045s
+  [P1] mpc_buffer[39] = VALID  t_diverge=39
+  [PSF NOMINAL] t=38  PSF OK (buffer[39] valid)  Budget: 0.046s / 0.200s
+==================== Empirical (Kalman) ====================
+  From t=38 to t=39
+  Tightest overlapped volume at t = 39: 0.006193
+
+
+[32mCURRENT TIMESTEP ==== 39  concrete_until=40  mpc_hz=39  conflict=None  t_diverge=39  [NOMINAL][0m
+  [MPC build] τ=40  VALID  took 0.045s
+  [P1] mpc_buffer[40] = VALID  t_diverge=40
+  [PSF NOMINAL] t=39  PSF OK (buffer[40] valid)  Budget: 0.045s / 0.200s
+==================== Empirical (Kalman) ====================
+  From t=39 to t=40
+  Tightest overlapped volume at t = 40: 0.006437
+
+
+============================================================
+Simulation complete at timestep 40
+[SAFETY] No real-state constraint violation detected
+[SAFETY] No RSOA violation detected
+  mpc_calls=2  psf_no_diverge=0  psf_queue_empty=0  psf_stale_refused=0  aborted=False  max_u_diff=0.807
+  Created analyzer for DoubleIntegrator
+  Time horizon: 30, Max symbolic steps: 10
+Using Linear Kalman Filter
+==================== Empirical (Kalman) ====================
+  From t=0 to t=1
+  Tightest overlapped volume at t = 1: 0.066270
+
+==================== Empirical (Kalman) ====================
+  From t=1 to t=2
+  Tightest overlapped volume at t = 2: 0.039401
+
+==================== Empirical (Kalman) ====================
+  From t=2 to t=3
+  Tightest overlapped volume at t = 3: 0.029237
+
+==================== Empirical (Kalman) ====================
+  From t=3 to t=4
+  Tightest overlapped volume at t = 4: 0.024213
+
+==================== Empirical (Kalman) ====================
+ Warning: Collision detected at t=5
+ Bounds: [[ 2.47379652  2.6222678 ]
+ [-0.91604926 -0.77190461]]
+ Obstacles: [array([ 0.,  0., -2.])]
+
+==================== Empirical (Kalman) ====================
+ Warning: Collision detected at t=6
+ Bounds: [[ 2.28347356  2.42618592]
+ [-0.97045593 -0.83228911]]
+ Obstacles: [array([ 0.,  0., -2.])]
+
+==================== Empirical (Kalman) ====================
+ Warning: Collision detected at t=7
+ Bounds: [[ 2.10134404  2.24034054]
+ [-1.00619369 -0.87187948]]
+ Obstacles: [array([ 0.,  0., -2.])]
+
+==================== Empirical (Kalman) ====================
+ Warning: Collision detected at t=8
+ Bounds: [[ 1.92456392  2.06112928]
+ [-0.9700305  -0.83823127]]
+ Obstacles: [array([ 0.,  0., -2.])]
+
+==================== Empirical (Kalman) ====================
+ Warning: Collision detected at t=9
+ Bounds: [[ 1.73549182  1.87045296]
+ [-0.97089996 -0.84075535]]
+ Obstacles: [array([ 0.,  0., -2.])]
+
+==================== Empirical (Kalman) ====================
+ Warning: Collision detected at t=10
+ Bounds: [[ 1.57033644  1.70423333]
+ [-0.9052989  -0.77624817]]
+ Obstacles: [array([ 0.,  0., -2.])]
+
+==================== Empirical (Kalman) ====================
+  From t=10 to t=11
+  Tightest overlapped volume at t = 11: 0.017091
+
+==================== Empirical (Kalman) ====================
+  From t=11 to t=12
+  Tightest overlapped volume at t = 12: 0.016967
+
+==================== Empirical (Kalman) ====================
+  From t=12 to t=13
+  Tightest overlapped volume at t = 13: 0.016884
+
+==================== Empirical (Kalman) ====================
+  From t=13 to t=14
+  Tightest overlapped volume at t = 14: 0.016829
+
+==================== Empirical (Kalman) ====================
+  From t=14 to t=15
+  Tightest overlapped volume at t = 15: 0.016792
+
+==================== Empirical (Kalman) ====================
+  From t=15 to t=16
+  Tightest overlapped volume at t = 16: 0.016768
+
+==================== Empirical (Kalman) ====================
+  From t=16 to t=17
+  Tightest overlapped volume at t = 17: 0.016751
+
+==================== Empirical (Kalman) ====================
+  From t=17 to t=18
+  Tightest overlapped volume at t = 18: 0.016740
+
+==================== Empirical (Kalman) ====================
+  From t=18 to t=19
+  Tightest overlapped volume at t = 19: 0.016733
+
+==================== Empirical (Kalman) ====================
+  From t=19 to t=20
+  Tightest overlapped volume at t = 20: 0.016728
+
+==================== Empirical (Kalman) ====================
+  From t=20 to t=21
+  Tightest overlapped volume at t = 21: 0.016725
+
+==================== Empirical (Kalman) ====================
+  From t=21 to t=22
+  Tightest overlapped volume at t = 22: 0.016723
+
+==================== Empirical (Kalman) ====================
+  From t=22 to t=23
+  Tightest overlapped volume at t = 23: 0.016721
+
+==================== Empirical (Kalman) ====================
+  From t=23 to t=24
+  Tightest overlapped volume at t = 24: 0.016720
+
+==================== Empirical (Kalman) ====================
+  From t=24 to t=25
+  Tightest overlapped volume at t = 25: 0.016720
+
+==================== Empirical (Kalman) ====================
+  From t=25 to t=26
+  Tightest overlapped volume at t = 26: 0.016719
+
+==================== Empirical (Kalman) ====================
+  From t=26 to t=27
+  Tightest overlapped volume at t = 27: 0.016719
+
+==================== Empirical (Kalman) ====================
+  From t=27 to t=28
+  Tightest overlapped volume at t = 28: 0.016719
+
+==================== Empirical (Kalman) ====================
+  From t=28 to t=29
+  Tightest overlapped volume at t = 29: 0.016718
+
+==================== Empirical (Kalman) ====================
+  From t=29 to t=30
+  Tightest overlapped volume at t = 30: 0.016718
+
+==================== Empirical (Kalman) ====================
+  From t=30 to t=31
+  Tightest overlapped volume at t = 31: 0.016718
+
+==================== Empirical (Kalman) ====================
+  From t=31 to t=32
+  Tightest overlapped volume at t = 32: 0.016718
+
+==================== Empirical (Kalman) ====================
+  From t=32 to t=33
+  Tightest overlapped volume at t = 33: 0.016718
+
+==================== Empirical (Kalman) ====================
+  From t=33 to t=34
+  Tightest overlapped volume at t = 34: 0.016718
+
+==================== Empirical (Kalman) ====================
+  From t=34 to t=35
+  Tightest overlapped volume at t = 35: 0.016718
+
+==================== Empirical (Kalman) ====================
+  From t=35 to t=36
+  Tightest overlapped volume at t = 36: 0.016718
+
+==================== Empirical (Kalman) ====================
+  From t=36 to t=37
+  Tightest overlapped volume at t = 37: 0.016718
+
+==================== Empirical (Kalman) ====================
+  From t=37 to t=38
+  Tightest overlapped volume at t = 38: 0.016718
+
+==================== Empirical (Kalman) ====================
+  From t=38 to t=39
+  Tightest overlapped volume at t = 39: 0.016718
+
+==================== Empirical (Kalman) ====================
+  From t=39 to t=40
+  Tightest overlapped volume at t = 40: 0.016718
+
+[NOMINAL] real_viol=[6, 7, 8]  rsoa_viol=[5, 6, 7, 8, 9, 10]

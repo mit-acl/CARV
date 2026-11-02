@@ -1,0 +1,4 @@
+Stated before the run (2026-10-21). Corridor k=15..33, walls 1.4 from the NN path (0.9 clearance), no loiter fits inside.
+Prediction: both 0 collisions; R2 detours around as in k15 (~20%+ overrides, never enters);
+ours flies the NN through (<3% overrides) because its reach sets now fit in the corridor. 
+If ours also detours, the k6 pass-through was the t=0 tiny-uncertainty special case, not a general advantage.

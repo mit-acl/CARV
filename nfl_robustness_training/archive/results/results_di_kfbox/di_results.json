@@ -1,0 +1,121 @@
+{
+  "agg": {
+    "n_seeds": 8,
+    "pos_min": 0.0,
+    "vel_min": -0.9,
+    "max_time": 40,
+    "psf_seeds_with_real_viol": 0,
+    "psf_seeds_with_rsoa_viol": 0,
+    "nom_seeds_with_real_viol": 1,
+    "nom_seeds_with_rsoa_viol": 5,
+    "psf_aborted": 0,
+    "psf_no_backup_total": 0,
+    "psf_queue_empty_total": 0
+  },
+  "rows": [
+    {
+      "seed": 1401830092,
+      "psf_real": 0,
+      "psf_rsoa": 0,
+      "nom_real": 0,
+      "nom_rsoa": 4,
+      "mpc_calls": 1,
+      "no_backup": 0,
+      "queue_empty": 0,
+      "aborted": false,
+      "steps": 40,
+      "max_u_diff": 0.6683769226074231
+    },
+    {
+      "seed": 1826701614,
+      "psf_real": 0,
+      "psf_rsoa": 0,
+      "nom_real": 0,
+      "nom_rsoa": 2,
+      "mpc_calls": 1,
+      "no_backup": 0,
+      "queue_empty": 0,
+      "aborted": false,
+      "steps": 40,
+      "max_u_diff": 0.8567714393138885
+    },
+    {
+      "seed": 1367864806,
+      "psf_real": 0,
+      "psf_rsoa": 0,
+      "nom_real": 2,
+      "nom_rsoa": 5,
+      "mpc_calls": 2,
+      "no_backup": 0,
+      "queue_empty": 0,
+      "aborted": false,
+      "steps": 40,
+      "max_u_diff": 0.5785873532295241
+    },
+    {
+      "seed": 1097657231,
+      "psf_real": 0,
+      "psf_rsoa": 0,
+      "nom_real": 0,
+      "nom_rsoa": 0,
+      "mpc_calls": 0,
+      "no_backup": 0,
+      "queue_empty": 0,
+      "aborted": false,
+      "steps": 40,
+      "max_u_diff": 0.0
+    },
+    {
+      "seed": 579362555,
+      "psf_real": 0,
+      "psf_rsoa": 0,
+      "nom_real": 0,
+      "nom_rsoa": 3,
+      "mpc_calls": 0,
+      "no_backup": 0,
+      "queue_empty": 0,
+      "aborted": false,
+      "steps": 40,
+      "max_u_diff": 0.0
+    },
+    {
+      "seed": 661058651,
+      "psf_real": 0,
+      "psf_rsoa": 0,
+      "nom_real": 0,
+      "nom_rsoa": 0,
+      "mpc_calls": 0,
+      "no_backup": 0,
+      "queue_empty": 0,
+      "aborted": false,
+      "steps": 40,
+      "max_u_diff": 0.0
+    },
+    {
+      "seed": 87989972,
+      "psf_real": 0,
+      "psf_rsoa": 0,
+      "nom_real": 0,
+      "nom_rsoa": 0,
+      "mpc_calls": 0,
+      "no_backup": 0,
+      "queue_empty": 0,
+      "aborted": false,
+      "steps": 40,
+      "max_u_diff": 0.0
+    },
+    {
+      "seed": 161576974,
+      "psf_real": 0,
+      "psf_rsoa": 0,
+      "nom_real": 0,
+      "nom_rsoa": 1,
+      "mpc_calls": 0,
+      "no_backup": 0,
+      "queue_empty": 0,
+      "aborted": false,
+      "steps": 40,
+      "max_u_diff": 0.0
+    }
+  ]
+}

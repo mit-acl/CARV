@@ -15,6 +15,23 @@ import numpy as np
 from mpc_safety_filter import MPCSafetyFilter, LinearMPCSafetyFilter
 from utils.unicycle_mpc_acados import AcadosUnicycleMPC
 
+# Single-start solves skip the per-candidate |omega| <= u_max check that the
+# multi-start path applies. 'count' (default) keeps that behaviour and only
+# counts overshoots; 'reject' raises InputBoundViolation, like multi-start does.
+SINGLE_UBOUND = os.environ.get('TTTCARV_SINGLE_UBOUND', 'count')
+assert SINGLE_UBOUND in ('count', 'reject'), SINGLE_UBOUND
+
+# Terminal safe set used by _collides_D (acceptance test, extension, ranking).
+#   'D'       (default) the box clears every obstacle's D = sqrt(r^2 + 2rR).
+#             Invariant for ONE obstacle with the loiter turning away from it;
+#             with several obstacles both loiter circles can be blocked.
+#   'loiter'  some side s = +-1 exists whose max-turn loiter from EVERY state in
+#             the box clears EVERY obstacle forever (see _loiter_side). This set
+#             is control-invariant under the loiter itself, for any number of
+#             obstacles, on the discrete plant.
+TERMINAL = os.environ.get('TTTCARV_TERMINAL', 'D')
+assert TERMINAL in ('D', 'loiter'), TERMINAL
+
 
 class UniycleMPCSafetyFilterAcados(MPCSafetyFilter):
     """
@@ -74,6 +91,10 @@ class UniycleMPCSafetyFilterAcados(MPCSafetyFilter):
         self.deadline_hits        = 0
         self.truncated_solves     = 0
         self.second_start_skipped = 0
+        # single-start |omega| audit (see SINGLE_UBOUND)
+        self.single_ub_solves = 0
+        self.single_ub_over   = 0
+        self.single_ub_peak   = 0.0
         self._solve_truncated     = False
         # Largest observed |opt_x_num - plant re-simulation| over the run.
         # Should stay at machine epsilon; anything else means the OCP model
@@ -166,7 +187,50 @@ class UniycleMPCSafetyFilterAcados(MPCSafetyFilter):
         """Overlap against the raw (physical) obstacle radii — true collision."""
         return self._overlaps(bounds, self.raw_obstacles)
 
+    def _loiter_side(self, bounds: np.ndarray, prefer=None):
+        """
+        A side s in {+1, -1} whose max-turn loiter is safe forever from every
+        state in `bounds`, or None.
+
+        The loiter is omega = s*u_max on the Euler plant. Each step moves a
+        chord of length L = v*dt and turns the heading by phi = u_max*dt, so the
+        ticks are the vertices of a regular polygon: they lie on ONE circle of
+        radius rho = L / (2 sin(phi/2)), and every chord between them stays at
+        least h = rho cos(phi/2) from its centre. From state (p, th) the centre is
+            c = p + (L/2)(cos th, sin th) + s*h*(-sin th, cos th),
+        a vector of length rho rotated by th. Over the box, c lies within
+            e_c = (xy half-diagonal) + 2*rho*sin(hw_th/2)
+        of the centre computed at the box centre. The loiter is safe forever if
+        every obstacle lies wholly outside the annulus [h, rho] around c:
+            |c - o| - e_c >= rho + r   or   |c - o| + e_c <= h - r.
+        """
+        b = np.asarray(bounds, dtype=float)
+        hw = (b[:, 1] - b[:, 0]) / 2.0
+        if (not np.all(np.isfinite(hw))) or hw[2] >= np.pi:
+            return None
+        xc, yc, thc = (b[:, 0] + b[:, 1]) / 2.0
+        phi = self.u_max * self.dt
+        L = self.v * self.dt
+        rho = L / (2.0 * np.sin(phi / 2.0))
+        h = rho * np.cos(phi / 2.0)
+        e_c = float(np.hypot(hw[0], hw[1])) + 2.0 * rho * np.sin(hw[2] / 2.0)
+        sides = (prefer, -prefer) if prefer in (1, -1) else (1, -1)
+        for side in sides:
+            cx = xc + (L / 2.0) * np.cos(thc) - side * h * np.sin(thc)
+            cy = yc + (L / 2.0) * np.sin(thc) + side * h * np.cos(thc)
+            ok = True
+            for o in self.raw_obstacles:
+                d = float(np.hypot(cx - o[0], cy - o[1]))
+                if not (d - e_c >= rho + o[2] + 1e-9 or d + e_c <= h - o[2] - 1e-9):
+                    ok = False
+                    break
+            if ok:
+                return side
+        return None
+
     def _collides_D(self, bounds: np.ndarray) -> bool:
+        if TERMINAL == 'loiter':
+            return self._loiter_side(bounds) is None
         """Overlap against the danger region D — alias of _collides for clarity."""
         return self._overlaps(bounds, self.safety_obstacles)
 
@@ -215,8 +279,21 @@ class UniycleMPCSafetyFilterAcados(MPCSafetyFilter):
 
         if multi_start:
             return self._run_mpc_multi_start(initial_bounds, center, extra_inflation)
-        return self._run_mpc_single(initial_bounds, center, extra_inflation,
-                                     warm_start_omega=None)
+        out = self._run_mpc_single(initial_bounds, center, extra_inflation,
+                                   warm_start_omega=None)
+        if self.verify_input_bounds:
+            peak = max((abs(float(np.asarray(c).flatten()[0])) for c in out[2]),
+                       default=0.0)
+            self.single_ub_solves += 1
+            if (not np.isfinite(peak)) or peak > self.u_max + 1e-6:
+                self.single_ub_over += 1
+                self.single_ub_peak = max(self.single_ub_peak,
+                                          peak if np.isfinite(peak) else float('inf'))
+                if SINGLE_UBOUND == 'reject':
+                    raise InputBoundViolation(
+                        f"input_bound: single-start |omega|={peak:.4f} > "
+                        f"u_max={self.u_max:.4f}")
+        return out
 
     def _run_mpc_single(self, initial_bounds, center, extra_inflation,
                         warm_start_omega):
@@ -492,6 +569,8 @@ class UniycleMPCSafetyFilterAcados(MPCSafetyFilter):
             if depth > worst_depth:
                 worst_depth = depth
         effort = float(np.sum(np.square(controls)))
+        if TERMINAL == 'loiter' and self._loiter_side(terminal) is None:
+            worst_depth += 1.0      # rank loiter-safe terminals first
         return (worst_depth, effort)
 
     def _heuristic_swerve_sign(self, center):

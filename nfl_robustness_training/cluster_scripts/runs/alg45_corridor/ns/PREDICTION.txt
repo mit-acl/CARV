@@ -1,0 +1,5 @@
+Stated before the run (2026-10-21). Noise sweep TTTCARV_VMAX_SIGMA in {1.0 (+-0.05), 0.33 (+-0.0167)} vs default 3 (+-0.15),
+corridor k=15..33, d in {1.0, 1.4}. Both 0 collisions everywhere.
+R2: still detours (~20-27% overrides) at every noise level -- its limit is horizon geometry (18-step corridor, no loiter
+inside, N=12), not noise.
+Ours: sigma 1.0 -> passes d1.4 (<5%), d1.0 mixed (5-20%); sigma 0.33 -> passes both (<5%).

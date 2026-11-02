@@ -1,0 +1,2 @@
+node=node1600 seed=287580328 config=alg35_thr:u_ours_ideal
+f332d364775873371be2fb7a2e08acfe86a0cb6b8d3e385ab89e41665b3c85b8  nfl_robustness_training/src/alg28_sound.py

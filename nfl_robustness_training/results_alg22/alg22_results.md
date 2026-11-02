@@ -138,6 +138,45 @@ second-start skip is a real trade: with one candidate a re-solve can fail where
 the swerve start might have succeeded, and such failures count as
 `rollout_rejected`. Failed re-solves are still half of final 1's.
 
+### Uncertified fallback steps (known limitation, left as is)
+
+In MPC_ACTIVE the filter re-solves from the robot's current Kalman box every
+step. When a re-solve fails (1,163 of 10,575 re-solves in final 3, all
+`rollout_rejected`), it keeps flying the plan committed on an earlier step.
+`mpc_fallback_uncertified` counts those fallback steps where the robot's current
+box is not inside the box that plan predicted for the step: 1,106 of the 1,163.
+
+**Why nearly all of them are flagged.** Plan boxes are the starting box moved
+along the plan at the same size, and the current box is a converged Kalman box
+(estimate ± 3σ) of almost the same size. Nesting then needs the two centres to
+coincide, which noise alone prevents. So the count mostly measures the
+containment test, as noted for final 1 below.
+
+**What it does and does not say.** Those steps are not certified by any check in
+the code: the input is the best available one and is applied anyway. Safety
+over them is empirical. The true state never entered an obstacle in 10,000
+scenes (0 collisions), and the step is at most 0.2 m while the re-solve is
+tried again on the next step.
+
+**What a real certificate would show.** A 48-trial probe (alg23, chunk-1
+scenes, not part of the evaluation) re-ran the acceptance test on the rest of
+the plan starting from the current box instead of testing nesting. 4 of 11
+fallback steps passed. The other 7 failed `path_raw` within 1–3 nodes: backup
+paths only need to clear the raw radius, so they pass close to the obstacle and
+a slightly shifted box overlaps it. So the fallback steps are not merely
+flagged by geometry; about two thirds are genuinely uncertified under the
+filter's own model. In all 7 the current box was already inside D.
+
+**If a reviewer flags it.** The fix is in
+`src/alg23_tail_recheck.py` (untracked): on a failed re-solve, re-run the
+acceptance test from the current box (`recheck_tail`); if it fails, loiter at
+max turn when the full loiter circle from the current box clears the raw
+obstacles, turning away from the nearest obstacle first (`loiter_circle_ok`).
+This works inside D as long as the robot is not heading into the obstacle;
+otherwise the plan is applied and counted. It was not run at scale.
+Alternatives are a small extra clearance on path nodes in the acceptance test,
+or reporting the re-check pass rate in place of the containment count.
+
 ### Where the unused budget goes
 
 From the final-3 ledger (600,000 steps), scoring `0.20 − (elapsed − symbolic)`:

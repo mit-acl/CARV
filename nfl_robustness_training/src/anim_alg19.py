@@ -43,6 +43,13 @@ _DEFAULT_OBSTACLES = [
     np.array([-3.5,  0,  0.5]),
 ]
 
+_DEFAULT_OBSTACLES = [
+    np.array([-4.3,  1,   0.5]),
+    np.array([-2,   -2,   0.5]),
+    np.array([-1,    0.5, 0.5]),
+    # np.array([-3.5,  0,   0.5]),
+]
+
 _args = sys.argv[1:]
 _seed = 1401830092
 if _args and not _args[0].startswith('--'):

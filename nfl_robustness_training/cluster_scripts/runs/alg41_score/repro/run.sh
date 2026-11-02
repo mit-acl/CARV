@@ -1,0 +1,12 @@
+#!/bin/bash
+# Reproduce the alg41 o_ideal_unif_sat1 crash (seed 1083342926) N times, same snapshot as the run.
+export PATH=/home/ryosei_t/.conda/envs/carv/bin:$PATH
+export ACADOS_SOURCE_DIR=/home/ryosei_t/acados ACADOS_LIB_DIR=/home/ryosei_t/acados/lib
+export LD_LIBRARY_PATH=/home/ryosei_t/acados/lib:$LD_LIBRARY_PATH TF_CPP_MIN_LOG_LEVEL=3
+export PYTHONPATH=/home/ryosei_t/runs/alg41_score/nx/snap_715839:$PYTHONPATH
+cd /home/ryosei_t/CARV
+for k in $(seq 1 ${1:-3}); do
+  env TTTCARV_ALG=alg28_sound_snap TTTCARV_RECEDING=1 TTTCARV_ONESHOT=1 TTTCARV_ONESHOT_VERIFY=1 TTTCARV_ONESHOT_RTI=10 TTTCARV_ONESHOT_REFINE=2 TTTCARV_BOOTSTRAP_RESIM=1 TTTCARV_PSF_LOITER=1 TTTCARV_PSF_TAIL=1 TTTCARV_FIRST_STEP_COST=1 TTTCARV_TAIL_COST_WEIGHT=1e-3 TTTCARV_RESOLVE_RESERVE=0 TTTCARV_SINGLE_START_FRAC=0.50 TTTCARV_MPC_PRICING=1 TTTCARV_BUDGET_MARGIN=0.003 TTTCARV_GC_PER_TRIAL=1 TTTCARV_SETMEM=1 TTTCARV_KF_RESET=0 TTTCARV_SOUND_MPC=1 TTTCARV_ESTCTRL=J TTTCARV_JSPLIT=2,2,16,1,1,4 TTTCARV_VMAX_SIGMA=3.0 TTTCARV_NOISE=uniform TTTCARV_EBOX=S TTTCARV_REANCHOR=1  TTTCARV_MEAS_DELAY=0 TTTCARV_SINGLE_UBOUND=reject TTTCARV_TERMINAL=loiter TTTCARV_FAN_TERMINAL=0 TTTCARV_USAT=1 TTTCARV_USAT_MAX=1.0 TTTCARV_WORKERS=1 TTTCARV_TRIALS=500 TTTCARV_SEED=20260824 TTTCARV_GOAL_KEEPOUT=0 \
+    python /home/ryosei_t/runs/alg41_score/repro/one.py 1083342926 > /home/ryosei_t/runs/alg41_score/repro/rep_$k.log 2>&1
+  echo "rep $k rc=$? $(grep -a -E 'REPRO finished|KeyError|Error:' /home/ryosei_t/runs/alg41_score/repro/rep_$k.log | tail -1)"
+done

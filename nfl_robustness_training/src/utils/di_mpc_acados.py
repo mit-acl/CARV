@@ -133,6 +133,9 @@ class AcadosDIMPC:
 
         self._x0          = np.zeros((2, 1))
         self._step_count  = 0
+        # acados status of the last solve() in make_step. Read by the one-shot
+        # rollout's convergence diagnostic (alg22_di); 0 and 2 are acceptable.
+        self.last_status  = 0
         self._predicted_x = [np.zeros(2) for _ in range(n_horizon + 1)]
 
         for path in [f'/tmp/{solver_name}_gen', f'/tmp/{solver_name}_ocp.json']:
@@ -314,7 +317,14 @@ class AcadosDIMPC:
     # terminal the QP converges in 1–2 inner iterations; this is plenty.
     _RTI_WARMUP_ITERS = 20
 
-    def make_step(self, x0: np.ndarray) -> np.ndarray:
+    def make_step(self, x0: np.ndarray, n_rti: int = None) -> np.ndarray:
+        """
+        n_rti: RTI iterations to run on a WARM call (step_count > 0). None keeps
+        the receding-horizon default of one. The one-shot rollout passes
+        _RTI_WARMUP_ITERS: each of its refine passes changes yref at the SAME
+        x0, which is not the one-step warm start a single iteration assumes.
+        The cold call (step_count == 0) always runs the full pre-solve + warmup.
+        """
         x0_flat = np.array(x0).flatten()
 
         self._solver.set(0, 'lbx', x0_flat)
@@ -342,8 +352,10 @@ class AcadosDIMPC:
             for _ in range(self._RTI_WARMUP_ITERS):
                 status = self._solver.solve()
         else:
-            status = self._solver.solve()
+            for _ in range(1 if n_rti is None else max(1, int(n_rti))):
+                status = self._solver.solve()
 
+        self.last_status = status
         if status not in (0, 2):
             print(f'  [acados-di] Solver status {status} (step {self._step_count})')
 
@@ -356,3 +368,9 @@ class AcadosDIMPC:
     @property
     def opt_x_num(self) -> _OptXAccessor:
         return _OptXAccessor(self._predicted_x)
+
+    @property
+    def opt_u_seq(self) -> list:
+        """The solver's full control plan u[0..N-1], each a shape-(1,) array."""
+        return [np.array(self._solver.get(k, 'u')).flatten().copy()
+                for k in range(self.n_horizon)]

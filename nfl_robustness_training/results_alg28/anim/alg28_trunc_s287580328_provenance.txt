@@ -1,0 +1,3 @@
+node=node1602 seed=287580328 config=alg35_thr:u_ours_ideal_trunc(bounded gaussian)
+0969b1beedf37f08f5fdb998e471f84b8ec3d6387b1aed8fe64ba6c9e7f5fbf7  nfl_robustness_training/src/alg28_sound.py
+exit=0

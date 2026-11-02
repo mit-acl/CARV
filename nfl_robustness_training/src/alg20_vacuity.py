@@ -844,14 +844,9 @@ def test(seed=None, analyzer=None, obstacles=None):
                 f"PASSTHROUGH gap [{current_timestep},{t_diverge}] spans the "
                 f"conflict at t={conflict_time}: nominal is not concrete-certified "
                 f"over this gap")
-            #
-            # Report the REAL reason there is no backup at t+1 rather than
-            # asserting "inside D". Only the skip_p1 route actually tests D
-            # membership (collides_danger on the RSOA at t+1); a build that came
-            # back INFEASIBLE(path_raw ...) is a raw-radius violation on the
-            # backup's swept path and has nothing to do with D.
+
             if skip_p1:
-                _why = "inside D (P1 skipped: RSOA at t+1 overlaps D)"
+                _why = "inside passthrough (P1 skipped: RSOA at t+1)"
             elif t_next in mpc_reason:
                 _why = f"no backup at t+1: {mpc_reason[t_next]}"
             elif t_next not in mpc_buffer:
@@ -875,16 +870,6 @@ def test(seed=None, analyzer=None, obstacles=None):
 
         else:
             # PSF fails — need MPC backup from t_diverge
-            #
-            # A backup is a plan from a specific state at a specific time:
-            # controls[k] and traj_bounds[k] both assume controls[0..k-1] were
-            # the inputs actually applied. Joining a plan at ctrl_idx > 0 means
-            # those inputs were NOT applied — the filter flew nominal over
-            # those steps — so traj_bounds[ctrl_idx] describes a state the
-            # robot is not in, and every clearance check made against it is
-            # void. t_diverge persists across loop iterations, so it can point
-            # at a plan committed on an earlier timestep; that is a stale
-            # pointer, not a backup.
             #
             # Prefer the plan committed at this exact timestep. If there isn't
             # one, refuse rather than fly a plan whose bounds do not describe
