@@ -1,198 +1,208 @@
-# Reach-PSF: a reachability safety filter for NN controllers
+# Reach-PSF: a safety filter for neural-network controllers
 
-This branch (`reach-psf`) holds my safety-filter project, built on top of the
-lab's CARV code. It covers what I built, what I compared it against, and why I
-stopped. The lab's original README is in
-[docs/README_lab_original.md](docs/README_lab_original.md). Last updated
-2026-11-02.
+This branch (`reach-psf`) is my safety-filter project, built on the lab's CARV
+code. The lab's original README is in
+[docs/README_lab_original.md](docs/README_lab_original.md).
+
+**Short version:** I built a safety filter that uses reachability analysis. I
+compared it against a standard filter based on tube MPC. Both were equally safe,
+and both stepped in about equally often. Mine didn't beat it, and I found the
+reason why. The project is shelved.
 
 ![Reach-PSF running on one scene](docs/img/reach_psf_anim.gif)
 
-*One run of the filter (bounded-Gaussian noise).*
+*One run of my filter:*
+- *Top: the robot (black) drives toward the star. The orange boxes are where
+  the NN could take it in the next 20 steps. The teal curves are backup routes
+  ready to take over.*
+- *Middle: green means a safe backup exists that far ahead, red means none
+  does.*
+- *Bottom: red marks when the backup is actually driving.*
 
-- **Top panel.** Black is the robot's true path. The orange boxes are where the
-  NN could take the robot over the next 20 steps. The teal curves are the
-  backup routes the filter has ready. The purple circle marks where the NN's
-  path would first come too close to an obstacle.
-- **Middle panel.** For every time step, this shows how far ahead a certified
-  backup exists (green) and where none does (red).
-- **Bottom panel.** This shows when the backup is actually driving (red).
+---
 
-## The idea
+## The problem
 
-A neural-network controller drives a unicycle robot (constant speed 1 m/s,
-turn rate limited to ±1 rad/s, 0.2 s time steps) through a field of circular
-obstacles. The robot only gets noisy measurements of its position and heading.
+- A robot drives at a constant speed of 1 m/s and can only choose how fast it
+  turns. Each time step is 0.2 s.
+- A neural network (NN) picks the turn rate. The NN is good at reaching the
+  goal, but it has no safety guarantee.
+- The robot only knows its position roughly. Each measurement is off by up to
+  ±0.15.
+- A **safety filter** sits between the NN and the robot. It lets the NN's
+  command through when it can prove that's safe. Otherwise it switches to a
+  backup plan.
 
-A safety filter sits between the NN and the robot. Most of the time it lets the
-NN command through. When it can't prove the NN is safe, it takes over with a
-backup plan.
+The goal is a filter that **never crashes** and **steps in as rarely as
+possible**.
 
-My filter, Reach-PSF ([alg28_sound.py](nfl_robustness_training/src/alg28_sound.py)),
-checks the NN with reachability analysis. It computes boxes that are guaranteed
-to contain every state the robot could reach under the NN, given the
-measurement noise. If those boxes stay clear of obstacles and end somewhere the
-robot can safely circle forever, the NN keeps driving. Otherwise an MPC backup
-plan takes over.
+## My method: Reach-PSF
 
-The pitch was that a reachability filter can do its checking one step ahead,
-so it never makes the robot wait on a solver, and that it would step in less
-often than a standard MPC-based filter.
+Code: [alg28_sound.py](nfl_robustness_training/src/alg28_sound.py)
+
+1. Every step, it computes boxes that are guaranteed to contain everywhere the
+   NN could take the robot, given the measurement noise. These are the
+   "reach boxes".
+2. If the boxes stay clear of obstacles, the NN keeps driving.
+3. It always keeps a backup plan ready, built one step ahead with MPC (a
+   planner that solves an optimization problem). If the boxes hit an
+   obstacle, the backup takes over.
+
+Why I thought it would win: all the checking happens one step ahead, so the
+robot never waits on a solver. And looking at the NN's own future might let it
+step in less often.
 
 ## What I compared against
 
-The baselines are in
-[alg29_generic_psf.py](nfl_robustness_training/src/alg29_generic_psf.py). The
-important ones:
+Code: [alg29_generic_psf.py](nfl_robustness_training/src/alg29_generic_psf.py)
 
-- **R2, delay-compensated tube MPC filter.** This is the fair competitor. It
-  knows its solve takes time, so it takes the current set of possible states,
-  pushes it forward through the command already being applied, solves from
-  that predicted set, and applies the result at the next step.
-- **R1**: the same tube MPC, but it pretends solving takes zero time. You
-  couldn't actually deploy this. It's a reference point.
-- **G1**: a textbook MPC filter that ignores its own solve time. This is the
-  "what goes wrong if you don't compensate" baseline.
+- **R2, the real competitor.** A standard filter built on tube MPC. It plans a
+  backup route and puts a "tube" around it that covers the measurement error.
+  A solve takes time, and the robot keeps moving meanwhile. So R2 first
+  predicts where the robot will be when the solve finishes, plans from there,
+  and applies the result one step later. This is called delay compensation.
+- **G1**: the same kind of filter, but it ignores its solve time. It shows what
+  goes wrong without delay compensation.
+- **R1**: the tube filter assuming solving takes zero time. Not realistic,
+  just a reference.
 
-All filters see the same scenes, the same noise and the same NN.
+All filters get the same scenes, the same noise and the same NN.
 
 ![Same scene, three filters](docs/img/delay_one_scene.png)
 
-*One scene, three textbook filters. The middle one ignores its 0.1 s solve
-time. Its backup plan assumes the robot is still where it was when the solve
-started, so the robot ends up off-plan and crashes. The delay-compensated
-version (right) flies the same path as the zero-delay ideal (left).*
+*One scene, three filters. Left: zero solve time (ideal). Middle: ignores a
+0.1 s solve time, ends up off its plan, and crashes. Right: delay-compensated,
+and it flies the same path as the ideal.*
+
+---
 
 ## Results
 
-"Intervention" means the percentage of time steps where the filter changed the
-NN's command. Lower is better. Brackets are 95% paired confidence intervals.
+**Intervention rate** = the percentage of time steps where the filter changed
+the NN's command. Lower is better.
 
-**Main comparison** (500 random scenes, uniform noise ±0.15):
+### 500 random scenes (noise ±0.15)
 
-| Filter | Collisions | Intervention | Compute per step |
+| Filter | Crashes | Intervention rate | Compute per step |
 |---|---|---|---|
-| Reach-PSF (mine, real-time version) | 0 | 4.81% | 94 ms |
-| R2, delay-compensated tube MPC | 0 | 4.97% | 75 ms |
+| Mine | 0 | 4.81% | 94 ms |
+| R2 | 0 | 4.97% | 75 ms |
 
-R2 minus mine is +0.16 pp [−0.10, +0.43], which isn't significant. Even if I
-let my filter skip the delay entirely (an unrealistic best case, 4.71%), the
-gap only grows to +0.26 pp [−0.01, +0.54]. That's still not significant.
-
-For comparison, G1 (ignores its solve time) collided in roughly a quarter to a
-third of scenes at some delays (0.15 s and 0.3 s). So delay compensation
-matters a lot, but R2 already does it, and once it does, my filter has no edge.
+- The gap is 0.16 percentage points. That's within noise: the 95% interval is
+  −0.10 to +0.43.
+- Even if my filter's own delay is removed entirely, which is unrealistic, the
+  gap is only 0.26 points, and still not significant.
+- G1, which ignores its solve time, crashed in about a quarter to a third of
+  scenes at some delays. So delay compensation matters a lot. R2 already has
+  it.
 
 ### Corridor test
 
-I built a corridor longer than the MPC's 2.4 m planning horizon. The idea was
-that the reachability check might let the NN fly straight through, where the
-MPC can't plan far enough ahead to prove it's safe.
+The MPC only plans 12 steps (2.4 m) ahead. So I built a corridor longer than
+that, to see whether my filter could see far enough to let the NN go straight
+through.
 
 ![Both filters go around the corridor](docs/img/corridor.png)
 
-Neither filter ever went into the corridor. Both went around it. 100 trials per
-setting, 0 collisions for everyone:
+Neither filter went through. Both went around. No crashes in any setting
+(100 runs each):
 
-| Noise | Corridor gap | Mine | R2 |
+| Noise | Corridor free width | Mine | R2 |
 |---|---|---|---|
 | ±0.15 | 1.0 m | 25.4% | 23.3% |
-| ±0.15 | 1.4 m | 25.6% | 26.7% |
+| ±0.15 | 1.8 m | 25.6% | 26.7% |
 | ±0.05 | 1.0 m | 23.9% | 23.2% |
-| ±0.05 | 1.4 m | 28.1% | 25.8% |
+| ±0.05 | 1.8 m | 28.1% | 25.8% |
 | ±0.017 | 1.0 m | 22.7% | 22.8% |
-| ±0.017 | 1.4 m | 27.3% | 25.8% |
+| ±0.017 | 1.8 m | 27.3% | 25.8% |
 
-Mine didn't go in because its boxes grow fast (one went from 7 cm to 43 cm wide
-in 3 or 4 steps, even at ±0.05 noise). By the entrance they're wider than the
-gap.
+**Why mine didn't go in:** its reach boxes grow quickly, from 7 cm to 43 cm wide
+in 3 to 4 steps. By the time they reach the entrance, they're wider than the
+corridor.
 
-The first corridor scene I tried looked like a big win: R2 collided in 88/100
-trials. That turned out to be unfair. R2 had no valid 12-step plan from the
-starting position, so it fell back to circling and hit the first wall. I moved
-the corridor further away so both filters started from a feasible position.
-Both scenes are in
-[cluster_scripts/runs/alg45_corridor/](nfl_robustness_training/cluster_scripts/runs/alg45_corridor/)
-(`corridor_d1.0.json` is the unfair one, `corridor_k15_*` the fair ones).
+**A mistake I caught:** the first corridor I tried made R2 crash in 88 of 100
+runs, which looked like a big win. But R2 had no valid plan from the starting
+point, so the test was unfair. I moved the corridor further away and the "win"
+disappeared. Both scenes are in
+[runs/alg45_corridor/](nfl_robustness_training/cluster_scripts/runs/alg45_corridor/).
 
-## Checking the delay compensation
+---
 
-I wanted to be sure R2 wasn't secretly broken in a way that made it look good.
+## Checking that R2 is correct
 
-- **By hand**
-  ([handcheck_r2_prediction.py](nfl_robustness_training/cluster_scripts/checks/handcheck_r2_prediction.py),
-  runs on the login node with just numpy). One plant step matches the
-  hand-computed Euler step. A ±0.15 box stepped forward matches the box I
-  computed by hand. Out of 1,000,000 random states, none landed outside the
-  predicted box.
-- **In the sim** (500 scenes, 30,000 steps). The true state was inside R2's
-  planned tube at every step. R2's remaining plan, re-simulated from the true
-  state, was still valid at every step.
-- This is the standard way to handle solver delay in MPC: predict where you'll
-  be when the command lands, then solve from there. R2 does the set version.
+A broken competitor could make the comparison meaningless, so I checked R2 three
+ways.
 
-These checks did catch a real bug earlier. R2 was predicting its state forward
-but not its uncertainty box, so in effect it planned from old information. That
-version collided in 269/500 scenes. It's fixed, and all the numbers above are
-after the fix.
+- **By hand.** I worked out one step of the robot's motion on paper and
+  compared it with the code. They match.
+  [handcheck_r2_prediction.py](nfl_robustness_training/cluster_scripts/checks/handcheck_r2_prediction.py)
+  also tests 1,000,000 random states, and none land outside R2's predicted
+  region.
+- **In the simulation.** Over 30,000 steps, the real robot was always inside
+  R2's tube, and R2's backup plan was always still valid.
+- **Against the literature.** "Predict where you'll be when the solve finishes,
+  then plan from there" is the standard way to handle solver delay in MPC.
 
-## Why tighter boxes wouldn't have saved it
+These checks did catch a real bug once. R2 was moving its position estimate
+forward but not its uncertainty, so it planned from stale information and
+crashed in 269 of 500 scenes. That's fixed, and every number above is after the
+fix.
+
+## Why my filter can't win
 
 ![Reach boxes growing](docs/img/reach_psf_frame.png)
 
-*At t = 2.2 s in the run above, the orange lookahead boxes are already
-several times wider than the robot's real uncertainty a few steps out.*
+*The orange reach boxes get much wider than the robot's real uncertainty within
+a few steps.*
 
-My boxes are about 3.5× wider than R2's tube 12 steps ahead. So I checked
-whether a better reachability method could have won. I sampled the NN's real
-closed-loop spread from the same start sets, then searched for the worst noise
-sequence (gradient search plus extreme and constant-bias noise). Scripts:
-[true_spread.py](nfl_robustness_training/cluster_scripts/checks/true_spread.py)
-and [worst_spread.py](nfl_robustness_training/cluster_scripts/checks/worst_spread.py).
+12 steps ahead, my boxes are about 3 times wider than R2's tube. Is that just a
+weakness of how I compute them? To find out, I measured the NN's **real**
+spread by simulating thousands of possible starts and noise patterns, and I
+searched for the worst noise pattern.
 
-Median position width at the default noise (±0.15):
+Width of the region the robot could be in (noise ±0.15):
 
-| Steps ahead | My box | R2 tube | NN, worst noise found |
+| Steps ahead | My boxes | R2's tube | Real NN, worst case found |
 |---|---|---|---|
-| 4 | 0.194 m | 0.094 m | 0.077 m |
-| 8 | 0.301 m | 0.112 m | 0.101 m |
-| 12 | 0.381 m | 0.128 m | 0.132 m |
+| 4 | 0.19 m | 0.09 m | 0.08 m |
+| 8 | 0.30 m | 0.11 m | 0.10 m |
+| 12 | 0.38 m | 0.13 m | 0.13 m |
 
-- My boxes are wide mostly because of over-approximation. The boxes lose track
-  of which state gets which NN command, so the NN's corrective feedback gets
-  treated like noise. Some boxes were also computed several steps early and
-  never redone.
-- Even a perfect method only gets the true worst case. That's narrower than
-  the tube at short range, but by 12 steps (R2's horizon, where I'd need to see
-  further) it's already as wide as the tube. And the worst case found is only a
-  lower bound.
-- The reason: the NN reacts to the noisy estimate every step, so each step's
-  measurement noise gets into its trajectory. The tube follows a fixed list of
-  commands and never looks at measurements, so only the starting uncertainty
-  spreads.
+What this shows:
 
-So zonotopes, more splitting or symbolic bounds can't fix this. It's a property
-of certifying a feedback controller that reads noisy measurements, compared
-with a fixed backup plan.
+1. **My boxes are too loose.** The boxes forget that the NN steers each state
+   back toward the path, so they treat its corrections like extra noise.
+2. **But even perfect boxes wouldn't win.** 12 steps ahead, the NN's real worst
+   case is already as wide as R2's tube. That's exactly the range where my
+   filter would need to see further than R2.
+3. **The root cause:** the NN reads a noisy measurement every step, so every
+   step's noise gets into its path. R2's backup follows a fixed list of
+   commands and ignores measurements, so the noise can't pile up.
 
-## Known bug in my filter (not fixed)
+So better tools (zonotopes, finer splitting, symbolic bounds) can't fix this.
+Any filter that tries to certify the NN's own future runs into it.
 
-In mode J, the code that sizes the reachability boxes assumes the estimate is
-never further from the truth than the sensor noise. That's only true once the
-robot has taken a measurement. At the very first step it hasn't, and its
-starting heading uncertainty is 0.131 rad. If the noise is set lower than that
-(`TTTCARV_VMAX_SIGMA` below about 2.6), the code underestimates the uncertainty
-for the first few steps. The boxes it builds can then miss the true state, by
-up to 0.055 rad in heading.
+Scripts:
+[box_vs_tube.py](nfl_robustness_training/cluster_scripts/checks/box_vs_tube.py),
+[true_spread.py](nfl_robustness_training/cluster_scripts/checks/true_spread.py),
+[worst_spread.py](nfl_robustness_training/cluster_scripts/checks/worst_spread.py).
 
-- At the default noise (±0.15) the bug can't trigger. All the main results are
-  unaffected.
-- In the low-noise corridor runs it did trigger (24/100 trials at ±0.05,
-  60/100 at ±0.017). It never caused a collision.
-- The fix: in `joint_step`, only apply the `min(vmax_e, hw)` cap after the
-  first measurement has been used.
+## Known bug (not fixed)
 
-## Repository layout
+- **What:** the box code assumes the robot's estimate is never further off than
+  one measurement's error. That's only true after the first measurement. At the
+  very start, the heading is uncertain by 0.131 rad.
+- **When it matters:** only when the noise is set below about ±0.13
+  (`TTTCARV_VMAX_SIGMA` < 2.6). The boxes can then miss the real heading by up
+  to 0.055 rad for the first few steps.
+- **Effect:** none at the default noise, so all the main results are fine. At
+  low noise it happened in some runs but never caused a crash.
+- **Fix:** in `joint_step` (alg28_sound.py), only apply the `min(vmax_e, hw)`
+  cap after the first measurement.
+
+---
+
+## Where things are
 
 ```
 README.md                      this file
@@ -201,52 +211,51 @@ docs/
   README_lab_original.md       the lab's original README
   img/                         figures used here
 nfl_robustness_training/
-  src/                         code that still runs (see below)
+  src/                         code that runs (table below)
   results/
-    alg29/                     full lab notebook for the comparison (alg29_results.md) + figures
-    alg28/                     animations, error-box proof sketch, figures
-    alg22/  alg20/  di/        earlier versions' results
+    alg29/                     full lab notebook for the comparison + figures
+    alg28/                     animations, figures, proof sketch
+    alg22/ alg20/ di/          older versions
   cluster_scripts/
-    scripts/                   sbatch / summary scripts (copies of ~/scripts)
-    runs/alg41_score … alg45_corridor/   per-experiment scripts and written predictions
-    checks/                    hand check, box-vs-tube, true/worst spread, corridor figure
-  archive/                     superseded code and results, see archive/README.md
-third_party/                   nfl_veripy, CROWN, etc.
+    scripts/                   Slurm job scripts and summary tools
+    runs/                      per-experiment settings and written predictions
+    checks/                    the checks and figures in this README
+  archive/                     old code, see archive/README.md
+third_party/                   nfl_veripy, CROWN and other libraries
 gifs/                          the lab's demo gifs
 ```
 
-The files in `src/` that matter:
+Main files in `src/`:
 
-| File | What it is |
+| File | What it does |
 |---|---|
-| `alg28_sound.py` | Reach-PSF, my filter |
-| `alg29_generic_psf.py` | the baselines (R1, R2, G0–G3) |
-| `Reach_PSF_FINAL_NL.py` | the earlier version (alg22); alg29 imports a helper from it |
-| `REAL_integrated_sim.py` | simulator, NN loading, reachability calls |
-| `mpc_safety_filter_acados.py` | MPC backup solver (acados) |
-| `state_estimator.py` | set-membership state estimator |
-| `run_trials_random_obs.py` | runs N random scenes for one filter, writes a fingerprint JSON |
-| `alg22_di.py`, `run_trials_di.py` | double-integrator version |
+| `alg28_sound.py` | my filter (Reach-PSF) |
+| `alg29_generic_psf.py` | the baselines: R1, R2, G0–G3 |
+| `REAL_integrated_sim.py` | the simulator, NN loading, reachability |
+| `mpc_safety_filter_acados.py` | the MPC backup planner |
+| `state_estimator.py` | tracks the region the robot could be in |
+| `run_trials_random_obs.py` | runs many random scenes, saves results |
+| `alg22_di.py`, `run_trials_di.py` | the same for a simpler robot model (double integrator) |
 | `anim_alg28.py` | makes the animations |
 
-The remaining files in `src/` are either the lab's original code (training,
-controllers, plotting) or older algorithms the live code still imports
-(alg12–alg20).
+The other files in `src/` are the lab's original code, or older versions that
+these still import.
 
-## Running it
+## How to run
 
-Setup is in [docs/CLUSTER_HANDOFF.md](docs/CLUSTER_HANDOFF.md). In short: use the
-`carv` conda env and submit through sbatch. Trials can't run on the login node.
-The settings for each experiment are in the `arms.txt` files under
-`cluster_scripts/runs/`. Raw run data (fingerprints, logs) lives in `~/runs/`
-on Engaging and isn't in git.
+- Setup: [docs/CLUSTER_HANDOFF.md](docs/CLUSTER_HANDOFF.md). Use the `carv`
+  conda env and submit jobs with `sbatch`. Simulations don't run on the login
+  node.
+- Each experiment's settings are in the `arms.txt` files under
+  `cluster_scripts/runs/`.
+- The noise level is `TTTCARV_VMAX_SIGMA`, times 0.05. The default of 3 gives
+  ±0.15.
+- Raw run data is in `~/runs/` on Engaging, not in git.
 
-`TTTCARV_VMAX_SIGMA` sets the noise bound on both sides (bound = value × 0.05,
-default 3 → ±0.15).
+## If you pick this up
 
-## If someone picks this up again
-
-- The only route I can see is a different controller: one trained to react
-  less to measurement noise, or a filter that certifies the NN for just a few
-  steps and leaves the rest to the MPC. That's basically what R2 already does.
-- Fix the mode J bug first.
+- Better reachability tools won't help (see "Why my filter can't win").
+- What might help is a different NN, one trained to react less to measurement
+  noise. Or certify the NN only a few steps ahead and leave the rest to the
+  backup, but that's basically what R2 already does.
+- Fix the known bug first.
