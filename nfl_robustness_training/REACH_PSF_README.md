@@ -145,13 +145,42 @@ and submit through sbatch. Trials can't run on the login node.
 `TTTCARV_VMAX_SIGMA` sets the noise bound on both sides (bound = value × 0.05,
 default 3 → ±0.15).
 
+## Why tighter boxes wouldn't have saved it
+
+My boxes are about 3.5× wider than R2's tube 12 steps ahead. So I checked
+whether a better reachability method could have won. I sampled the NN's real
+closed-loop spread from the same start sets, then searched for the worst noise
+sequence (gradient search plus extreme and constant-bias noise). Scripts:
+`cluster_scripts/checks/true_spread.py` and `worst_spread.py`.
+
+Median position width at the default noise (±0.15):
+
+| Steps ahead | My box | R2 tube | NN, worst noise found |
+|---|---|---|---|
+| 4 | 0.194 m | 0.094 m | 0.077 m |
+| 8 | 0.301 m | 0.112 m | 0.101 m |
+| 12 | 0.381 m | 0.128 m | 0.132 m |
+
+- My boxes are wide mostly because of over-approximation. The boxes lose track
+  of which state gets which NN command, so the NN's corrective feedback gets
+  treated like noise. Some boxes were also computed several steps early and
+  never redone.
+- Even a perfect method only gets the true worst case. That's narrower than the
+  tube at short range, but by 12 steps (R2's horizon, where I'd need to see
+  further) it's already as wide as the tube. And the worst case found is only a
+  lower bound.
+- The reason: the NN reacts to the noisy estimate every step, so each step's
+  measurement noise gets into its trajectory. The tube follows a fixed list of
+  commands and never looks at measurements, so only the starting uncertainty
+  spreads.
+
+So zonotopes, more splitting or symbolic bounds can't fix this. It's a property
+of certifying a feedback controller that reads noisy measurements, compared with
+a fixed backup plan.
+
 ## If someone picks this up again
 
-The open question is whether there's any scene where the reachability check
-lets the NN keep driving and the tube MPC can't. What I'd try:
-
-- Tighter reachability boxes, re-computed each step instead of reused from
-  early steps. This costs compute, and my filter is already slower than R2.
-- Compare against R2 with a longer horizon, to see whether its horizon is really
-  the limit.
+- The only route I can see is a different controller: one trained to react
+  less to measurement noise, or a filter that certifies the NN for just a few
+  steps and leaves the rest to the MPC. That's basically what R2 already does.
 - Fix the mode J bug first.
