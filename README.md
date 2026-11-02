@@ -120,11 +120,9 @@ Neither filter went through. Both went around. No crashes in any setting
 in 3 to 4 steps. By the time they reach the entrance, they're wider than the
 corridor.
 
-**A mistake I caught:** the first corridor I tried made R2 crash in 88 of 100
-runs, which looked like a big win. But R2 had no valid plan from the starting
-point, so the test was unfair. I moved the corridor further away and the "win"
-disappeared. Both scenes are in
-[runs/alg45_corridor/](nfl_robustness_training/cluster_scripts/runs/alg45_corridor/).
+The scene files are in
+[runs/alg45_corridor/](nfl_robustness_training/cluster_scripts/runs/alg45_corridor/)
+(`corridor_k15_*.json`).
 
 ---
 
