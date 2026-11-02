@@ -709,11 +709,19 @@ def _install_estctrl(tester, setmem_stats=None):
     look_box = {}      # t -> (last lookahead box filed at t, executed step it chains from)
     chain_base = {}    # t -> executed step the bound filed at t chains from
     hw_base = {}       # executed step -> exact half-width of the certified set there
+    # The vmax_e cap on the estimate error only holds once a measurement has
+    # been intersected into S_t: from t = 1 (ideal), t = 2 (MEAS_DELAY, where
+    # S_1 = F(S_0, u_0) has no earlier measurement). Before that S_t is X0
+    # pushed forward, whose heading half-width (0.131) can exceed vmax_e.
+    t_meas = 2 if MEAS_DELAY else 1
 
-    def _hw_next(hw):
-        """Sound bound on hw(S) one step on, for ANY scalar control (rule S)."""
+    def _cap(hw, t):
+        return np.minimum(vmax_e, hw) if t >= t_meas else hw
+
+    def _hw_next(hw, t_next):
+        """Sound bound on hw(S_{t_next}) from hw(S_{t_next-1}), any scalar control (rule S)."""
         g = dt * v * float(hw[2])
-        return np.minimum(vmax_e, np.array([hw[0] + g, hw[1] + g, hw[2]], dtype=float))
+        return _cap(np.array([hw[0] + g, hw[1] + g, hw[2]], dtype=float), t_next)
 
     def hw_cert(t):
         """Bound on hw(S_t) from the base of the chain that filed the bound at t."""
@@ -724,8 +732,8 @@ def _install_estctrl(tester, setmem_stats=None):
             stats['ebox_repair_fallback'] += 1     # S was reset to the measurement box
             return None
         hw = hw_base[base]
-        for _ in range(t - base):
-            hw = _hw_next(hw)
+        for s in range(base + 1, t + 1):
+            hw = _hw_next(hw, s)
         return hw
     nn_steps = set()   # executed steps whose applied control was NN(centre)
     u_cache = {}
@@ -780,7 +788,7 @@ def _install_estctrl(tester, setmem_stats=None):
 
     def joint_step(t):
         b = np.asarray(tester.horizons[t].get_tight_bound(), dtype=float)
-        hw_e = np.minimum(vmax_e, (b[:, 1] - b[:, 0]) / 2.0)
+        hw_e = _cap((b[:, 1] - b[:, 0]) / 2.0, t)
         if EBOX == 'S':
             hw_s = hw_cert(t)
             if hw_s is not None:

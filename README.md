@@ -52,6 +52,36 @@ Why I thought it would win: all the checking happens one step ahead, so the
 robot never waits on a solver. And looking at the NN's own future might let it
 step in less often.
 
+### How I changed CARV's reachability to handle noise
+
+**What CARV does (the lab's code).** It uses CROWN (the `auto_LiRPA` library)
+to bound where the robot can go under the NN, x(t+1) = f(x, NN(x)). The NN sees
+the **true** state. The only uncertainty is the starting box. CARV can bound
+several steps in one CROWN call ("symbolic"), or chain one-step boxes
+("concrete").
+
+**The problem.** In my setting the NN sees a noisy estimate, x + e, and the
+error e changes every step. CARV's model has no place for that.
+
+**What I changed** (`_joint_bounder` and `joint_step` in
+[alg28_sound.py](nfl_robustness_training/src/alg28_sound.py)):
+
+1. **Error as an extra input.** One step becomes f(x, NN(x + e)). CROWN bounds
+   it over both the state box and the error box at once (6 inputs instead of
+   3). A fresh error box is used every step.
+2. **Size of the error box.** It's at most the measurement noise (±0.15), and
+   tighter when the estimator's own box is smaller ("rule S").
+3. **Splitting.** The 6-D input box is cut into 256 cells, mostly along heading
+   and heading error. Each cell is bounded separately and the results are
+   merged. That takes about 13 ms per step.
+4. **A guaranteed starting box.** The lab's Kalman-filter box is replaced by a
+   set-membership estimator: the predicted box intersected with the
+   measurement box. It always contains the true state.
+
+**Why not CARV's multi-step ("symbolic") mode?** Each extra step adds 3 new
+error inputs. In my tests it was looser than chaining one-step boxes beyond
+about 5 steps, and too slow for the 0.2 s step.
+
 ## What I compared against
 
 Code: [alg29_generic_psf.py](nfl_robustness_training/src/alg29_generic_psf.py)
@@ -116,6 +146,13 @@ Neither filter went through. Both went around. No crashes in any setting
 | ±0.017 | 1.0 m | 22.7% | 22.8% |
 | ±0.017 | 1.8 m | 27.3% | 25.8% |
 
+**These numbers are noisy for my filter.** I re-ran the exact same code on the
+exact same scenes at low noise, and my filter's rate moved by 7 to 18
+percentage points (for example 23% in one run, 40% in another). The reason: how
+far ahead it checks depends on how much computing fits into each 0.2 s step,
+and that changes from run to run. R2 doesn't have this problem. So treat
+"mine" as anywhere from about R2's level to clearly worse, never better.
+
 **Why mine didn't go in:** its reach boxes grow quickly, from 7 cm to 43 cm wide
 in 3 to 4 steps. By the time they reach the entrance, they're wider than the
 corridor.
@@ -148,15 +185,17 @@ fix.
 
 ## Why my filter can't win
 
-![Reach boxes growing](docs/img/reach_psf_frame.png)
-
-*The orange reach boxes get much wider than the robot's real uncertainty within
-a few steps.*
-
 12 steps ahead, my boxes are about 3 times wider than R2's tube. Is that just a
 weakness of how I compute them? To find out, I measured the NN's **real**
-spread by simulating thousands of possible starts and noise patterns, and I
-searched for the worst noise pattern.
+spread by simulating thousands of possible starts and noise patterns (Monte
+Carlo), and I searched for the worst noise pattern.
+
+![Reach boxes vs tube vs Monte Carlo](docs/img/spread.png)
+
+*Left: one typical start set. Orange boxes are my reach boxes. Blue circles
+are R2's tube, built from the same start set. Black dots are where the real NN
+actually took the robot over thousands of simulated runs. Right: the same
+widths, as a median over 120 start sets.*
 
 Width of the region the robot could be in (noise ±0.15):
 
@@ -184,19 +223,6 @@ Scripts:
 [box_vs_tube.py](nfl_robustness_training/cluster_scripts/checks/box_vs_tube.py),
 [true_spread.py](nfl_robustness_training/cluster_scripts/checks/true_spread.py),
 [worst_spread.py](nfl_robustness_training/cluster_scripts/checks/worst_spread.py).
-
-## Known bug (not fixed)
-
-- **What:** the box code assumes the robot's estimate is never further off than
-  one measurement's error. That's only true after the first measurement. At the
-  very start, the heading is uncertain by 0.131 rad.
-- **When it matters:** only when the noise is set below about ±0.13
-  (`TTTCARV_VMAX_SIGMA` < 2.6). The boxes can then miss the real heading by up
-  to 0.055 rad for the first few steps.
-- **Effect:** none at the default noise, so all the main results are fine. At
-  low noise it happened in some runs but never caused a crash.
-- **Fix:** in `joint_step` (alg28_sound.py), only apply the `min(vmax_e, hw)`
-  cap after the first measurement.
 
 ---
 
@@ -256,4 +282,3 @@ these still import.
 - What might help is a different NN, one trained to react less to measurement
   noise. Or certify the NN only a few steps ahead and leave the rest to the
   backup, but that's basically what R2 already does.
-- Fix the known bug first.
