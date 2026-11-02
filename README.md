@@ -8,10 +8,15 @@ stopped. The lab's original README is in
 
 ![Reach-PSF running on one scene](docs/img/reach_psf_anim.gif)
 
-*One run of the filter. Black is the robot's true path. The orange boxes are
-where the NN could take the robot over the next steps. The dashed green boxes
-are the backup plan, ready one step ahead. When the orange boxes get too close
-to an obstacle, the backup takes over.*
+*One run of the filter (bounded-Gaussian noise).*
+
+- **Top panel.** Black is the robot's true path. The orange boxes are where the
+  NN could take the robot over the next 20 steps. The teal curves are the
+  backup routes the filter has ready. The purple circle marks where the NN's
+  path would first come too close to an obstacle.
+- **Middle panel.** For every time step, this shows how far ahead a certified
+  backup exists (green) and where none does (red).
+- **Bottom panel.** This shows when the backup is actually driving (red).
 
 ## The idea
 
@@ -135,7 +140,8 @@ after the fix.
 
 ![Reach boxes growing](docs/img/reach_psf_frame.png)
 
-*The orange lookahead boxes widen quickly the further ahead they go.*
+*At t = 2.2 s in the run above, the orange lookahead boxes are already
+several times wider than the robot's real uncertainty a few steps out.*
 
 My boxes are about 3.5× wider than R2's tube 12 steps ahead. So I checked
 whether a better reachability method could have won. I sampled the NN's real
