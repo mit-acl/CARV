@@ -81,7 +81,7 @@ RESET   = "\033[0m"
 
 # ── Configuration ──────────────────────────────────────────────────────────
 # Settings come from TTTCARV_* environment variables. Not every default is the
-# final configuration: the final run (results_alg22/alg22_results.md) sets
+# final configuration: the final run (results/alg22/alg22_results.md) sets
 # TTTCARV_ONESHOT=1, TTTCARV_ONESHOT_RTI=10, TTTCARV_MPC_PRICING=1,
 # TTTCARV_BUDGET_MARGIN=0.003, TTTCARV_PSF_TAIL=1, TTTCARV_ONESHOT_VERIFY=1 and
 # TTTCARV_SINGLE_START_FRAC=0.50.

@@ -10,7 +10,7 @@ This is the headline run. `alg22.py` is now `Reach_PSF_FINAL.py` (commit
 `83ae8e2`, run with `TTTCARV_ALG=Reach_PSF_FINAL`). It is the final-1
 configuration below plus a budget that prices work on measured cost, fewer
 solver iterations per one-shot solve, and a deadline between concrete steps.
-Same 10,000 scenes as final 1, final 2, v2 and `results_alg20` (trial seeds
+Same 10,000 scenes as final 1, final 2, v2 and `results/alg20` (trial seeds
 verified identical to final 2).
 
 **Budget requirement.** Every timestep must fit in 0.20 s. A step is scored as
@@ -265,7 +265,7 @@ concrete loop behave as in final 1.
 Superseded by *Final evaluation: Reach_PSF_FINAL* above: same code path, but
 admitted work could run past 0.20 s, and the trial log was not checked per
 timestep. It superseded v2 (job 22616750), which is kept below under *Earlier
-run: v2*. Same 10,000 scenes as v2 and `results_alg20` (`TTTCARV_SEED = 20260823 + chunk`,
+run: v2*. Same 10,000 scenes as v2 and `results/alg20` (`TTTCARV_SEED = 20260823 + chunk`,
 2,500 trials per chunk, `GOAL_KEEPOUT=0`).
 
 | | |
@@ -391,7 +391,7 @@ final configuration.
 
 **10000 / 10000 safe. Zero collisions. Zero fallbacks of any kind.**
 
-Same 10,000 scenes as `results_alg20`, byte-identical (see *Scene pairing*).
+Same 10,000 scenes as `results/alg20`, byte-identical (see *Scene pairing*).
 Same low-contention regime — 8 workers on an exclusive node — because
 deployment is one robot with a machine to itself, not a throughput-packed
 cluster. The 0.20 s per-timestep budget only means what it claims if each trial
@@ -399,7 +399,7 @@ actually gets the compute it was calibrated against.
 
 | | |
 |---|---|
-| scenes | 10,000 (4 chunks × 2,500), identical to `results_alg20` |
+| scenes | 10,000 (4 chunks × 2,500), identical to `results/alg20` |
 | collisions | **0** |
 | PSF no-diverge fallbacks | **0** |
 | PSF queue-empty fallbacks | **0** |
@@ -605,7 +605,7 @@ rendered animations and would otherwise look like a fault.
 
 ## Scenario
 
-Identical to `results_alg20`:
+Identical to `results/alg20`:
 
 | | value |
 |---|---|
@@ -620,7 +620,7 @@ Identical to `results_alg20`:
 
 ## Scene pairing
 
-The 10,000 trial seeds match `results_alg20/fp_{1..4}.json` **exactly and in
+The 10,000 trial seeds match `results/alg20/fp_{1..4}.json` **exactly and in
 order**, verified after the run. `TTTCARV_GOAL_KEEPOUT=0` is what makes this
 hold: at 0 the rejection test in `_gen_obstacles` never rejects, so the
 generator consumes an identical RNG stream.

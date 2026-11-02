@@ -40,3 +40,16 @@ These are from the repo root:
 - the 2026-08-28 trial logs (~40 MB)
 - `run_trials.sh`, an alg21 sbatch
 - stale default outputs `trials_fingerprint.json` and `trials_di.png`
+
+## 2026-11-02 cleanup (reach-psf branch)
+
+`src/pre_alg28/` holds every module from `src/` that none of the live code
+imports any more: alg8–alg21 experiments, their animation scripts, the old
+`run_trials.py` / `tester.py` pipeline and the deprecated timing scripts. To
+run one, copy it back into `src/`.
+
+`root/` also got the repo-root clutter: `diag_alg15_reasons.py`,
+`repro_alg15.py`, `timing_analysis/`, and stray images and gifs.
+
+The `.bak_*` snapshots of alg28_sound / alg29_generic_psf / anim_alg28 were
+moved out of the repo to `~/runs/_bak_src_20261102/` on Engaging.

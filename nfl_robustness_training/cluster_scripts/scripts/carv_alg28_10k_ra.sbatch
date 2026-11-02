@@ -16,7 +16,7 @@
 # spoiled the first split batch, job 23300811).
 #
 # SCENES ARE THE alg20/alg22 SET. seed = 20260823 + chunk with GOAL_KEEPOUT=0
-# regenerates the same 10,000 scenes as results_alg20 / results_alg22, so this
+# regenerates the same 10,000 scenes as results/alg20 / results/alg22, so this
 # is a PAIRED comparison against the alg22 headline run, not a new sample.
 #
 # Configuration under test (alg28 = alg27 + sound plan boxes + audits):

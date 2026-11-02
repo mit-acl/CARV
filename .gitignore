@@ -4,3 +4,14 @@ nfl_robustness_training/src/conservativeness_tester.py
 nfl_robustness_training/src/overapprox_test.py
 animation_output
 timing_analysis
+# reach-psf branch housekeeping
+c_generated_code/
+*.bak_*
+nfl_robustness_training/results/**/fp_*.json
+nfl_robustness_training/results/**/*.gif
+nfl_robustness_training/archive/**/*.gif
+nfl_robustness_training/archive/**/*.log
+nfl_robustness_training/archive/root/trials_di.png
+.claude/
+.vscode/
+carv_env.sh
